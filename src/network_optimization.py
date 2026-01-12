@@ -200,7 +200,8 @@ def generate_investment_strategies(focus_builder: str, shortfall_data: pd.DataFr
     if strategies.empty: return pd.DataFrame()
     
     results = []
-    shortfall_map = shortfall_data.set_index('BuilderRegionKey').get('Projected_Shortfall', shortfall_data.set_index('BuilderRegionKey')['Shortfall']).to_dict()
+    # FIX: Use the 'col' variable determined above to avoid KeyError when 'Shortfall' is missing
+    shortfall_map = shortfall_data.set_index('BuilderRegionKey')[col].to_dict()
     
     for _, strat in strategies.iterrows():
         source = strat['MediaPayer_BuilderRegionKey']
