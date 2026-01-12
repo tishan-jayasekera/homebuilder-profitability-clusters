@@ -180,8 +180,8 @@ def main():
             surplus_df = shortfall_data[shortfall_data['Projected_Surplus'] > 0].sort_values('Projected_Surplus', ascending=False).head(10)
             st.dataframe(
                 surplus_df[['BuilderRegionKey', 'Projected_Surplus', 'LeadTarget']]
-                .style.format("{:,.0f}")
-                .background_gradient(cmap="Greens"),
+                .style.format({'Projected_Surplus': "{:,.0f}", 'LeadTarget': "{:,.0f}"})
+                .background_gradient(cmap="Greens", subset=['Projected_Surplus']),
                 use_container_width=True,
                 hide_index=True
             )
