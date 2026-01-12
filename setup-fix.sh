@@ -12,6 +12,7 @@ mv src-normalization.py src/normalization.py 2>/dev/null || echo "normalization.
 mv src-builder-pnl.py src/builder_pnl.py 2>/dev/null || echo "builder_pnl.py - check manually"
 mv src-orphan-media.py src/orphan_media.py 2>/dev/null || echo "orphan_media.py - check manually"
 mv src-referral-clusters.py src/referral_clusters.py 2>/dev/null || echo "referral_clusters.py - check manually"
+mv src-network-optimization.py src/network_optimization.py 2>/dev/null || echo "network_optimization.py - check manually"
 mv src-utils.py src/utils.py 2>/dev/null || echo "utils.py - check manually"
 mv src-init.py src/__init__.py 2>/dev/null || echo "__init__.py - check manually"
 
@@ -22,6 +23,9 @@ mv page-referral-networks.py "pages/3_Referral_Networks.py" 2>/dev/null || echo 
 
 # Move streamlit config
 mv streamlit-config*.txt .streamlit/config.toml 2>/dev/null || echo "config.toml - check manually"
+
+# Optional: Rename gitignore
+mv gitignore.txt .gitignore 2>/dev/null
 
 echo ""
 echo "Expected structure:"
@@ -37,6 +41,7 @@ echo "│   ├── normalization.py"
 echo "│   ├── builder_pnl.py"
 echo "│   ├── orphan_media.py"
 echo "│   ├── referral_clusters.py"
+echo "│   ├── network_optimization.py"
 echo "│   └── utils.py"
 echo "└── pages/"
 echo "    ├── 1_Builder_PnL.py"
