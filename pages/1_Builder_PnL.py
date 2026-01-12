@@ -1197,8 +1197,8 @@ def main():
                 "So what / Now what",
                 "<b>So what:</b> Profit is driven by a small set of builders; "
                 "underperformers create material drag.<br/>"
-                "<b>Now what:</b> Scale the "Scale" quadrant, fix unit economics for "
-                ""Fix Margin/Efficiency", and run hard stop/reshape decisions for "Review".",
+                "<b>Now what:</b> Scale the &ldquo;Scale&rdquo; quadrant, fix unit economics for "
+                "&ldquo;Fix Margin/Efficiency&rdquo;, and run hard stop/reshape decisions for &ldquo;Review&rdquo;.",
             ),
             unsafe_allow_html=True,
         )
