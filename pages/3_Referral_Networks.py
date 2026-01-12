@@ -11,7 +11,6 @@ import plotly.graph_objects as go
 import sys
 from pathlib import Path
 
-# Add parent directory to path for imports
 root = Path(__file__).parent.parent
 if str(root) not in sys.path:
     sys.path.insert(0, str(root))
@@ -30,23 +29,15 @@ st.markdown("Discover referral ecosystems and media efficiency pathways.")
 
 @st.cache_data(show_spinner="Running network clustering...")
 def run_clustering(_events, resolution, target_clusters):
-    """Cached clustering computation."""
-    return run_referral_clustering(
-        _events,
-        resolution=resolution,
-        target_max_clusters=target_clusters
-    )
+    return run_referral_clustering(_events, resolution=resolution, target_max_clusters=target_clusters)
 
 
 def load_data():
-    """Load and normalize events data."""
     if 'events_file' not in st.session_state:
         return None
-    
     events = load_events(st.session_state['events_file'])
     if events is None:
         return None
-    
     return normalize_events(events)
 
 
@@ -63,25 +54,14 @@ def main():
         st.header("🎛️ Clustering Parameters")
         
         resolution = st.slider(
-            "Resolution",
-            min_value=0.5, max_value=2.5, value=1.5, step=0.1,
+            "Resolution", min_value=0.5, max_value=2.5, value=1.5, step=0.1,
             help="Higher = more clusters, Lower = fewer clusters"
         )
         
-        target_clusters = st.slider(
-            "Max Clusters",
-            min_value=3, max_value=25, value=15, step=1
-        )
+        target_clusters = st.slider("Max Clusters", min_value=3, max_value=25, value=15, step=1)
         
         st.divider()
-        
         show_labels = st.checkbox("Show Node Labels", value=False)
-        
-        st.divider()
-        
-        # Builder search
-        st.subheader("🔍 Find Builder")
-        builder_search = st.text_input("Search", placeholder="Type builder name...")
     
     # Run clustering
     results = run_clustering(events, resolution, target_clusters)
@@ -99,13 +79,11 @@ def main():
     pnl_recipient = build_builder_pnl(events, lens="recipient", date_basis="lead_date", freq="ALL")
     pnl_recipient = pnl_recipient.drop(columns=["period_start"], errors="ignore")
     
-    # Merge P&L with builder master
     builder_master = builder_master.merge(pnl_recipient, on="BuilderRegionKey", how="left")
     for col in ["Revenue", "MediaCost", "Profit", "ROAS"]:
         if col in builder_master.columns:
             builder_master[col] = builder_master[col].fillna(0)
     
-    # Compute network metrics
     builder_master = compute_network_metrics(G, builder_master)
     
     # Cluster selector
@@ -117,10 +95,11 @@ def main():
         label = f"Cluster {cid} — {n_b} builders, ~{t_ref:,} referrals"
         cluster_options.append((label, cid))
     
-    selected_label = st.selectbox(
-        "Select Ecosystem",
-        options=[opt[0] for opt in cluster_options]
-    )
+    col_cluster, col_builder = st.columns([2, 2])
+    
+    with col_cluster:
+        selected_label = st.selectbox("Select Ecosystem", options=[opt[0] for opt in cluster_options])
+    
     selected_cluster = dict(cluster_options)[selected_label]
     
     # Filter to selected cluster
@@ -129,6 +108,14 @@ def main():
         (edges_clean["Cluster_origin"] == selected_cluster) &
         (edges_clean["Cluster_dest"] == selected_cluster)
     ].copy()
+    
+    # Builder dropdown (filtered to selected cluster)
+    with col_builder:
+        builder_list = sorted(cluster_builders["BuilderRegionKey"].dropna().unique().tolist())
+        builder_options = ["(None - show all)"] + builder_list
+        
+        selected_builder = st.selectbox("🔍 Focus on Builder", options=builder_options)
+        focus_builder = None if selected_builder == "(None - show all)" else selected_builder
     
     # Overview metrics
     st.header(f"🌐 Cluster {selected_cluster} Overview")
@@ -146,19 +133,11 @@ def main():
     col4.metric("Gross Profit", fmt_currency(total_profit))
     col5.metric("ROAS", fmt_roas(roas))
     
-    # Focus builder
-    focus_builder = None
-    if builder_search:
-        matches = cluster_builders[
-            cluster_builders["BuilderRegionKey"].str.lower().str.contains(builder_search.lower(), na=False)
-        ]
-        if len(matches) > 0:
-            focus_builder = matches.iloc[0]["BuilderRegionKey"]
-            st.info(f"📍 Focused on: **{focus_builder}**")
+    if focus_builder:
+        st.info(f"🔍 Focused on: **{focus_builder}**")
     
     # Network visualization
     st.subheader("🕸️ Network Graph")
-    
     render_network_graph(cluster_builders, cluster_edges, G, focus_builder, show_labels)
     
     # Flow analysis for focus builder
@@ -168,10 +147,7 @@ def main():
     # Builder table
     st.subheader("📊 Builder Details")
     
-    display_cols = [
-        "BuilderRegionKey", "Role", "Referrals_in", "Referrals_out",
-        "Revenue", "MediaCost", "Profit", "ROAS", "Referral_Gap"
-    ]
+    display_cols = ["BuilderRegionKey", "Role", "Referrals_in", "Referrals_out", "Revenue", "MediaCost", "Profit", "ROAS", "Referral_Gap"]
     display_cols = [c for c in display_cols if c in cluster_builders.columns]
     
     st.dataframe(
@@ -191,7 +167,6 @@ def main():
         height=400
     )
     
-    # Download
     st.download_button(
         "📥 Download Cluster Data",
         data=export_to_excel(cluster_builders, "cluster_builders.xlsx"),
@@ -201,15 +176,12 @@ def main():
 
 
 def render_network_graph(builders, edges, G, focus_builder, show_labels):
-    """Render interactive network graph."""
     if len(G.nodes) == 0:
         st.info("No network edges to display.")
         return
     
-    # Layout
     pos = nx.spring_layout(G, weight="weight", seed=42, k=0.8)
     
-    # Normalize positions
     xs = [p[0] for p in pos.values()]
     ys = [p[1] for p in pos.values()]
     xo, yo = np.mean(xs), np.mean(ys)
@@ -219,19 +191,16 @@ def render_network_graph(builders, edges, G, focus_builder, show_labels):
     for n, (x, y) in pos.items():
         pos[n] = ((x - xo) * scale, (y - yo) * scale)
     
-    # Determine inbound/outbound to focus
     if focus_builder:
         inbound_nodes = set(edges.loc[edges["Dest_builder"] == focus_builder, "Origin_builder"])
         outbound_nodes = set(edges.loc[edges["Origin_builder"] == focus_builder, "Dest_builder"])
     else:
-        inbound_nodes = set()
-        outbound_nodes = set()
+        inbound_nodes, outbound_nodes = set(), set()
     
     two_way = inbound_nodes & outbound_nodes
     inbound_only = inbound_nodes - outbound_nodes
     outbound_only = outbound_nodes - inbound_nodes
     
-    # Edge traces
     base_x, base_y, hi_x, hi_y = [], [], [], []
     
     for _, row in edges.iterrows():
@@ -251,20 +220,11 @@ def render_network_graph(builders, edges, G, focus_builder, show_labels):
     traces = []
     
     if base_x:
-        traces.append(go.Scatter(
-            x=base_x, y=base_y, mode="lines",
-            line=dict(width=1, color="#CBD5E1"),
-            hoverinfo="none", showlegend=False
-        ))
+        traces.append(go.Scatter(x=base_x, y=base_y, mode="lines", line=dict(width=1, color="#CBD5E1"), hoverinfo="none", showlegend=False))
     
     if hi_x:
-        traces.append(go.Scatter(
-            x=hi_x, y=hi_y, mode="lines",
-            line=dict(width=2.5, color="#1E40AF"),
-            name="Focus edges", hoverinfo="none"
-        ))
+        traces.append(go.Scatter(x=hi_x, y=hi_y, mode="lines", line=dict(width=2.5, color="#1E40AF"), name="Focus edges", hoverinfo="none"))
     
-    # Node traces by category
     bidx = builders.set_index("BuilderRegionKey")
     
     categories = {
@@ -319,12 +279,7 @@ def render_network_graph(builders, edges, G, focus_builder, show_labels):
             hovertext=cat["txt"],
             hoverinfo="text",
             name=name,
-            marker=dict(
-                size=cat["size"],
-                color=cat["color"],
-                opacity=0.85,
-                line=dict(width=1, color="#1F2937")
-            )
+            marker=dict(size=cat["size"], color=cat["color"], opacity=0.85, line=dict(width=1, color="#1F2937"))
         ))
     
     fig = go.Figure(data=traces)
@@ -344,8 +299,7 @@ def render_network_graph(builders, edges, G, focus_builder, show_labels):
 
 
 def render_focus_analysis(focus_builder, builders, edges):
-    """Render focus builder flow analysis."""
-    st.subheader(f"📍 {focus_builder} - Flow Analysis")
+    st.subheader(f"🔍 {focus_builder} - Flow Analysis")
     
     col1, col2 = st.columns(2)
     
@@ -361,9 +315,7 @@ def render_focus_analysis(focus_builder, builders, edges):
         if not inbound.empty:
             inbound = inbound.merge(
                 builders[["BuilderRegionKey", "ROAS", "MediaCost"]],
-                left_on="Origin_builder",
-                right_on="BuilderRegionKey",
-                how="left"
+                left_on="Origin_builder", right_on="BuilderRegionKey", how="left"
             )
             inbound["Eff_Cost_per_Ref"] = np.where(
                 inbound["Referrals"] > 0,
@@ -373,17 +325,10 @@ def render_focus_analysis(focus_builder, builders, edges):
             
             st.dataframe(
                 inbound[["Origin_builder", "Referrals", "MediaCost", "ROAS", "Eff_Cost_per_Ref"]]
-                .style.format({
-                    "Referrals": "{:,.0f}",
-                    "MediaCost": "${:,.0f}",
-                    "ROAS": "{:.2f}",
-                    "Eff_Cost_per_Ref": "${:,.0f}"
-                }),
-                hide_index=True,
-                use_container_width=True
+                .style.format({"Referrals": "{:,.0f}", "MediaCost": "${:,.0f}", "ROAS": "{:.2f}", "Eff_Cost_per_Ref": "${:,.0f}"}),
+                hide_index=True, use_container_width=True
             )
             
-            # Best lever recommendation
             best = inbound.loc[inbound["Eff_Cost_per_Ref"].idxmin()] if inbound["Eff_Cost_per_Ref"].notna().any() else None
             if best is not None:
                 st.success(f"💡 **Best lever:** {best['Origin_builder']} @ ${best['Eff_Cost_per_Ref']:,.0f}/effective referral")
@@ -400,11 +345,7 @@ def render_focus_analysis(focus_builder, builders, edges):
         )
         
         if not outbound.empty:
-            st.dataframe(
-                outbound.style.format({"Referrals": "{:,.0f}"}),
-                hide_index=True,
-                use_container_width=True
-            )
+            st.dataframe(outbound.style.format({"Referrals": "{:,.0f}"}), hide_index=True, use_container_width=True)
         else:
             st.info("No outbound referrals")
 
