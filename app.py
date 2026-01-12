@@ -3,6 +3,8 @@ IBN HS Analytics - Main Entry Point
 Builder Economics & Referral Network Analysis Platform
 """
 import streamlit as st
+import os
+from pathlib import Path
 
 st.set_page_config(
     page_title="IBN HS Analytics",
@@ -32,8 +34,21 @@ st.markdown("""
         border: 1px solid #E5E7EB;
         margin-bottom: 1rem;
     }
+    div[data-testid="stButton"] > button {
+        width: 100%;
+    }
 </style>
 """, unsafe_allow_html=True)
+
+
+def find_page(keyword):
+    """Find a page file containing the keyword."""
+    pages_dir = Path(__file__).parent / "pages"
+    if pages_dir.exists():
+        for f in pages_dir.iterdir():
+            if f.suffix == '.py' and keyword.lower() in f.name.lower():
+                return f"pages/{f.name}"
+    return None
 
 
 def main():
@@ -107,6 +122,11 @@ def main():
     
     st.markdown("### 🚀 Choose a Dashboard")
     
+    # Find page paths
+    pnl_page = find_page("builder") or find_page("pnl")
+    orphan_page = find_page("orphan")
+    network_page = find_page("referral") or find_page("network")
+    
     col1, col2, col3 = st.columns(3)
     
     with col1:
@@ -119,7 +139,11 @@ def main():
         
         View by all-time, monthly, or weekly grain.
         """)
-        st.page_link("pages/1_Builder_PnL.py", label="Open Builder P&L →", icon="📊")
+        if pnl_page:
+            if st.button("📊 Open Builder P&L", key="btn_pnl", use_container_width=True):
+                st.switch_page(pnl_page)
+        else:
+            st.info("Page: 1_Builder_PnL")
     
     with col2:
         st.markdown("#### 🎯 Orphan Media")
@@ -131,7 +155,11 @@ def main():
         
         Generate kill lists for optimization.
         """)
-        st.page_link("pages/2_Orphan_Media.py", label="Open Orphan Media →", icon="🎯")
+        if orphan_page:
+            if st.button("🎯 Open Orphan Media", key="btn_orphan", use_container_width=True):
+                st.switch_page(orphan_page)
+        else:
+            st.info("Page: 2_Orphan_Media")
     
     with col3:
         st.markdown("#### 🔗 Referral Networks")
@@ -142,7 +170,21 @@ def main():
         - Media efficiency pathfinding
         - Downstream cascade analysis
         """)
-        st.page_link("pages/3_Referral_Networks.py", label="Open Referral Networks →", icon="🔗")
+        if network_page:
+            if st.button("🔗 Open Referral Networks", key="btn_network", use_container_width=True):
+                st.switch_page(network_page)
+        else:
+            st.info("Page: 3_Referral_Networks")
+    
+    # Debug: show available pages
+    pages_dir = Path(__file__).parent / "pages"
+    if pages_dir.exists():
+        pages_found = [f.name for f in pages_dir.iterdir() if f.suffix == '.py']
+        if pages_found:
+            with st.expander("🔧 Debug: Available Pages"):
+                st.write("Pages found in /pages directory:")
+                for p in sorted(pages_found):
+                    st.code(p)
     
     # Quick stats if data is loaded
     if 'events_file' in st.session_state:
