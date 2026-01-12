@@ -1,26 +1,41 @@
 import pandas as pd
 import numpy as np
 
-def calculate_shortfalls(events_df: pd.DataFrame, targets_df: pd.DataFrame = None) -> pd.DataFrame:
+def calculate_shortfalls(events_df: pd.DataFrame, targets_df: pd.DataFrame = None, period_days: int = None, total_events_df: pd.DataFrame = None) -> pd.DataFrame:
     """
     Step 1: Calculate Demand (Shortfalls) with Pace & Projection.
     
+    Args:
+        events_df: Events data for the selected period (used for Velocity/Pace).
+        targets_df: Optional dataframe with builder targets.
+        period_days: Duration of the selected period in days. Used for velocity calc.
+        total_events_df: Optional cumulative events data. Used for Actuals vs Target.
+                        If None, events_df is assumed to be cumulative.
+    
     Logic:
-    - Actuals = Current Leads
-    - Pace = Recent Lead Velocity (leads/day over last 60 days)
+    - Actuals = Cumulative Leads (from total_events_df if provided, else events_df)
+    - Pace = Leads/Day based on events_df (selected period)
     - Projected = Actuals + (Pace * Days_Remaining)
     - Shortfall = Target - Projected
     """
-    # 1. Actuals: Current_Leads
-    actuals = events_df[events_df['is_referral'] == True].groupby('Dest_BuilderRegionKey').size().reset_index(name='Actual_Referrals')
+    # 1. Period Actuals (For Velocity)
+    period_actuals = events_df[events_df['is_referral'] == True].groupby('Dest_BuilderRegionKey').size().reset_index(name='Period_Referrals')
     
-    # 2. Targets: Retrieve or Mock
+    # 2. Cumulative Actuals (For Progress)
+    if total_events_df is not None:
+        cum_actuals = total_events_df[total_events_df['is_referral'] == True].groupby('Dest_BuilderRegionKey').size().reset_index(name='Actual_Referrals')
+        target_source_df = total_events_df # Use full dataset to find all builders/targets
+    else:
+        cum_actuals = period_actuals.rename(columns={'Period_Referrals': 'Actual_Referrals'})
+        target_source_df = events_df
+
+    # 3. Targets: Retrieve or Mock
     if targets_df is None:
-        builders = events_df['Dest_BuilderRegionKey'].dropna().unique()
+        builders = target_source_df['Dest_BuilderRegionKey'].dropna().unique()
         cols_to_check = ['LeadTarget_from_job', 'WIP_JOB_LIVE_END']
         
-        if all(c in events_df.columns for c in cols_to_check):
-             targets_df = events_df[['Dest_BuilderRegionKey', 'LeadTarget_from_job', 'WIP_JOB_LIVE_END']].drop_duplicates('Dest_BuilderRegionKey').copy()
+        if all(c in target_source_df.columns for c in cols_to_check):
+             targets_df = target_source_df[['Dest_BuilderRegionKey', 'LeadTarget_from_job', 'WIP_JOB_LIVE_END']].drop_duplicates('Dest_BuilderRegionKey').copy()
              targets_df = targets_df.rename(columns={'Dest_BuilderRegionKey': 'BuilderRegionKey', 'LeadTarget_from_job': 'LeadTarget'})
         else:
             targets_df = pd.DataFrame({
@@ -32,11 +47,15 @@ def calculate_shortfalls(events_df: pd.DataFrame, targets_df: pd.DataFrame = Non
         rename_map = {'LeadTarget_from_job': 'LeadTarget', 'Builder': 'BuilderRegionKey'}
         targets_df = targets_df.rename(columns=rename_map)
     
-    # 3. Merge
-    df = targets_df.merge(actuals, left_on='BuilderRegionKey', right_on='Dest_BuilderRegionKey', how='left')
+    # 4. Merge Targets with Cumulative Actuals
+    df = targets_df.merge(cum_actuals, left_on='BuilderRegionKey', right_on='Dest_BuilderRegionKey', how='left')
     df['Actual_Referrals'] = df['Actual_Referrals'].fillna(0)
     
-    # 4. Time Components & Pace
+    # 5. Merge Period Actuals for Pace calculation
+    df = df.merge(period_actuals, left_on='BuilderRegionKey', right_on='Dest_BuilderRegionKey', how='left', suffixes=('', '_period'))
+    df['Period_Referrals'] = df['Period_Referrals'].fillna(0)
+    
+    # 6. Time Components & Pace
     now = pd.Timestamp.now()
     if 'WIP_JOB_LIVE_END' in df.columns:
         df['WIP_JOB_LIVE_END'] = pd.to_datetime(df['WIP_JOB_LIVE_END'], errors='coerce')
@@ -47,17 +66,26 @@ def calculate_shortfalls(events_df: pd.DataFrame, targets_df: pd.DataFrame = Non
     # Ensure no negative days
     df['Days_Remaining'] = df['Days_Remaining'].clip(lower=0)
     
-    # Calculate Velocity (Leads per day in last 60 days)
-    # Simplified Velocity: Actuals / (Implied Elapsed Days). 
-    # Assuming campaign started 90 days ago if no start date.
-    elapsed_est = 90 
-    df['Velocity_LeadsPerDay'] = df['Actual_Referrals'] / elapsed_est
+    # Determine Velocity Duration (Leads per day in selected period)
+    if period_days:
+        velocity_days = max(period_days, 1)
+    else:
+        # Infer from data if not provided (default to 90 if data is empty/weird)
+        date_col = 'lead_date' if 'lead_date' in events_df.columns else 'RefDate'
+        if date_col in events_df.columns and not events_df.empty:
+            dates = pd.to_datetime(events_df[date_col], errors='coerce')
+            velocity_days = (dates.max() - dates.min()).days
+            velocity_days = max(velocity_days, 1)
+        else:
+            velocity_days = 90
+            
+    df['Velocity_LeadsPerDay'] = df['Period_Referrals'] / velocity_days
     
-    # 5. Projection
+    # 7. Projection
     df['Projected_Additional'] = df['Velocity_LeadsPerDay'] * df['Days_Remaining']
     df['Projected_Total'] = df['Actual_Referrals'] + df['Projected_Additional']
     
-    # 6. Gap Analysis
+    # 8. Gap Analysis
     # Deficit: Expected to miss target
     # Surplus: Expected to exceed target
     df['Net_Gap'] = df['Projected_Total'] - df['LeadTarget']
@@ -65,7 +93,7 @@ def calculate_shortfalls(events_df: pd.DataFrame, targets_df: pd.DataFrame = Non
     df['Projected_Shortfall'] = np.where(df['Net_Gap'] < 0, abs(df['Net_Gap']), 0)
     df['Projected_Surplus'] = np.where(df['Net_Gap'] > 0, df['Net_Gap'], 0)
     
-    # 7. Risk Scoring
+    # 9. Risk Scoring
     # Urgency = Shortfall / Days_Remaining (Leads needed per day to catch up)
     df['CatchUp_Pace_Req'] = np.where(
         (df['Projected_Shortfall'] > 0) & (df['Days_Remaining'] > 0),
