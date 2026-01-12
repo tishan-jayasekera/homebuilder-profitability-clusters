@@ -20,8 +20,7 @@ from src.normalization import normalize_events
 from src.builder_pnl import build_builder_pnl
 from src.referral_clusters import run_referral_clustering, compute_network_metrics
 from src.utils import fmt_currency, fmt_roas
-# NEW: Import optimization logic
-from src.network_optimization import calculate_shortfalls, compute_effective_network_cpr
+from src.network_optimization import calculate_shortfalls, get_targeted_fulfillment_strategies, compute_effective_network_cpr
 
 st.set_page_config(page_title="Referral Networks", page_icon="🔗", layout="wide")
 
@@ -30,7 +29,6 @@ st.markdown("Discover referral ecosystems and media efficiency pathways.")
 
 
 def run_clustering_for_period(events_df, resolution, target_clusters, period_key):
-    """Run clustering - period_key ensures recalculation when month changes."""
     return run_referral_clustering(events_df, resolution=resolution, target_max_clusters=target_clusters)
 
 
@@ -44,10 +42,8 @@ def load_data():
 
 
 def get_available_months(events):
-    """Extract available months from events data."""
     months = []
     date_col = None
-    
     if "lead_date" in events.columns:
         date_col = "lead_date"
     elif "RefDate" in events.columns:
@@ -57,50 +53,35 @@ def get_available_months(events):
         dates = pd.to_datetime(events[date_col], errors="coerce")
         month_starts = dates.dt.to_period("M").dt.start_time.dropna().unique()
         months = sorted(month_starts)
-    
     return months, date_col
 
 
 def filter_events_by_month(events, selected_month, date_col):
-    """Filter events to a specific month."""
     if selected_month is None or date_col is None:
         return events
-    
     dates = pd.to_datetime(events[date_col], errors="coerce")
     month_starts = dates.dt.to_period("M").dt.start_time
-    
     return events[month_starts == selected_month].copy()
 
 
 def compute_cpr_recommendations(edges_df, builders_df):
-    """
-    Compute Cost Per Referral (CPR) for each builder and generate recommendations.
-    CPR = MediaCost / Referrals_out (cost to generate one referral)
-    """
     if builders_df.empty or edges_df.empty:
         return pd.DataFrame()
     
-    # Calculate referrals sent by each builder
     referrals_out = edges_df.groupby("Origin_builder")["Referrals"].sum().reset_index()
     referrals_out.columns = ["BuilderRegionKey", "Total_Referrals_Sent"]
     
-    # Merge with builder data
     recs = builders_df.merge(referrals_out, on="BuilderRegionKey", how="left")
     recs["Total_Referrals_Sent"] = recs["Total_Referrals_Sent"].fillna(0)
     
-    # Calculate CPR (Cost Per Referral)
     recs["CPR"] = np.where(
         recs["Total_Referrals_Sent"] > 0,
         recs["MediaCost"] / recs["Total_Referrals_Sent"],
         np.nan
     )
     
-    # Only include builders who send referrals and have media cost
     recs = recs[(recs["Total_Referrals_Sent"] > 0) & (recs["MediaCost"] > 0)].copy()
-    
-    # Sort by CPR (lowest = most efficient)
     recs = recs.sort_values("CPR", ascending=True)
-    
     return recs
 
 
@@ -115,18 +96,12 @@ def main():
     # Get available months
     available_months, date_col = get_available_months(events_full)
     
-    # Sidebar controls
+    # Sidebar
     with st.sidebar:
         st.header("📅 Time Period")
-        
         if available_months:
             month_options = ["All Time"] + [m.strftime("%Y-%m") for m in available_months]
-            selected_month_str = st.selectbox(
-                "Select Month",
-                options=month_options,
-                index=0,
-                help="Filter network analysis to a specific month. Clustering will be recalculated."
-            )
+            selected_month_str = st.selectbox("Select Month", options=month_options, index=0)
             
             if selected_month_str == "All Time":
                 selected_month = None
@@ -137,45 +112,37 @@ def main():
                 events = filter_events_by_month(events_full, selected_month, date_col)
                 period_key = selected_month_str
             
-            # Show filtered stats
             st.metric("Events in Period", f"{len(events):,}")
-            if selected_month:
-                st.caption(f"🔄 Clustering for **{selected_month_str}** only")
         else:
             events = events_full.copy()
             selected_month = None
             period_key = "all_time"
-            st.info("No date column found")
         
         st.divider()
-        
-        # --- NEW: Optimization Mode Selector ---
         st.header("🚀 Optimization Mode")
         opt_mode = st.radio(
             "Recommendation Engine",
             ["Standard (Lowest CPR)", "Advanced (Shortfall Targeting)"],
-            help="Standard: Minimizes cost per referral.\nAdvanced: Minimizes cost to fulfill specific builder lead shortfalls."
+            help="Standard: Minimizes generic cost per referral.\nAdvanced: Identifies lead shortfalls and targets specific payers to fill them."
         )
         
         st.divider()
-        st.header("🎛️ Clustering Parameters")
-        
-        resolution = st.slider("Resolution", min_value=0.5, max_value=2.5, value=1.5, step=0.1)
-        target_clusters = st.slider("Max Clusters", min_value=3, max_value=25, value=15, step=1)
+        st.header("🎛️ Clustering")
+        resolution = st.slider("Resolution", 0.5, 2.5, 1.5, 0.1)
+        target_clusters = st.slider("Max Clusters", 3, 25, 15, 1)
         
         st.divider()
-        st.subheader("🎨 Graph Settings")
-        show_labels = st.checkbox("Show Node Labels", value=False)
+        st.subheader("🎨 Graph")
+        show_labels = st.checkbox("Show Labels", False)
         edge_style = st.selectbox("Edge Style", ["Curved Arrows", "Straight Lines", "Curved Lines"])
-        node_size_factor = st.slider("Node Size", min_value=0.5, max_value=2.0, value=1.0, step=0.1)
+        node_size_factor = st.slider("Node Size", 0.5, 2.0, 1.0, 0.1)
     
-    # Check minimum events
+    # Run clustering
     if len(events) < 10:
-        st.error(f"⚠️ Only {len(events)} events for selected period. Need at least 10 events.")
+        st.error(f"⚠️ Only {len(events)} events. Need at least 10.")
         return
-    
-    # Run clustering (NOT cached - recalculates each time)
-    with st.spinner(f"🔄 Running network clustering for {period_key}..."):
+        
+    with st.spinner(f"🔄 Running clustering..."):
         results = run_clustering_for_period(events, resolution, target_clusters, period_key)
     
     edges_clean = results.get('edges_clean', pd.DataFrame())
@@ -183,286 +150,190 @@ def main():
     cluster_summary = results.get('cluster_summary', pd.DataFrame())
     G = results.get('graph', nx.Graph())
     
-    if builder_master.empty:
-        st.warning("No referral patterns found for the selected period.")
-        return
-    
-    # Period banner
-    if selected_month:
-        st.success(f"📅 **Analysis Period: {selected_month.strftime('%B %Y')}** — Clustering recalculated for this month")
-    else:
-        st.info("📅 **Analysis Period: All Time**")
-    
-    # Build P&L for the filtered period
+    # P&L Data
     pnl_recipient = build_builder_pnl(events, lens="recipient", date_basis="lead_date", freq="ALL")
     pnl_recipient = pnl_recipient.drop(columns=["period_start"], errors="ignore")
-    
     builder_master = builder_master.merge(pnl_recipient, on="BuilderRegionKey", how="left")
-    for col in ["Revenue", "MediaCost", "Profit", "ROAS"]:
-        if col in builder_master.columns:
-            builder_master[col] = builder_master[col].fillna(0)
-    
     builder_master = compute_network_metrics(G, builder_master)
-    
+
     # ==========================================
-    # 💡 RECOMMENDATION ENGINE
+    # 💡 INVESTMENT RECOMMENDATIONS
     # ==========================================
     st.header("💡 Investment Recommendations")
     
     cpr_recs = pd.DataFrame()
     
     if opt_mode == "Standard (Lowest CPR)":
-        st.markdown("**Goal:** Minimize `Media Cost / Total Referrals`.")
+        st.markdown("### 📊 Generic Efficiency View")
+        st.caption("Ranking builders by lowest cost per referral generated, regardless of destination.")
         
         cpr_recs = compute_cpr_recommendations(edges_clean, builder_master)
         
         if not cpr_recs.empty:
-            # Top 5 recommendations (Standard)
-            top_5 = cpr_recs.head(5)
-            rec_cols = st.columns(5)
-            for i, (_, row) in enumerate(top_5.iterrows()):
-                with rec_cols[i]:
-                    st.metric(
-                        label=f"#{i+1} {row['BuilderRegionKey'][:20]}...",
-                        value=f"${row['CPR']:,.0f}",
-                        delta=f"{int(row['Total_Referrals_Sent']):,} refs",
-                        delta_color="off"
-                    )
+            cols = st.columns(4)
+            for i, (_, row) in enumerate(cpr_recs.head(4).iterrows()):
+                cols[i].metric(
+                    f"#{i+1} {row['BuilderRegionKey']}",
+                    f"${row['CPR']:,.0f} CPR",
+                    f"{int(row['Total_Referrals_Sent'])} refs"
+                )
             
-            # Detailed Table for Standard
-            with st.expander("📊 Full CPR Ranking (Standard)", expanded=False):
-                display_recs = cpr_recs[["BuilderRegionKey", "ClusterId", "Total_Referrals_Sent", "MediaCost", "CPR", "ROAS", "Profit"]].copy()
+            with st.expander("View Full Ranking", expanded=True):
                 st.dataframe(
-                    display_recs.style.format({
-                        "Total_Referrals_Sent": "{:,.0f}", "MediaCost": "${:,.0f}", 
-                        "CPR": "${:,.2f}", "ROAS": "{:.2f}", "Profit": "${:,.0f}"
-                    }).background_gradient(subset=["CPR"], cmap="RdYlGn_r"),
+                    cpr_recs[['BuilderRegionKey', 'MediaCost', 'Total_Referrals_Sent', 'CPR', 'ROAS']]
+                    .style.format({'MediaCost': '${:,.0f}', 'CPR': '${:,.2f}', 'ROAS': '{:.2f}'})
+                    .background_gradient(subset=['CPR'], cmap='RdYlGn_r'),
                     use_container_width=True
                 )
-        
+    
     else:
-        # --- ADVANCED MODE (Shortfall Targeting) ---
-        st.markdown("**Goal:** Minimize `Media Cost / Needed Referrals`. Prioritizes builders sending to those with **Shortfalls** & **Tight Deadlines**.")
+        # --- ADVANCED MODE: SHORTFALL TARGETING ---
+        st.markdown("### 🎯 Operational Strategy View")
+        st.caption("Identifying builders with lead shortfalls and mapping the most efficient media partners to fulfill them.")
         
-        # 1. Define Shortfalls (Simulation inputs)
-        with st.expander("⚙️ Configure Demand / Targets", expanded=False):
-            st.info("In a production environment, this data would load from `LeadTarget_from_job` and `WIP_JOB_LIVE_END`.")
+        # 1. Calc Shortfalls
+        shortfall_data = calculate_shortfalls(events)
+        
+        # Simulation UI
+        with st.expander("⚙️ Simulation Controls (Mock Data)", expanded=False):
+            st.info("Simulate a critical lead shortage to test the strategy engine.")
+            builders = sorted(shortfall_data['BuilderRegionKey'].unique())
+            sim_target = st.selectbox("Simulate Critical Need For:", ["(None)"] + builders)
             
-            # Use module to calc shortfalls (with mocking)
-            shortfall_data = calculate_shortfalls(events)
-            
-            # Interactive simulation
-            builders_list = sorted(shortfall_data['BuilderRegionKey'].unique())
-            target_builder = st.selectbox("Simulate Critical Need For:", ["(None)"] + builders_list)
-            
-            if target_builder != "(None)":
-                mask = shortfall_data['BuilderRegionKey'] == target_builder
+            if sim_target != "(None)":
+                mask = shortfall_data['BuilderRegionKey'] == sim_target
                 shortfall_data.loc[mask, 'Shortfall'] = 50
                 shortfall_data.loc[mask, 'Urgency_Weight'] = 2.0
                 shortfall_data.loc[mask, 'Weighted_Demand'] = 100
-                st.success(f"Simulating 50 lead shortfall for {target_builder}!")
-
-            st.dataframe(
-                shortfall_data[shortfall_data['Shortfall']>0].sort_values('Weighted_Demand', ascending=False).head(10)
-                .style.format({'Urgency_Weight': '{:.1f}x'}),
-                height=150,
-                use_container_width=True
-            )
-
-        # 2. Run Advanced Optimization
-        recs = compute_effective_network_cpr(events, shortfall_data)
         
-        # Map back to cpr_recs format for compatibility with search features below
-        if not recs.empty:
-            # We rename columns to match what the UI expects later (CPR -> Raw CPR mostly)
-            # But the 'Effective_CPR' is the real metric here.
+        # 2. Identify Top Candidates (The Problem)
+        critical_shortfalls = shortfall_data[shortfall_data['Shortfall'] > 0].sort_values('Weighted_Demand', ascending=False)
+        
+        if critical_shortfalls.empty:
+            st.success("✅ No critical lead shortfalls detected.")
+        else:
+            col_prob, col_sol = st.columns([1, 2])
             
-            best_rec = recs.iloc[0]
-            
-            # Metric Cards
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Top Investment", best_rec['BuilderRegionKey'])
-            c2.metric("Effective CPR", fmt_currency(best_rec['Effective_CPR']), help="Cost per USEFUL referral")
-            c3.metric("Raw CPR", fmt_currency(best_rec['Raw_CPR']), help="Cost per GENERIC referral")
-            c4.metric("Efficiency Gain", f"{best_rec['Raw_CPR']/best_rec['Effective_CPR']:.0%}" if best_rec['Effective_CPR'] > 0 else "N/A", delta_color="inverse")
-            
-            st.subheader(f"Why invest in {best_rec['BuilderRegionKey']}?")
-            st.markdown(f"""
-            - **Utility:** {best_rec['Useful_Share']:.1%} of their referrals go to builders with active shortfalls.
-            - **Leverage:** They help **{best_rec['Beneficiaries_Count']}** distinct builders who are behind target.
-            - **Primary Beneficiary:** {best_rec['Top_Beneficiary']}
-            """)
-            
-            with st.expander("📊 Full Effective CPR Ranking", expanded=True):
-                st.dataframe(
-                    recs[['BuilderRegionKey', 'Raw_CPR', 'Effective_CPR', 'Useful_Share', 'Beneficiaries_Count', 'Top_Beneficiary']]
-                    .style.format({
-                        'Raw_CPR': '${:,.0f}',
-                        'Effective_CPR': '${:,.0f}',
-                        'Useful_Share': '{:.1%}'
-                    }).background_gradient(subset=['Effective_CPR'], cmap='RdYlGn_r'),
-                    use_container_width=True
+            with col_prob:
+                st.subheader("1. Top Shortfall Candidates")
+                st.markdown("Builders who need leads **now**.")
+                
+                # Interactive selection
+                candidate = st.radio(
+                    "Select Candidate to Solve:",
+                    options=critical_shortfalls['BuilderRegionKey'].head(5),
+                    format_func=lambda x: f"{x} (Need: {int(critical_shortfalls[critical_shortfalls['BuilderRegionKey']==x]['Shortfall'].iloc[0])})"
                 )
+                
+                selected_shortfall = critical_shortfalls[critical_shortfalls['BuilderRegionKey'] == candidate].iloc[0]
+                
+                st.info(f"""
+                **Candidate Profile:**
+                - **Shortfall:** {int(selected_shortfall['Shortfall'])} leads
+                - **Urgency:** {selected_shortfall['Urgency_Weight']:.1f}x
+                - **Weighted Demand:** {selected_shortfall['Weighted_Demand']:.1f}
+                """)
             
-            # Prepare cpr_recs for downstream compatibility
-            cpr_recs = recs.rename(columns={'Raw_CPR': 'CPR', 'Effective_CPR': 'Effective_CPR'})
-            # Merge cluster IDs back in
-            cpr_recs = cpr_recs.merge(builder_master[['BuilderRegionKey', 'ClusterId']], on='BuilderRegionKey', how='left')
+            with col_sol:
+                st.subheader(f"2. Media Fulfillment Strategy for {candidate}")
+                st.markdown(f"Best payers to target {candidate} with minimal waste.")
+                
+                # 3. Generate Strategies (The Solution)
+                strategies = get_targeted_fulfillment_strategies(events, shortfall_data)
+                
+                # Filter for selected candidate
+                candidate_strategies = strategies[strategies['Dest_Builder'] == candidate].copy()
+                
+                if candidate_strategies.empty:
+                    st.warning(f"No existing referral pathways found to {candidate}. Consider direct media or new partnerships.")
+                else:
+                    # Metrics for top strategy
+                    best = candidate_strategies.iloc[0]
+                    
+                    m1, m2, m3 = st.columns(3)
+                    m1.metric("Best Partner", best['MediaPayer_BuilderRegionKey'])
+                    m2.metric("Est. Cost to Fill", fmt_currency(best['Cost_Per_Target_Lead']), help="Cost to get 1 lead to Target")
+                    m3.metric("Network Flow", f"{best['Flow_Rate']:.1%}", help="% of Partner's leads that go to Target")
+                    
+                    st.markdown("#### Strategic Options")
+                    st.dataframe(
+                        candidate_strategies[['MediaPayer_BuilderRegionKey', 'Payer_Raw_CPL', 'Flow_Rate', 'Cost_Per_Target_Lead']]
+                        .rename(columns={
+                            'MediaPayer_BuilderRegionKey': 'Invest In (Payer)',
+                            'Payer_Raw_CPL': 'Base CPL',
+                            'Flow_Rate': 'Flow % to Target',
+                            'Cost_Per_Target_Lead': 'Effective CPL for Target'
+                        })
+                        .style.format({
+                            'Base CPL': '${:,.0f}',
+                            'Flow % to Target': '{:.1%}',
+                            'Effective CPL for Target': '${:,.0f}'
+                        })
+                        .background_gradient(subset=['Effective CPL for Target'], cmap='RdYlGn_r'),
+                        use_container_width=True,
+                        hide_index=True
+                    )
+            
+            st.divider()
+            
+            # 4. Global Strategy Table
+            st.subheader("Global Fulfillment Plan (All Critical Shortfalls)")
+            st.dataframe(
+                strategies.head(10)[['Dest_Builder', 'Shortfall', 'MediaPayer_BuilderRegionKey', 'Cost_Per_Target_Lead']]
+                .rename(columns={'Dest_Builder': 'Target Builder', 'MediaPayer_BuilderRegionKey': 'Recommended Payer', 'Cost_Per_Target_Lead': 'Cost to Serve'})
+                .style.format({'Cost to Serve': '${:,.0f}'}),
+                use_container_width=True,
+                hide_index=True
+            )
+            
+            # For map compatibility
+            cpr_recs = compute_cpr_recommendations(edges_clean, builder_master)
 
-    
     st.divider()
     
     # ==========================================
-    # GLOBAL BUILDER SEARCH
+    # GLOBAL SEARCH & GRAPH
     # ==========================================
-    st.subheader("🔍 Find a Builder")
+    st.subheader("🔍 Network Explorer")
     
-    all_builders = sorted(builder_master["BuilderRegionKey"].dropna().unique().tolist())
+    all_builders = sorted(builder_master["BuilderRegionKey"].unique())
     builder_to_cluster = dict(zip(builder_master["BuilderRegionKey"], builder_master["ClusterId"]))
     
-    builder_search_options = ["(Select a builder to find their cluster)"] + [
-        f"{b}  →  Cluster {int(builder_to_cluster.get(b, 0))}" for b in all_builders
-    ]
+    search_options = ["(Select Builder)"] + [f"{b} (Cluster {int(builder_to_cluster.get(b,0))})" for b in all_builders]
+    search_sel = st.selectbox("Find Builder", search_options)
     
-    selected_search = st.selectbox("Search all builders", options=builder_search_options, key="global_builder_search")
+    focus_builder = None
+    search_cluster = None
     
-    search_builder = None
-    auto_cluster = None
-    if selected_search != "(Select a builder to find their cluster)":
-        search_builder = selected_search.split("  →  ")[0]
-        auto_cluster = builder_to_cluster.get(search_builder)
+    if search_sel != "(Select Builder)":
+        focus_builder = search_sel.split(" (Cluster")[0]
+        search_cluster = builder_to_cluster.get(focus_builder)
         
-        # Show this builder's CPR if available
-        if not cpr_recs.empty and "BuilderRegionKey" in cpr_recs.columns:
-            builder_cpr = cpr_recs[cpr_recs["BuilderRegionKey"] == search_builder]
-            if not builder_cpr.empty:
-                val = builder_cpr.iloc[0]["CPR"]
-                rank = cpr_recs.index.get_loc(builder_cpr.index[0]) + 1
-                
-                if opt_mode == "Advanced (Shortfall Targeting)" and "Effective_CPR" in builder_cpr.columns:
-                     eff_val = builder_cpr.iloc[0]["Effective_CPR"]
-                     st.info(f"✅ **{search_builder}** → Cluster {int(auto_cluster)} | Effective CPR: **${eff_val:,.2f}** | Raw CPR: ${val:,.2f}")
-                else:
-                    st.info(f"✅ **{search_builder}** → Cluster {int(auto_cluster)} | CPR: **${val:,.2f}** (Rank #{rank})")
-            else:
-                st.info(f"✅ **{search_builder}** → Cluster {int(auto_cluster)} | No CPR data (no referrals sent)")
-        else:
-             st.info(f"✅ **{search_builder}** → Cluster {int(auto_cluster)}")
+        # Show stats
+        if not cpr_recs.empty:
+            stats = cpr_recs[cpr_recs['BuilderRegionKey'] == focus_builder]
+            if not stats.empty:
+                st.info(f"**{focus_builder}**: CPR ${stats.iloc[0]['CPR']:,.0f}")
     
-    st.divider()
+    # Cluster Select
+    cluster_labels = {int(r.ClusterId): f"Cluster {int(r.ClusterId)} ({int(r.N_builders)} builders)" for r in cluster_summary.itertuples()}
     
-    # ==========================================
-    # CLUSTER SELECTOR
-    # ==========================================
-    cluster_options = []
-    cluster_id_map = {}
-    for _, row in cluster_summary.sort_values("ClusterId").iterrows():
-        cid = int(row["ClusterId"])
-        n_b = int(row["N_builders"])
-        t_ref = int(row["Total_referrals_in"] + row["Total_referrals_out"])
-        label = f"Cluster {cid} — {n_b} builders, ~{t_ref:,} referrals"
-        cluster_options.append(label)
-        cluster_id_map[label] = cid
-    
-    default_idx = 0
-    if auto_cluster is not None:
-        for i, label in enumerate(cluster_options):
-            if cluster_id_map[label] == auto_cluster:
-                default_idx = i
-                break
-    
-    col_cluster, col_builder = st.columns([2, 2])
-    
-    with col_cluster:
-        selected_label = st.selectbox("Select Ecosystem", options=cluster_options, index=default_idx)
-    
-    selected_cluster = cluster_id_map[selected_label]
-    
-    cluster_builders = builder_master[builder_master["ClusterId"] == selected_cluster].copy()
-    cluster_edges = edges_clean[
-        (edges_clean["Cluster_origin"] == selected_cluster) &
-        (edges_clean["Cluster_dest"] == selected_cluster)
-    ].copy()
-    
-    with col_builder:
-        builder_list = sorted(cluster_builders["BuilderRegionKey"].dropna().unique().tolist())
-        builder_options = ["(None - show all)"] + builder_list
-        
-        default_builder_idx = 0
-        if search_builder and search_builder in builder_list:
-            default_builder_idx = builder_list.index(search_builder) + 1
-        
-        selected_builder = st.selectbox("🎯 Focus on Builder", options=builder_options, index=default_builder_idx)
-        focus_builder = None if selected_builder == "(None - show all)" else selected_builder
-    
-    # Overview metrics
-    period_label = selected_month.strftime('%B %Y') if selected_month else "All Time"
-    st.header(f"🌐 Cluster {selected_cluster} Overview ({period_label})")
-    
-    total_profit = cluster_builders["Profit"].sum()
-    total_media = cluster_builders["MediaCost"].sum()
-    total_rev = cluster_builders["Revenue"].sum()
-    roas = total_rev / total_media if total_media > 0 else np.nan
-    n_builders = len(cluster_builders)
-    
-    col1, col2, col3, col4, col5 = st.columns(5)
-    col1.metric("Builders", n_builders)
-    col2.metric("Revenue", fmt_currency(total_rev))
-    col3.metric("Media Cost", fmt_currency(total_media))
-    col4.metric("Gross Profit", fmt_currency(total_profit))
-    col5.metric("ROAS", fmt_roas(roas))
-    
-    # Cluster-specific CPR recommendations
-    if not cpr_recs.empty:
-        cluster_cpr = cpr_recs[cpr_recs["ClusterId"] == selected_cluster].head(3)
-        if not cluster_cpr.empty:
-            st.markdown(f"**🎯 Top Efficiency in Cluster {selected_cluster}:**")
+    default_ix = 0
+    if search_cluster is not None:
+        valid_ids = list(cluster_labels.keys())
+        if search_cluster in valid_ids:
+            default_ix = valid_ids.index(search_cluster)
             
-            if opt_mode == "Advanced (Shortfall Targeting)" and "Effective_CPR" in cluster_cpr.columns:
-                 cpr_text = " | ".join([f"**{r['BuilderRegionKey']}**: ${r['Effective_CPR']:,.0f} (Eff.)" for _, r in cluster_cpr.iterrows()])
-            else:
-                 cpr_text = " | ".join([f"**{r['BuilderRegionKey']}**: ${r['CPR']:,.0f}" for _, r in cluster_cpr.iterrows()])
-            st.markdown(cpr_text)
+    sel_cluster_id = st.selectbox("Select Ecosystem", options=list(cluster_labels.keys()), format_func=lambda x: cluster_labels[x], index=default_ix)
+    
+    # Filter Graph Data
+    sub_builders = builder_master[builder_master["ClusterId"] == sel_cluster_id]
+    sub_edges = edges_clean[(edges_clean["Cluster_origin"] == sel_cluster_id) & (edges_clean["Cluster_dest"] == sel_cluster_id)]
+    
+    render_network_graph(sub_builders, sub_edges, G, focus_builder, show_labels, edge_style, node_size_factor)
     
     if focus_builder:
-        st.info(f"🎯 Focused on: **{focus_builder}**")
-    
-    # Network visualization
-    st.subheader("🕸️ Network Graph")
-    
-    with st.expander("📖 Graph Legend", expanded=False):
-        leg1, leg2, leg3, leg4, leg5 = st.columns(5)
-        leg1.markdown("🟠 **Target** - Selected")
-        leg2.markdown("🟢 **Inbound** - Sends TO")
-        leg3.markdown("🔵 **Outbound** - Receives FROM")
-        leg4.markdown("🟣 **Two-way** - Both")
-        leg5.markdown("⚪ **Other** - Not connected")
-    
-    render_network_graph(cluster_builders, cluster_edges, G, focus_builder, show_labels, edge_style, node_size_factor)
-    
-    if focus_builder:
-        render_focus_analysis(focus_builder, cluster_builders, cluster_edges, cpr_recs)
-    
-    # Builder table
-    st.subheader("📊 Builder Details")
-    
-    display_cols = ["BuilderRegionKey", "Role", "Referrals_in", "Referrals_out", "Revenue", "MediaCost", "Profit", "ROAS"]
-    display_cols = [c for c in display_cols if c in cluster_builders.columns]
-    
-    st.dataframe(
-        cluster_builders[display_cols].sort_values("Profit", ascending=False)
-        .style.format({
-            "Referrals_in": "{:,.0f}",
-            "Referrals_out": "{:,.0f}",
-            "Revenue": "${:,.0f}",
-            "MediaCost": "${:,.0f}",
-            "Profit": "${:,.0f}",
-            "ROAS": "{:.2f}"
-        }),
-        hide_index=True,
-        use_container_width=True,
-        height=400
-    )
+        render_focus_analysis(focus_builder, sub_builders, sub_edges, cpr_recs)
 
 
 def render_network_graph(builders, edges, G, focus_builder, show_labels, edge_style, node_size_factor):
@@ -601,49 +472,18 @@ def render_network_graph(builders, edges, G, focus_builder, show_labels, edge_st
 
 def render_focus_analysis(focus_builder, builders, edges, cpr_recs):
     st.subheader(f"🔍 {focus_builder} - Flow Analysis")
-    
     col1, col2 = st.columns(2)
-    
     with col1:
         st.markdown("**⬅️ Inbound (who sends TO this builder)**")
         inbound = edges[edges["Dest_builder"] == focus_builder].groupby("Origin_builder", as_index=False)["Referrals"].sum().sort_values("Referrals", ascending=False)
-        
         if not inbound.empty:
-            # Merge with CPR data
             inbound = inbound.merge(cpr_recs, left_on="Origin_builder", right_on="BuilderRegionKey", how="left")
-            
-            # Format depends on columns available (Standard vs Advanced)
-            cols = ["Origin_builder", "Referrals", "MediaCost", "CPR"]
-            if "Effective_CPR" in inbound.columns:
-                cols.append("Effective_CPR")
-            
-            # Ensure columns exist before display
-            display_cols = [c for c in cols if c in inbound.columns]
-            
-            st.dataframe(
-                inbound[display_cols]
-                .style.format({"Referrals": "{:,.0f}", "MediaCost": "${:,.0f}", "CPR": "${:,.2f}", "Effective_CPR": "${:,.0f}"}),
-                hide_index=True, use_container_width=True
-            )
-            
-            # Best lever logic
-            if "Effective_CPR" in inbound.columns:
-                 valid = inbound[inbound["Effective_CPR"] > 0]
-                 if not valid.empty:
-                     best = valid.loc[valid["Effective_CPR"].idxmin()]
-                     st.success(f"💡 **Best Strategic Lever:** Invest in **{best['Origin_builder']}** @ **${best['Effective_CPR']:,.0f} Effective CPR**")
-            else:
-                valid_cpr = inbound[inbound["CPR"].notna()]
-                if not valid_cpr.empty:
-                    best = valid_cpr.loc[valid_cpr["CPR"].idxmin()]
-                    st.success(f"💡 **Best Lever:** Invest in **{best['Origin_builder']}** @ **${best['CPR']:,.2f} CPR**")
+            st.dataframe(inbound[["Origin_builder", "Referrals", "CPR"]].style.format({"Referrals": "{:,.0f}", "CPR": "${:,.2f}"}), hide_index=True, use_container_width=True)
         else:
             st.info("No inbound referrals")
-    
     with col2:
         st.markdown("**➡️ Outbound (where this builder sends)**")
         outbound = edges[edges["Origin_builder"] == focus_builder].groupby("Dest_builder", as_index=False)["Referrals"].sum().sort_values("Referrals", ascending=False)
-        
         if not outbound.empty:
             st.dataframe(outbound.style.format({"Referrals": "{:,.0f}"}), hide_index=True, use_container_width=True)
         else:
