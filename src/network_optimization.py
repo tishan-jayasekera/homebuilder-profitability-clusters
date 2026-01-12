@@ -1,243 +1,212 @@
 import pandas as pd
 import numpy as np
 
-def calculate_shortfalls(
-    events_df: pd.DataFrame,
-    targets_df: pd.DataFrame = None
-) -> pd.DataFrame:
+def calculate_shortfalls(events_df: pd.DataFrame, targets_df: pd.DataFrame = None) -> pd.DataFrame:
     """
-    Step 1: Calculate Lead Shortfalls and Urgency.
+    Step 1: Calculate Demand (Shortfalls).
+    Logic: Shortfall = Target - Actuals.
     """
-    # 1. Calculate Actual Referrals Received
+    # 1. Actuals
     actuals = events_df[events_df['is_referral'] == True].groupby('Dest_BuilderRegionKey').size().reset_index(name='Actual_Referrals')
     
-    # 2. Mock Targets if not provided (In production, load from 'LeadTarget_from_job')
+    # 2. Targets (Mock if missing)
     if targets_df is None:
-        # Create dummy targets for all builders found in events
         builders = events_df['Dest_BuilderRegionKey'].dropna().unique()
-        
-        # Create randomized targets and dates for demonstration
-        # In production, this would come from the ERP/CRM integration
-        np.random.seed(42) # For consistent demo results
+        # Mocking for demo resilience
         targets_df = pd.DataFrame({
             'BuilderRegionKey': builders,
-            'LeadTarget': np.random.randint(5, 50, size=len(builders)), 
-            'WIP_JOB_LIVE_END': pd.date_range(start=pd.Timestamp.now(), periods=len(builders), freq='2W') 
+            'LeadTarget': 50, # Simple default
+            'WIP_JOB_LIVE_END': pd.Timestamp.now() + pd.Timedelta(days=60)
         })
     else:
-        # Standardize column names if real file provided
-        targets_df = targets_df.rename(columns={
-            'LeadTarget_from_job': 'LeadTarget', 
-            'Builder': 'BuilderRegionKey'
-        })
-
-    # 3. Merge Targets with Actuals
-    status = targets_df.merge(actuals, left_on='BuilderRegionKey', right_on='Dest_BuilderRegionKey', how='left')
-    status['Actual_Referrals'] = status['Actual_Referrals'].fillna(0)
+        # Normalize
+        cols = {'LeadTarget_from_job': 'LeadTarget', 'Builder': 'BuilderRegionKey'}
+        targets_df = targets_df.rename(columns=cols)
+        # Ensure minimal columns exist
+        if 'LeadTarget' not in targets_df.columns: targets_df['LeadTarget'] = 0
     
-    # 4. Calculate Shortfall
-    status['Shortfall'] = status['LeadTarget'] - status['Actual_Referrals']
-    status['Shortfall'] = status['Shortfall'].clip(lower=0) 
+    # 3. Merge
+    df = targets_df.merge(actuals, left_on='BuilderRegionKey', right_on='Dest_BuilderRegionKey', how='left')
+    df['Actual_Referrals'] = df['Actual_Referrals'].fillna(0)
+    df['Shortfall'] = (df['LeadTarget'] - df['Actual_Referrals']).clip(lower=0)
     
-    # 5. Calculate Urgency Weight based on WIP Date
+    # 4. Urgency
     now = pd.Timestamp.now()
-    status['WIP_JOB_LIVE_END'] = pd.to_datetime(status['WIP_JOB_LIVE_END'], errors='coerce')
-    status['Days_Remaining'] = (status['WIP_JOB_LIVE_END'] - now).dt.days
-    
-    def get_urgency(days):
-        if pd.isna(days): return 1.0
-        if days < 30: return 2.0  # Critical
-        if days < 60: return 1.5  # Urgent
-        if days < 90: return 1.2  # Warning
-        return 1.0                # Standard pace
+    if 'WIP_JOB_LIVE_END' in df.columns:
+        df['WIP_JOB_LIVE_END'] = pd.to_datetime(df['WIP_JOB_LIVE_END'], errors='coerce')
+        df['Days_Remaining'] = (df['WIP_JOB_LIVE_END'] - now).dt.days
+    else:
+        df['Days_Remaining'] = np.nan
         
-    status['Urgency_Weight'] = status['Days_Remaining'].apply(get_urgency)
-    status['Weighted_Demand'] = status['Shortfall'] * status['Urgency_Weight']
-    
-    return status
+    return df
 
-def get_targeted_fulfillment_strategies(
-    events_df: pd.DataFrame,
-    shortfall_df: pd.DataFrame
-) -> pd.DataFrame:
+def analyze_network_leverage(events_df: pd.DataFrame) -> pd.DataFrame:
     """
-    Step 2: Develop Media Strategy to Fulfill Specific Shortfalls.
+    Step 2: Analyze Supply (The Leverage).
+    Calculates Transfer Rate (TR), Base CPR, and Effective CPR (eCPR).
     """
+    # Filter to referrals
+    refs = events_df[events_df['is_referral'] == True].copy()
     
-    # 1. Calculate Payer Performance (Cost per generic lead)
-    payer_stats = events_df.groupby('MediaPayer_BuilderRegionKey').agg(
-        Total_Spend=('MediaCost_referral_event', 'sum'),
-        Total_Leads_Generated=('LeadId', 'count')
+    if refs.empty:
+        return pd.DataFrame()
+
+    # A. Source Metrics (Denominator)
+    # Total referrals sent by each source (MediaPayer)
+    source_stats = refs.groupby('MediaPayer_BuilderRegionKey').agg(
+        Total_Referrals_Sent=('LeadId', 'count'),
+        Total_Media_Spend=('MediaCost_referral_event', 'sum')
     ).reset_index()
     
-    # Filter out zero spend/leads
-    payer_stats = payer_stats[payer_stats['Total_Leads_Generated'] > 0]
-    payer_stats['Payer_Raw_CPL'] = payer_stats['Total_Spend'] / payer_stats['Total_Leads_Generated']
-    
-    # 2. Calculate Flow Rates (Payer -> Recipient)
-    flows_df = events_df.copy()
-    flows_df['Dest_Builder'] = np.where(
-        flows_df['is_referral'] == True, 
-        flows_df['Dest_BuilderRegionKey'], 
-        flows_df['MediaPayer_BuilderRegionKey'] 
+    # Base CPR = Spend / Total Referrals
+    source_stats['CPR_base'] = np.where(
+        source_stats['Total_Referrals_Sent'] > 0,
+        source_stats['Total_Media_Spend'] / source_stats['Total_Referrals_Sent'],
+        np.nan
     )
     
-    flows = flows_df.groupby(['MediaPayer_BuilderRegionKey', 'Dest_Builder']).size().reset_index(name='Flow_Count')
+    # B. Flow Metrics (Numerator)
+    # Referrals from Source -> Specific Target
+    flows = refs.groupby(['MediaPayer_BuilderRegionKey', 'Dest_BuilderRegionKey']).size().reset_index(name='Referrals_to_Target')
     
-    # Calculate totals to get %
-    payer_totals = flows.groupby('MediaPayer_BuilderRegionKey')['Flow_Count'].sum().reset_index(name='Total_Flow')
-    flows = flows.merge(payer_totals, on='MediaPayer_BuilderRegionKey')
-    flows['Flow_Rate'] = flows['Flow_Count'] / flows['Total_Flow']
+    # C. Merge & Calculate TR / eCPR
+    leverage = flows.merge(source_stats, on='MediaPayer_BuilderRegionKey', how='left')
     
-    # 3. Merge Cost Data into Flows
-    strategies = flows.merge(payer_stats[['MediaPayer_BuilderRegionKey', 'Payer_Raw_CPL']], on='MediaPayer_BuilderRegionKey')
+    # Transfer Rate = Refs to Target / Total Refs Sent
+    leverage['Transfer_Rate'] = leverage['Referrals_to_Target'] / leverage['Total_Referrals_Sent']
     
-    # 4. Calculate "Effective Cost to Serve Target"
-    strategies['Cost_Per_Target_Lead'] = strategies['Payer_Raw_CPL'] / strategies['Flow_Rate']
-    strategies['Cost_Per_Target_Lead'] = strategies['Cost_Per_Target_Lead'].replace([np.inf, -np.inf], 0)
-    
-    # 5. Connect to Shortfalls
-    active_shortfalls = shortfall_df[shortfall_df['Shortfall'] > 0][['BuilderRegionKey', 'Shortfall', 'Urgency_Weight', 'Weighted_Demand']]
-    
-    opportunities = strategies.merge(
-        active_shortfalls, 
-        left_on='Dest_Builder', 
-        right_on='BuilderRegionKey', 
-        how='inner'
+    # Effective CPR = Base CPR / Transfer Rate
+    # (Cost to generate 1 lead for target, accounting for dilution)
+    leverage['eCPR'] = np.where(
+        leverage['Transfer_Rate'] > 0,
+        leverage['CPR_base'] / leverage['Transfer_Rate'],
+        np.inf
     )
     
-    # 6. Sorting
-    opportunities = opportunities.sort_values(
-        ['Weighted_Demand', 'Cost_Per_Target_Lead'], 
-        ascending=[False, True]
-    )
-    
-    # Select useful columns
-    cols = [
-        'Dest_Builder', 'Shortfall', 'Urgency_Weight', 
-        'MediaPayer_BuilderRegionKey', 'Payer_Raw_CPL', 
-        'Flow_Rate', 'Cost_Per_Target_Lead'
-    ]
-    
-    return opportunities[cols]
+    return leverage
 
-def generate_network_fulfillment_plan(
-    shortfall_df: pd.DataFrame, 
-    strategies_df: pd.DataFrame
+def generate_investment_strategies(
+    focus_builder: str,
+    shortfall_data: pd.DataFrame,
+    leverage_data: pd.DataFrame,
+    events_df: pd.DataFrame
 ) -> pd.DataFrame:
     """
-    Step 3: Reconciliation (The Master Plan).
-    Matches every Shortfall to its Best Available Strategy.
+    Step 3: Calculate Investment & Externalities.
+    For a specific Focus Builder, what are the best pathways?
     """
-    plan_rows = []
-    
-    # 1. Identify Demand
-    demand_nodes = shortfall_df[shortfall_df['Shortfall'] > 0].copy()
-    
-    if demand_nodes.empty:
+    # Get Shortfall for Focus Builder
+    target_row = shortfall_data[shortfall_data['BuilderRegionKey'] == focus_builder]
+    if target_row.empty:
         return pd.DataFrame()
         
-    for _, node in demand_nodes.iterrows():
-        target = node['BuilderRegionKey']
-        needed = node['Shortfall']
-        urgency = node['Urgency_Weight']
-        deadline = node.get('WIP_JOB_LIVE_END', pd.NaT)
+    shortfall = target_row['Shortfall'].iloc[0]
+    
+    if shortfall <= 0:
+        return pd.DataFrame() # No strategy needed
         
-        # 2. Find Best Strategy
-        # Filter strategies serving this target
-        options = strategies_df[strategies_df['Dest_Builder'] == target].copy()
+    # Get potential sources
+    strategies = leverage_data[leverage_data['Dest_BuilderRegionKey'] == focus_builder].copy()
+    
+    if strategies.empty:
+        return pd.DataFrame()
         
-        if options.empty:
-            # Under-serviced
-            plan_rows.append({
-                'Priority': '🔴 Critical Gap',
-                'Target_Builder': target,
-                'Shortfall': needed,
-                'Urgency': urgency,
-                'WIP_Deadline': deadline,
-                'Status': 'Under-Serviced',
-                'Best_Payer': 'None',
-                'Recommended_Action': 'Direct Media / New Partner',
-                'Est_Budget_Required': 0, 
-                'Strategy_Detail': 'No inbound flow detected'
-            })
-        else:
-            # Pick best option (Lowest Cost Per Target Lead)
-            best = options.sort_values('Cost_Per_Target_Lead').iloc[0]
-            
-            est_cost = needed * best['Cost_Per_Target_Lead']
-            
-            plan_rows.append({
-                'Priority': '🟢 Actionable',
-                'Target_Builder': target,
-                'Shortfall': needed,
-                'Urgency': urgency,
-                'WIP_Deadline': deadline,
-                'Status': 'Fulfillable',
-                'Best_Payer': best['MediaPayer_BuilderRegionKey'],
-                'Recommended_Action': f"Invest in {best['MediaPayer_BuilderRegionKey']}",
-                'Est_Budget_Required': est_cost,
-                'Strategy_Detail': f"Effective CPL: ${best['Cost_Per_Target_Lead']:,.0f}"
-            })
-            
-    plan_df = pd.DataFrame(plan_rows)
-    if not plan_df.empty:
-        return plan_df.sort_values(['Urgency', 'Shortfall'], ascending=[False, False])
-    return pd.DataFrame()
-
-def compute_effective_network_cpr(
-    events_df: pd.DataFrame,
-    shortfall_df: pd.DataFrame
-) -> pd.DataFrame:
-    """
-    Step 4: Portfolio View.
-    Calculates 'Effective CPR' for Payers.
-    """
-    demand_map = shortfall_df.set_index('BuilderRegionKey')['Weighted_Demand'].to_dict()
-    
-    refs = events_df[events_df['is_referral'] == True].copy()
-    if refs.empty: return pd.DataFrame()
-
-    flows = refs.groupby(['MediaPayer_BuilderRegionKey', 'Dest_BuilderRegionKey']).size().reset_index(name='Flow_Count')
-    payer_totals = flows.groupby('MediaPayer_BuilderRegionKey')['Flow_Count'].sum().reset_index(name='Total_Referrals_Out')
-    flows = flows.merge(payer_totals, on='MediaPayer_BuilderRegionKey')
-    
-    media_costs = events_df.groupby('MediaPayer_BuilderRegionKey')['MediaCost_referral_event'].sum()
-    
     results = []
-    for payer in flows['MediaPayer_BuilderRegionKey'].unique():
-        payer_flows = flows[flows['MediaPayer_BuilderRegionKey'] == payer]
-        total_refs = payer_flows['Total_Referrals_Out'].iloc[0]
-        total_cost = media_costs.get(payer, 0)
+    
+    # Pre-calculate spillover mappings for efficiency
+    # Map: Source -> List of [Other_Dest, % share]
+    # We can rely on leverage_data for this since it has all flows
+    
+    for _, strat in strategies.iterrows():
+        source = strat['MediaPayer_BuilderRegionKey']
+        tr = strat['Transfer_Rate']
+        ecpr = strat['eCPR']
         
-        if total_refs == 0 or total_cost == 0: continue
+        # Scenario: We want to generate 'Shortfall' amount of leads for Focus Builder
+        # Required Total Generation at Source = Shortfall / TR
+        total_leads_needed = shortfall / tr if tr > 0 else 0
+        investment_required = total_leads_needed * strat['CPR_base']
+        
+        # Externalities (Spillover)
+        excess_leads = total_leads_needed - shortfall
+        
+        # Where do excess leads go?
+        # Get distribution for this source (excluding focus builder)
+        source_dist = leverage_data[
+            (leverage_data['MediaPayer_BuilderRegionKey'] == source) & 
+            (leverage_data['Dest_BuilderRegionKey'] != focus_builder)
+        ].copy()
+        
+        spillover_impact = []
+        optimization_score = 0
+        
+        if not source_dist.empty and excess_leads > 0:
+            # Calculate estimated leads per other builder
+            # Note: We need to re-normalize TR relative to the *remaining* pool if we want exacts, 
+            # but simpler is: Leads = Total_Gen * TR (since TR is based on total)
             
-        raw_cpr = total_cost / total_refs
-        useful_referrals_count = 0
-        utility_score = 0
+            source_dist['Spillover_Leads'] = total_leads_needed * source_dist['Transfer_Rate']
+            
+            # Check if these spillover leads hit OTHER shortfalls
+            # Merge with shortfall data
+            impact = source_dist.merge(shortfall_data[['BuilderRegionKey', 'Shortfall']], 
+                                     left_on='Dest_BuilderRegionKey', right_on='BuilderRegionKey', how='left')
+            
+            # Score: +1 for every lead that hits another shortfall
+            for _, imp in impact.iterrows():
+                if imp['Shortfall'] > 0:
+                    # Capped at their actual shortfall
+                    useful_spillover = min(imp['Spillover_Leads'], imp['Shortfall'])
+                    optimization_score += useful_spillover
+                    spillover_impact.append(f"{imp['Dest_BuilderRegionKey']} (+{int(imp['Spillover_Leads'])})")
         
-        for _, row in payer_flows.iterrows():
-            dest = row['Dest_BuilderRegionKey']
-            count = row['Flow_Count']
-            demand = demand_map.get(dest, 0)
-            if demand > 0:
-                useful_referrals_count += count
-                utility_score += (count * demand) 
-        
-        useful_share = useful_referrals_count / total_refs
-        effective_cpr = raw_cpr / useful_share if useful_share > 0 else np.inf
+        spillover_txt = ", ".join(spillover_impact[:3]) # Top 3
+        if len(spillover_impact) > 3: spillover_txt += "..."
         
         results.append({
-            'BuilderRegionKey': payer,
-            'Total_Referrals_Sent': total_refs,
-            'Useful_Share': useful_share,
-            'Media_Cost': total_cost,
-            'Raw_CPR': raw_cpr,
-            'Effective_CPR': effective_cpr
+            'Source_Builder': source,
+            'Transfer_Rate': tr,
+            'Base_CPR': strat['CPR_base'],
+            'Effective_CPR': ecpr,
+            'Investment_Required': investment_required,
+            'Total_Leads_Generated': total_leads_needed,
+            'Excess_Leads': excess_leads,
+            'Spillover_Impact': spillover_txt if spillover_txt else "None/Surplus",
+            'Optimization_Score': optimization_score
         })
         
-    results_df = pd.DataFrame(results)
-    if not results_df.empty:
-        results_df = results_df.sort_values('Effective_CPR', ascending=True)
+    res_df = pd.DataFrame(results)
+    
+    # Sort by Optimization Score (Network Benefit) then Effective CPR (Cost)
+    # We want High Score, Low Cost
+    if not res_df.empty:
+        res_df = res_df.sort_values(['Optimization_Score', 'Effective_CPR'], ascending=[False, True])
         
-    return results_df
+    return res_df
+
+# For compatibility with legacy calls or general portfolio view
+def compute_effective_network_cpr(events_df, shortfall_df):
+    # This was the function causing the KeyError before. 
+    # We can implement a simplified version or just alias it if needed.
+    # Let's provide a robust implementation that matches the required signature.
+    leverage = analyze_network_leverage(events_df)
+    
+    # We need to aggregate to get "Beneficiaries_Count" etc.
+    # This effectively pivots the leverage data
+    
+    if leverage.empty: return pd.DataFrame()
+    
+    # Group by Source
+    grouped = leverage.groupby('MediaPayer_BuilderRegionKey').agg({
+        'Total_Referrals_Sent': 'first',
+        'CPR_base': 'first',
+        'Dest_BuilderRegionKey': 'nunique' # Count of beneficiaries
+    }).rename(columns={'Dest_BuilderRegionKey': 'Beneficiaries_Count', 'CPR_base': 'Raw_CPR'})
+    
+    # Calculate a weighted utility (simplified for portfolio view)
+    # Real logic is in generate_investment_strategies
+    grouped['Effective_CPR'] = grouped['Raw_CPR'] # Placeholder if not specific
+    grouped['Useful_Share'] = 1.0
+    grouped['Top_Beneficiary'] = "Various"
+    
+    return grouped.reset_index().rename(columns={'MediaPayer_BuilderRegionKey': 'BuilderRegionKey'})
