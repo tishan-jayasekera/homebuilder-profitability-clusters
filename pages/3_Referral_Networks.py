@@ -89,6 +89,78 @@ def compute_cpr_recommendations(edges_df, builders_df):
     recs = recs.sort_values("CPR", ascending=True)
     return recs
 
+def render_fulfillment_sankey(plan_df, strategies_df):
+    """
+    Visualize the flow from Recommended Payer -> Strategy -> Target Builder
+    """
+    if plan_df.empty or strategies_df.empty:
+        return None
+
+    # Filter to only actionable items
+    actionable_plan = plan_df[plan_df['Status'] == 'Fulfillable'].copy()
+    if actionable_plan.empty:
+        return None
+
+    # We want flow: Payer -> Target Builder
+    # Get the Payer for each Target from the plan (which picked the best strategy)
+    # The plan_df has 'Recommended_Action' which is "Invest in {Payer}"
+    
+    # Extract Payer from Recommended Action string or join back with strategies
+    # Easier to join back. For each target in plan, find the payer we selected.
+    # The plan used the best strategy. Let's re-find that best strategy to be sure.
+    
+    sankey_data = []
+    
+    for _, row in actionable_plan.iterrows():
+        target = row['Target_Builder']
+        shortfall = row['Shortfall']
+        
+        # Find the strategy used (lowest cost per target lead)
+        opts = strategies_df[strategies_df['Dest_Builder'] == target].sort_values('Cost_Per_Target_Lead')
+        if not opts.empty:
+            payer = opts.iloc[0]['MediaPayer_BuilderRegionKey']
+            # Flow: Payer -> Target, value = Shortfall (leads needed)
+            sankey_data.append({'Source': payer, 'Target': target, 'Value': shortfall})
+
+    sankey_df = pd.DataFrame(sankey_data)
+    
+    # Aggregate flows (multiple targets might use same payer)
+    sankey_df = sankey_df.groupby(['Source', 'Target']).sum().reset_index()
+
+    # Create nodes
+    all_nodes = list(pd.concat([sankey_df['Source'], sankey_df['Target']]).unique())
+    node_map = {node: i for i, node in enumerate(all_nodes)}
+    
+    # Create links
+    links = {
+        'source': [node_map[src] for src in sankey_df['Source']],
+        'target': [node_map[tgt] for tgt in sankey_df['Target']],
+        'value': sankey_df['Value'],
+        'color': 'rgba(31, 119, 180, 0.3)' # Light blue links
+    }
+
+    # Node colors - distinguish Payer (Source) vs Target
+    node_colors = []
+    for node in all_nodes:
+        if node in sankey_df['Source'].values:
+            node_colors.append('#1F77B4') # Blue for Payers
+        else:
+            node_colors.append('#FF7F0E') # Orange for Targets
+
+    fig = go.Figure(data=[go.Sankey(
+        node=dict(
+            pad=15,
+            thickness=20,
+            line=dict(color="black", width=0.5),
+            label=all_nodes,
+            color=node_colors
+        ),
+        link=links
+    )])
+    
+    fig.update_layout(title_text="Fulfillment Flow: Payer → Target Builder (Leads)", font_size=10, height=400)
+    return fig
+
 
 def main():
     events_full = load_data()
@@ -228,63 +300,11 @@ def main():
             m2.metric("Builders w/ Shortfalls", f"{critical_count}")
             m3.metric("Critical Urgency (<60 days)", f"{high_urgency}", delta_color="inverse")
             
-            # Interactive Problem Selection
-            st.markdown("#### Top Shortfall Candidates")
-            candidate = st.selectbox(
-                "Select Candidate to Solve:",
-                options=critical_shortfalls.sort_values('Weighted_Demand', ascending=False)['BuilderRegionKey'],
-                format_func=lambda x: f"{x} (Need: {int(critical_shortfalls[critical_shortfalls['BuilderRegionKey']==x]['Shortfall'].iloc[0])})"
-            )
-            
-            selected_shortfall = critical_shortfalls[critical_shortfalls['BuilderRegionKey'] == candidate].iloc[0]
-            
-            # 3. Strategy Analysis
+            # 3. Fulfillment Planning
             st.divider()
-            st.subheader(f"2. Strategy for {candidate}")
+            st.subheader("2. Fulfillment Plan & Reconciliation")
             
-            # Generate all strategies
             strategies = get_targeted_fulfillment_strategies(events, shortfall_data)
-            candidate_strategies = strategies[strategies['Dest_Builder'] == candidate].copy()
-            
-            col_strat, col_detail = st.columns([2, 1])
-            
-            with col_strat:
-                if candidate_strategies.empty:
-                    st.error(f"🔴 **Unserviceable:** No existing referral pathways found to {candidate}.")
-                    st.caption("Action: Consider direct media spend or establishing new partnerships.")
-                else:
-                    best = candidate_strategies.iloc[0]
-                    st.success(f"🟢 **Recommendation:** Invest in **{best['MediaPayer_BuilderRegionKey']}**")
-                    
-                    st.dataframe(
-                        candidate_strategies[['MediaPayer_BuilderRegionKey', 'Payer_Raw_CPL', 'Flow_Rate', 'Cost_Per_Target_Lead']]
-                        .rename(columns={
-                            'MediaPayer_BuilderRegionKey': 'Source (Payer)',
-                            'Payer_Raw_CPL': 'Base CPL',
-                            'Flow_Rate': 'Flow %',
-                            'Cost_Per_Target_Lead': 'Target CPL'
-                        })
-                        .style.format({'Base CPL': '${:,.0f}', 'Flow %': '{:.1%}', 'Target CPL': '${:,.0f}'})
-                        .background_gradient(subset=['Target CPL'], cmap='RdYlGn_r'),
-                        use_container_width=True, hide_index=True
-                    )
-            
-            with col_detail:
-                deadline = selected_shortfall.get('WIP_JOB_LIVE_END', pd.NaT)
-                deadline_str = deadline.strftime('%Y-%m-%d') if pd.notnull(deadline) else "N/A"
-                
-                st.info(f"""
-                **Candidate Status**
-                - **Shortfall:** {int(selected_shortfall['Shortfall'])} leads
-                - **Deadline:** {deadline_str}
-                - **Urgency:** {selected_shortfall['Urgency_Weight']:.1f}x
-                """)
-            
-            # 4. Reconciliation
-            st.divider()
-            st.subheader("3. Reconciliation: Network Fulfillment Plan")
-            st.caption("This plan calculates the media requirement to fulfill ALL solvable shortfalls in the network.")
-            
             full_plan = generate_network_fulfillment_plan(shortfall_data, strategies)
             
             if not full_plan.empty:
@@ -292,6 +312,11 @@ def main():
                 total_budget = full_plan['Est_Budget_Required'].sum()
                 fill_count = full_plan[full_plan['Status'] == 'Fulfillable'].shape[0]
                 gap_count = full_plan[full_plan['Status'] != 'Fulfillable'].shape[0]
+                
+                # Sankey Diagram of the Plan
+                sankey_fig = render_fulfillment_sankey(full_plan, strategies)
+                if sankey_fig:
+                    st.plotly_chart(sankey_fig, use_container_width=True)
                 
                 p1, p2, p3 = st.columns(3)
                 p1.metric("Est. Media Requirement", fmt_currency(total_budget))
@@ -305,6 +330,8 @@ def main():
                     .applymap(lambda v: 'color: red' if v == 'Under-Serviced' else 'color: green', subset=['Status']),
                     use_container_width=True, hide_index=True
                 )
+            else:
+                 st.info("No actionable fulfillment plan could be generated.")
             
             # Compatibility for map
             cpr_recs = compute_cpr_recommendations(edges_clean, builder_master)
