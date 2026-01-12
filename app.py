@@ -25,11 +25,12 @@ st.markdown("""
         color: #6B7280;
         margin-bottom: 2rem;
     }
-    .metric-card {
+    .nav-card {
         background: #F9FAFB;
         border-radius: 12px;
         padding: 1.5rem;
         border: 1px solid #E5E7EB;
+        margin-bottom: 1rem;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -88,16 +89,28 @@ def main():
                 st.success("Origin ✓")
             else:
                 st.warning("Origin ✗")
+        
+        with st.columns(2)[0]:
+            if 'media_file' in st.session_state:
+                st.success("Media ✓")
+            else:
+                st.warning("Media ✗")
     
     # Main content
     st.markdown("---")
     
-    st.info("👈 **Upload your data files in the sidebar**, then use the navigation menu to access the dashboards.")
+    # Check if data is loaded
+    if 'events_file' not in st.session_state:
+        st.warning("👈 **Please upload your Events data file in the sidebar to get started.**")
+    else:
+        st.success("✅ **Data loaded!** Choose a dashboard below to begin analysis.")
+    
+    st.markdown("### 🚀 Choose a Dashboard")
     
     col1, col2, col3 = st.columns(3)
     
     with col1:
-        st.markdown("### 📊 Builder P&L")
+        st.markdown("#### 📊 Builder P&L")
         st.markdown("""
         Analyze builder economics across multiple lenses:
         - **Recipient**: Who receives the leads
@@ -106,10 +119,10 @@ def main():
         
         View by all-time, monthly, or weekly grain.
         """)
-        st.markdown("➡️ Go to **Builder_PnL** in sidebar")
+        st.page_link("pages/1_Builder_PnL.py", label="Open Builder P&L →", icon="📊")
     
     with col2:
-        st.markdown("### 🎯 Orphan Media")
+        st.markdown("#### 🎯 Orphan Media")
         st.markdown("""
         Identify wasted ad spend:
         - Zero-lead campaigns (true orphans)
@@ -118,10 +131,10 @@ def main():
         
         Generate kill lists for optimization.
         """)
-        st.markdown("➡️ Go to **Orphan_Media** in sidebar")
+        st.page_link("pages/2_Orphan_Media.py", label="Open Orphan Media →", icon="🎯")
     
     with col3:
-        st.markdown("### 🔗 Referral Networks")
+        st.markdown("#### 🔗 Referral Networks")
         st.markdown("""
         Explore referral ecosystems:
         - Community clustering (Louvain)
@@ -129,7 +142,7 @@ def main():
         - Media efficiency pathfinding
         - Downstream cascade analysis
         """)
-        st.markdown("➡️ Go to **Referral_Networks** in sidebar")
+        st.page_link("pages/3_Referral_Networks.py", label="Open Referral Networks →", icon="🔗")
     
     # Quick stats if data is loaded
     if 'events_file' in st.session_state:
@@ -138,8 +151,13 @@ def main():
         
         try:
             import pandas as pd
-            df = pd.read_excel(st.session_state['events_file'])
-            st.session_state['events_df'] = df
+            
+            # Only read if not already cached
+            if 'events_df' not in st.session_state:
+                df = pd.read_excel(st.session_state['events_file'])
+                st.session_state['events_df'] = df
+            else:
+                df = st.session_state['events_df']
             
             m1, m2, m3, m4 = st.columns(4)
             
@@ -151,25 +169,36 @@ def main():
                 if 'Dest_BuilderRegionKey' in df.columns:
                     n_builders = df['Dest_BuilderRegionKey'].nunique()
                     st.metric("Unique Builders", f"{n_builders:,}")
+                else:
+                    st.metric("Unique Builders", "N/A")
             
             with m3:
-                if 'MediaCost_referral_event' in df.columns:
-                    total_media = df['MediaCost_referral_event'].sum()
+                media_col = None
+                for col in ['MediaCost_referral_event', 'MediaCost_builder_touch', 'MediaCost']:
+                    if col in df.columns:
+                        media_col = col
+                        break
+                if media_col:
+                    total_media = df[media_col].sum()
                     st.metric("Total Media Spend", f"${total_media:,.0f}")
-                elif 'MediaCost_builder_touch' in df.columns:
-                    total_media = df['MediaCost_builder_touch'].sum()
-                    st.metric("Total Media Spend", f"${total_media:,.0f}")
+                else:
+                    st.metric("Total Media Spend", "N/A")
             
             with m4:
-                if 'RPL_from_job' in df.columns:
-                    total_rev = df['RPL_from_job'].sum()
+                rev_col = None
+                for col in ['RPL_from_job', 'ReferralRevenue_event', 'Revenue']:
+                    if col in df.columns:
+                        rev_col = col
+                        break
+                if rev_col:
+                    total_rev = df[rev_col].sum()
                     st.metric("Total Revenue", f"${total_rev:,.0f}")
-                elif 'ReferralRevenue_event' in df.columns:
-                    total_rev = df['ReferralRevenue_event'].sum()
-                    st.metric("Total Revenue", f"${total_rev:,.0f}")
+                else:
+                    st.metric("Total Revenue", "N/A")
             
-            with st.expander("Preview Data Columns"):
-                st.write(f"**Columns ({len(df.columns)}):** {', '.join(df.columns[:20].tolist())}{'...' if len(df.columns) > 20 else ''}")
+            with st.expander("📋 View Data Columns"):
+                st.write(f"**Total columns:** {len(df.columns)}")
+                st.write(df.columns.tolist())
                 
         except Exception as e:
             st.error(f"Error reading file: {e}")
