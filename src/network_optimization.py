@@ -48,11 +48,6 @@ def calculate_shortfalls(events_df: pd.DataFrame, targets_df: pd.DataFrame = Non
     df['Days_Remaining'] = df['Days_Remaining'].clip(lower=0)
     
     # Calculate Velocity (Leads per day in last 60 days)
-    # We need the event dates for this. If passing raw df is expensive, we approximate.
-    # Here we assume linear pace based on total duration or recent window.
-    # For robustness, let's use a simple "All Time Pace" if recent data isn't easily sliced here,
-    # but ideally we'd slice events_df for last 60d.
-    
     # Simplified Velocity: Actuals / (Implied Elapsed Days). 
     # Assuming campaign started 90 days ago if no start date.
     elapsed_est = 90 
@@ -193,8 +188,6 @@ def compute_effective_network_cpr(events_df, shortfall_df):
 
 def generate_investment_strategies(focus_builder: str, shortfall_data: pd.DataFrame, leverage_data: pd.DataFrame, events_df: pd.DataFrame) -> pd.DataFrame:
     """Wrapper for single-builder detailed view (compatibility)."""
-    # ... logic remains similar but uses new projected shortfalls if available ...
-    # Re-implementing simplified logic for specific builder focus
     
     target_row = shortfall_data[shortfall_data['BuilderRegionKey'] == focus_builder]
     if target_row.empty: return pd.DataFrame()
