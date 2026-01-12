@@ -103,11 +103,6 @@ def render_fulfillment_sankey(plan_df, strategies_df):
 
     # We want flow: Payer -> Target Builder
     # Get the Payer for each Target from the plan (which picked the best strategy)
-    # The plan_df has 'Recommended_Action' which is "Invest in {Payer}"
-    
-    # Extract Payer from Recommended Action string or join back with strategies
-    # Easier to join back. For each target in plan, find the payer we selected.
-    # The plan used the best strategy. Let's re-find that best strategy to be sure.
     
     sankey_data = []
     
@@ -456,7 +451,7 @@ def render_network_graph(builders, edges, G, focus_builder, show_labels, edge_st
                 traces.append(go.Scatter(
                     x=[ax], y=[ay], mode="markers",
                     marker=dict(symbol="triangle-up", size=8+norm_weight, color=edge_color,
-                               angle=np.degrees(np.arctan2(ay-by, ax-bx))-90, opacity=edge_opacity),
+                                angle=np.degrees(np.arctan2(ay-by, ax-bx))-90, opacity=edge_opacity),
                     hoverinfo="skip", showlegend=False
                 ))
         else:
