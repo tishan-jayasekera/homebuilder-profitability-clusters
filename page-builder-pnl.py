@@ -1,5 +1,6 @@
 """
 Builder P&L Dashboard - Streamlit Page
+Filename: pages/1_Builder_PnL.py
 """
 import streamlit as st
 import pandas as pd
@@ -9,7 +10,11 @@ from plotly.subplots import make_subplots
 
 import sys
 from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent.parent))
+
+# Add parent directory to path for imports
+root = Path(__file__).parent.parent
+if str(root) not in sys.path:
+    sys.path.insert(0, str(root))
 
 from src.data_loader import load_events, export_to_excel
 from src.normalization import normalize_events
