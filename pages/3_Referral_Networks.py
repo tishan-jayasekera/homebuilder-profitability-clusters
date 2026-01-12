@@ -41,16 +41,79 @@ def load_data():
     return normalize_events(events)
 
 
-def main():
-    events = load_data()
+def get_available_months(events):
+    """Extract available months from events data."""
+    months = []
     
-    if events is None:
+    # Try lead_date first, then RefDate
+    date_col = None
+    if "lead_date" in events.columns:
+        date_col = "lead_date"
+    elif "RefDate" in events.columns:
+        date_col = "RefDate"
+    
+    if date_col:
+        dates = pd.to_datetime(events[date_col], errors="coerce")
+        month_starts = dates.dt.to_period("M").dt.start_time.dropna().unique()
+        months = sorted(month_starts)
+    
+    return months, date_col
+
+
+def filter_events_by_month(events, selected_month, date_col):
+    """Filter events to a specific month."""
+    if selected_month is None or date_col is None:
+        return events
+    
+    dates = pd.to_datetime(events[date_col], errors="coerce")
+    month_starts = dates.dt.to_period("M").dt.start_time
+    
+    return events[month_starts == selected_month].copy()
+
+
+def main():
+    events_full = load_data()
+    
+    if events_full is None:
         st.warning("⚠️ Please upload events data on the Home page first.")
         st.page_link("app.py", label="← Go to Home", icon="🏠")
         return
     
+    # Get available months
+    available_months, date_col = get_available_months(events_full)
+    
     # Sidebar controls
     with st.sidebar:
+        st.header("📅 Time Period")
+        
+        # Month filter
+        if available_months:
+            month_options = ["All Time"] + [m.strftime("%Y-%m") for m in available_months]
+            selected_month_str = st.selectbox(
+                "Select Month",
+                options=month_options,
+                index=0,
+                help="Filter network analysis to a specific month"
+            )
+            
+            if selected_month_str == "All Time":
+                selected_month = None
+                events = events_full
+            else:
+                selected_month = pd.Timestamp(selected_month_str + "-01")
+                events = filter_events_by_month(events_full, selected_month, date_col)
+                
+            # Show filtered data stats
+            if selected_month:
+                st.caption(f"📊 {len(events):,} events in {selected_month_str}")
+            else:
+                st.caption(f"📊 {len(events_full):,} total events")
+        else:
+            events = events_full
+            selected_month = None
+            st.info("No date column found for filtering")
+        
+        st.divider()
         st.header("🎛️ Clustering Parameters")
         
         resolution = st.slider(
@@ -66,7 +129,12 @@ def main():
         edge_style = st.selectbox("Edge Style", ["Curved Arrows", "Straight Lines", "Curved Lines"])
         node_size_factor = st.slider("Node Size", min_value=0.5, max_value=2.0, value=1.0, step=0.1)
     
-    # Run clustering
+    # Check if filtered data has enough events
+    if len(events) < 10:
+        st.warning(f"⚠️ Only {len(events)} events found for the selected period. Try selecting 'All Time' or a different month.")
+        return
+    
+    # Run clustering on filtered events
     results = run_clustering(events, resolution, target_clusters)
     
     edges_clean = results.get('edges_clean', pd.DataFrame())
@@ -75,10 +143,14 @@ def main():
     G = results.get('graph', nx.Graph())
     
     if builder_master.empty:
-        st.warning("No referral patterns found in the data.")
+        st.warning("No referral patterns found in the data for the selected period.")
         return
     
-    # Build P&L for overlay
+    # Show period banner
+    if selected_month:
+        st.info(f"📅 Showing network analysis for **{selected_month.strftime('%B %Y')}**")
+    
+    # Build P&L for overlay (also filtered)
     pnl_recipient = build_builder_pnl(events, lens="recipient", date_basis="lead_date", freq="ALL")
     pnl_recipient = pnl_recipient.drop(columns=["period_start"], errors="ignore")
     
@@ -97,7 +169,6 @@ def main():
     all_builders = sorted(builder_master["BuilderRegionKey"].dropna().unique().tolist())
     builder_to_cluster = dict(zip(builder_master["BuilderRegionKey"], builder_master["ClusterId"]))
     
-    # Create display options with cluster info
     builder_search_options = ["(Select a builder to find their cluster)"] + [
         f"{b}  →  Cluster {int(builder_to_cluster.get(b, 0))}" for b in all_builders
     ]
@@ -108,7 +179,6 @@ def main():
         key="global_builder_search"
     )
     
-    # Parse selection
     search_builder = None
     auto_cluster = None
     if selected_search != "(Select a builder to find their cluster)":
@@ -131,7 +201,6 @@ def main():
         cluster_options.append(label)
         cluster_id_map[label] = cid
     
-    # Auto-select cluster if builder was searched
     default_idx = 0
     if auto_cluster is not None:
         for i, label in enumerate(cluster_options):
@@ -146,19 +215,16 @@ def main():
     
     selected_cluster = cluster_id_map[selected_label]
     
-    # Filter to selected cluster
     cluster_builders = builder_master[builder_master["ClusterId"] == selected_cluster].copy()
     cluster_edges = edges_clean[
         (edges_clean["Cluster_origin"] == selected_cluster) &
         (edges_clean["Cluster_dest"] == selected_cluster)
     ].copy()
     
-    # Builder dropdown within cluster
     with col_builder:
         builder_list = sorted(cluster_builders["BuilderRegionKey"].dropna().unique().tolist())
         builder_options = ["(None - show all)"] + builder_list
         
-        # Auto-select builder if searched
         default_builder_idx = 0
         if search_builder and search_builder in builder_list:
             default_builder_idx = builder_list.index(search_builder) + 1
@@ -171,7 +237,8 @@ def main():
         focus_builder = None if selected_builder == "(None - show all)" else selected_builder
     
     # Overview metrics
-    st.header(f"🌐 Cluster {selected_cluster} Overview")
+    period_label = selected_month.strftime('%B %Y') if selected_month else "All Time"
+    st.header(f"🌐 Cluster {selected_cluster} Overview ({period_label})")
     
     total_profit = cluster_builders["Profit"].sum()
     total_media = cluster_builders["MediaCost"].sum()
@@ -192,7 +259,6 @@ def main():
     # Network visualization
     st.subheader("🕸️ Network Graph")
     
-    # Legend
     with st.expander("📖 Graph Legend", expanded=False):
         leg1, leg2, leg3, leg4, leg5 = st.columns(5)
         leg1.markdown("🟠 **Target** - Selected builder")
@@ -203,7 +269,6 @@ def main():
     
     render_network_graph(cluster_builders, cluster_edges, G, focus_builder, show_labels, edge_style, node_size_factor)
     
-    # Flow analysis for focus builder
     if focus_builder:
         render_focus_analysis(focus_builder, cluster_builders, cluster_edges)
     
@@ -233,7 +298,7 @@ def main():
     st.download_button(
         "📥 Download Cluster Data",
         data=export_to_excel(cluster_builders, "cluster_builders.xlsx"),
-        file_name=f"cluster_{selected_cluster}_builders.xlsx",
+        file_name=f"cluster_{selected_cluster}_{period_label.replace(' ', '_')}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
 
@@ -243,10 +308,8 @@ def render_network_graph(builders, edges, G, focus_builder, show_labels, edge_st
         st.info("No network edges to display.")
         return
     
-    # Use better layout for clearer visualization
     pos = nx.spring_layout(G, weight="weight", seed=42, k=1.5, iterations=50)
     
-    # Normalize positions
     xs = [p[0] for p in pos.values()]
     ys = [p[1] for p in pos.values()]
     xo, yo = np.mean(xs), np.mean(ys)
@@ -256,7 +319,6 @@ def render_network_graph(builders, edges, G, focus_builder, show_labels, edge_st
     for n, (x, y) in pos.items():
         pos[n] = ((x - xo) * scale, (y - yo) * scale)
     
-    # Determine node categories based on focus
     if focus_builder:
         inbound_nodes = set(edges.loc[edges["Dest_builder"] == focus_builder, "Origin_builder"])
         outbound_nodes = set(edges.loc[edges["Origin_builder"] == focus_builder, "Dest_builder"])
@@ -269,13 +331,9 @@ def render_network_graph(builders, edges, G, focus_builder, show_labels, edge_st
     
     traces = []
     
-    # Calculate edge weights for line thickness
     max_weight = edges["Referrals"].max() if not edges.empty else 1
     min_weight = edges["Referrals"].min() if not edges.empty else 1
     
-    # ==========================================
-    # DRAW EDGES WITH ARROWS
-    # ==========================================
     for _, row in edges.iterrows():
         u, v = row["Origin_builder"], row["Dest_builder"]
         if u not in pos or v not in pos:
@@ -284,28 +342,24 @@ def render_network_graph(builders, edges, G, focus_builder, show_labels, edge_st
         x0, y0 = pos[u]
         x1, y1 = pos[v]
         
-        # Normalize weight for line thickness (1 to 6)
         weight = row["Referrals"]
         if max_weight > min_weight:
             norm_weight = 1 + 5 * (weight - min_weight) / (max_weight - min_weight)
         else:
             norm_weight = 3
         
-        # Determine edge color and emphasis
         is_focus_edge = focus_builder and (u == focus_builder or v == focus_builder)
         
         if is_focus_edge:
-            edge_color = "#1E40AF"  # Dark blue for focus edges
+            edge_color = "#1E40AF"
             edge_width = norm_weight * 1.5
             edge_opacity = 1.0
         else:
-            edge_color = "#94A3B8"  # Gray for other edges
+            edge_color = "#94A3B8"
             edge_width = norm_weight * 0.8
             edge_opacity = 0.4 if focus_builder else 0.6
         
-        # Create edge path
         if edge_style == "Curved Arrows" or edge_style == "Curved Lines":
-            # Bezier curve control point (offset perpendicular to line)
             mx, my = (x0 + x1) / 2, (y0 + y1) / 2
             dx, dy = x1 - x0, y1 - y0
             length = np.sqrt(dx**2 + dy**2) + 1e-9
@@ -313,7 +367,6 @@ def render_network_graph(builders, edges, G, focus_builder, show_labels, edge_st
             cx = mx - dy / length * offset
             cy = my + dx / length * offset
             
-            # Generate curve points
             t_vals = np.linspace(0, 1, 20)
             curve_x = (1-t_vals)**2 * x0 + 2*(1-t_vals)*t_vals * cx + t_vals**2 * x1
             curve_y = (1-t_vals)**2 * y0 + 2*(1-t_vals)*t_vals * cy + t_vals**2 * y1
@@ -328,14 +381,11 @@ def render_network_graph(builders, edges, G, focus_builder, show_labels, edge_st
                 showlegend=False
             ))
             
-            # Add arrowhead for "Curved Arrows"
             if edge_style == "Curved Arrows":
-                # Arrow at 80% of the curve
                 t_arrow = 0.8
                 ax = (1-t_arrow)**2 * x0 + 2*(1-t_arrow)*t_arrow * cx + t_arrow**2 * x1
                 ay = (1-t_arrow)**2 * y0 + 2*(1-t_arrow)*t_arrow * cy + t_arrow**2 * y1
                 
-                # Direction at arrow point
                 t_before = 0.75
                 bx = (1-t_before)**2 * x0 + 2*(1-t_before)*t_before * cx + t_before**2 * x1
                 by = (1-t_before)**2 * y0 + 2*(1-t_before)*t_before * cy + t_before**2 * y1
@@ -354,7 +404,6 @@ def render_network_graph(builders, edges, G, focus_builder, show_labels, edge_st
                     showlegend=False
                 ))
         else:
-            # Straight lines
             traces.append(go.Scatter(
                 x=[x0, x1, None], y=[y0, y1, None],
                 mode="lines",
@@ -365,9 +414,6 @@ def render_network_graph(builders, edges, G, focus_builder, show_labels, edge_st
                 showlegend=False
             ))
     
-    # ==========================================
-    # DRAW NODES
-    # ==========================================
     bidx = builders.set_index("BuilderRegionKey")
     
     categories = {
@@ -413,7 +459,6 @@ def render_network_graph(builders, edges, G, focus_builder, show_labels, edge_st
         categories[cat]["txt"].append(txt)
         categories[cat]["size"].append(size)
     
-    # Add node traces (in order so Target is on top)
     node_order = ["Other", "Two-way", "Outbound", "Inbound", "Target"]
     for name in node_order:
         cat = categories[name]
@@ -442,14 +487,7 @@ def render_network_graph(builders, edges, G, focus_builder, show_labels, edge_st
     fig.update_layout(
         height=650,
         showlegend=True,
-        legend=dict(
-            orientation="h",
-            yanchor="bottom",
-            y=1.02,
-            xanchor="center",
-            x=0.5,
-            bgcolor="rgba(255,255,255,0.8)"
-        ),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5, bgcolor="rgba(255,255,255,0.8)"),
         xaxis=dict(showgrid=False, zeroline=False, showticklabels=False, fixedrange=False),
         yaxis=dict(showgrid=False, zeroline=False, showticklabels=False, scaleanchor="x", fixedrange=False),
         hovermode="closest",
@@ -459,7 +497,6 @@ def render_network_graph(builders, edges, G, focus_builder, show_labels, edge_st
         margin=dict(l=20, r=20, t=40, b=20)
     )
     
-    # Add modebar for zoom/pan
     st.plotly_chart(fig, use_container_width=True, config={
         'scrollZoom': True,
         'displayModeBar': True,
