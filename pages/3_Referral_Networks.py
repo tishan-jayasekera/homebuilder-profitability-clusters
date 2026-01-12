@@ -27,9 +27,9 @@ st.title("🔗 Referral Network Explorer")
 st.markdown("Discover referral ecosystems and media efficiency pathways.")
 
 
-@st.cache_data(show_spinner="Running network clustering...")
-def run_clustering(_events, resolution, target_clusters):
-    return run_referral_clustering(_events, resolution=resolution, target_max_clusters=target_clusters)
+def run_clustering_for_period(events_df, resolution, target_clusters, period_key):
+    """Run clustering - period_key ensures recalculation when month changes."""
+    return run_referral_clustering(events_df, resolution=resolution, target_max_clusters=target_clusters)
 
 
 def load_data():
@@ -44,9 +44,8 @@ def load_data():
 def get_available_months(events):
     """Extract available months from events data."""
     months = []
-    
-    # Try lead_date first, then RefDate
     date_col = None
+    
     if "lead_date" in events.columns:
         date_col = "lead_date"
     elif "RefDate" in events.columns:
@@ -71,6 +70,38 @@ def filter_events_by_month(events, selected_month, date_col):
     return events[month_starts == selected_month].copy()
 
 
+def compute_cpr_recommendations(edges_df, builders_df):
+    """
+    Compute Cost Per Referral (CPR) for each builder and generate recommendations.
+    CPR = MediaCost / Referrals_out (cost to generate one referral)
+    """
+    if builders_df.empty or edges_df.empty:
+        return pd.DataFrame()
+    
+    # Calculate referrals sent by each builder
+    referrals_out = edges_df.groupby("Origin_builder")["Referrals"].sum().reset_index()
+    referrals_out.columns = ["BuilderRegionKey", "Total_Referrals_Sent"]
+    
+    # Merge with builder data
+    recs = builders_df.merge(referrals_out, on="BuilderRegionKey", how="left")
+    recs["Total_Referrals_Sent"] = recs["Total_Referrals_Sent"].fillna(0)
+    
+    # Calculate CPR (Cost Per Referral)
+    recs["CPR"] = np.where(
+        recs["Total_Referrals_Sent"] > 0,
+        recs["MediaCost"] / recs["Total_Referrals_Sent"],
+        np.nan
+    )
+    
+    # Only include builders who send referrals and have media cost
+    recs = recs[(recs["Total_Referrals_Sent"] > 0) & (recs["MediaCost"] > 0)].copy()
+    
+    # Sort by CPR (lowest = most efficient)
+    recs = recs.sort_values("CPR", ascending=True)
+    
+    return recs
+
+
 def main():
     events_full = load_data()
     
@@ -86,41 +117,38 @@ def main():
     with st.sidebar:
         st.header("📅 Time Period")
         
-        # Month filter
         if available_months:
             month_options = ["All Time"] + [m.strftime("%Y-%m") for m in available_months]
             selected_month_str = st.selectbox(
                 "Select Month",
                 options=month_options,
                 index=0,
-                help="Filter network analysis to a specific month"
+                help="Filter network analysis to a specific month. Clustering will be recalculated."
             )
             
             if selected_month_str == "All Time":
                 selected_month = None
-                events = events_full
+                events = events_full.copy()
+                period_key = "all_time"
             else:
                 selected_month = pd.Timestamp(selected_month_str + "-01")
                 events = filter_events_by_month(events_full, selected_month, date_col)
-                
-            # Show filtered data stats
+                period_key = selected_month_str
+            
+            # Show filtered stats
+            st.metric("Events in Period", f"{len(events):,}")
             if selected_month:
-                st.caption(f"📊 {len(events):,} events in {selected_month_str}")
-            else:
-                st.caption(f"📊 {len(events_full):,} total events")
+                st.caption(f"🔄 Clustering for **{selected_month_str}** only")
         else:
-            events = events_full
+            events = events_full.copy()
             selected_month = None
-            st.info("No date column found for filtering")
+            period_key = "all_time"
+            st.info("No date column found")
         
         st.divider()
         st.header("🎛️ Clustering Parameters")
         
-        resolution = st.slider(
-            "Resolution", min_value=0.5, max_value=2.5, value=1.5, step=0.1,
-            help="Higher = more clusters, Lower = fewer clusters"
-        )
-        
+        resolution = st.slider("Resolution", min_value=0.5, max_value=2.5, value=1.5, step=0.1)
         target_clusters = st.slider("Max Clusters", min_value=3, max_value=25, value=15, step=1)
         
         st.divider()
@@ -129,13 +157,14 @@ def main():
         edge_style = st.selectbox("Edge Style", ["Curved Arrows", "Straight Lines", "Curved Lines"])
         node_size_factor = st.slider("Node Size", min_value=0.5, max_value=2.0, value=1.0, step=0.1)
     
-    # Check if filtered data has enough events
+    # Check minimum events
     if len(events) < 10:
-        st.warning(f"⚠️ Only {len(events)} events found for the selected period. Try selecting 'All Time' or a different month.")
+        st.error(f"⚠️ Only {len(events)} events for selected period. Need at least 10 events.")
         return
     
-    # Run clustering on filtered events
-    results = run_clustering(events, resolution, target_clusters)
+    # Run clustering (NOT cached - recalculates each time)
+    with st.spinner(f"🔄 Running network clustering for {period_key}..."):
+        results = run_clustering_for_period(events, resolution, target_clusters, period_key)
     
     edges_clean = results.get('edges_clean', pd.DataFrame())
     builder_master = results.get('builder_master', pd.DataFrame())
@@ -143,14 +172,16 @@ def main():
     G = results.get('graph', nx.Graph())
     
     if builder_master.empty:
-        st.warning("No referral patterns found in the data for the selected period.")
+        st.warning("No referral patterns found for the selected period.")
         return
     
-    # Show period banner
+    # Period banner
     if selected_month:
-        st.info(f"📅 Showing network analysis for **{selected_month.strftime('%B %Y')}**")
+        st.success(f"📅 **Analysis Period: {selected_month.strftime('%B %Y')}** — Clustering recalculated for this month")
+    else:
+        st.info("📅 **Analysis Period: All Time**")
     
-    # Build P&L for overlay (also filtered)
+    # Build P&L for the filtered period
     pnl_recipient = build_builder_pnl(events, lens="recipient", date_basis="lead_date", freq="ALL")
     pnl_recipient = pnl_recipient.drop(columns=["period_start"], errors="ignore")
     
@@ -162,7 +193,68 @@ def main():
     builder_master = compute_network_metrics(G, builder_master)
     
     # ==========================================
-    # GLOBAL BUILDER SEARCH (across all clusters)
+    # 💡 RECOMMENDATION ENGINE - TOP OF PAGE
+    # ==========================================
+    st.header("💡 CPR Recommendations")
+    st.markdown("**Lowest Cost Per Referral (CPR)** = Most efficient builders to invest media spend in")
+    
+    cpr_recs = compute_cpr_recommendations(edges_clean, builder_master)
+    
+    if not cpr_recs.empty:
+        # Top 5 recommendations
+        top_5 = cpr_recs.head(5)
+        
+        rec_cols = st.columns(5)
+        for i, (_, row) in enumerate(top_5.iterrows()):
+            with rec_cols[i]:
+                st.metric(
+                    label=f"#{i+1} {row['BuilderRegionKey'][:20]}...",
+                    value=f"${row['CPR']:,.0f}",
+                    delta=f"{int(row['Total_Referrals_Sent']):,} refs sent",
+                    delta_color="off"
+                )
+        
+        # Full recommendation table
+        with st.expander("📊 Full CPR Ranking (All Builders)", expanded=False):
+            display_recs = cpr_recs[["BuilderRegionKey", "ClusterId", "Total_Referrals_Sent", "MediaCost", "CPR", "ROAS", "Profit"]].copy()
+            display_recs.columns = ["Builder", "Cluster", "Referrals Sent", "Media Cost", "CPR", "ROAS", "Profit"]
+            
+            st.dataframe(
+                display_recs.style.format({
+                    "Referrals Sent": "{:,.0f}",
+                    "Media Cost": "${:,.0f}",
+                    "CPR": "${:,.2f}",
+                    "ROAS": "{:.2f}",
+                    "Profit": "${:,.0f}"
+                }).background_gradient(subset=["CPR"], cmap="RdYlGn_r"),
+                hide_index=True,
+                use_container_width=True,
+                height=300
+            )
+            
+            st.download_button(
+                "📥 Download CPR Recommendations",
+                data=export_to_excel(cpr_recs, "cpr_recommendations.xlsx"),
+                file_name=f"cpr_recommendations_{period_key}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+        
+        # Best overall recommendation
+        best = cpr_recs.iloc[0]
+        st.success(f"""
+        🏆 **Top Recommendation:** Increase media spend on **{best['BuilderRegionKey']}** (Cluster {int(best['ClusterId'])})
+        - **CPR:** ${best['CPR']:,.2f} per referral
+        - **Referrals Sent:** {int(best['Total_Referrals_Sent']):,}
+        - **Current Media Cost:** ${best['MediaCost']:,.0f}
+        - **ROAS:** {best['ROAS']:.2f}x
+        """)
+    else:
+        st.warning("Not enough data to generate CPR recommendations.")
+    
+    st.divider()
+    
+    # ==========================================
+    # GLOBAL BUILDER SEARCH
     # ==========================================
     st.subheader("🔍 Find a Builder")
     
@@ -173,18 +265,22 @@ def main():
         f"{b}  →  Cluster {int(builder_to_cluster.get(b, 0))}" for b in all_builders
     ]
     
-    selected_search = st.selectbox(
-        "Search all builders",
-        options=builder_search_options,
-        key="global_builder_search"
-    )
+    selected_search = st.selectbox("Search all builders", options=builder_search_options, key="global_builder_search")
     
     search_builder = None
     auto_cluster = None
     if selected_search != "(Select a builder to find their cluster)":
         search_builder = selected_search.split("  →  ")[0]
         auto_cluster = builder_to_cluster.get(search_builder)
-        st.success(f"✅ **{search_builder}** is in **Cluster {int(auto_cluster)}** — auto-navigating below")
+        
+        # Show this builder's CPR if available
+        builder_cpr = cpr_recs[cpr_recs["BuilderRegionKey"] == search_builder]
+        if not builder_cpr.empty:
+            cpr_val = builder_cpr.iloc[0]["CPR"]
+            rank = cpr_recs.index.get_loc(builder_cpr.index[0]) + 1
+            st.info(f"✅ **{search_builder}** → Cluster {int(auto_cluster)} | CPR: **${cpr_val:,.2f}** (Rank #{rank})")
+        else:
+            st.info(f"✅ **{search_builder}** → Cluster {int(auto_cluster)} | No CPR data (no referrals sent)")
     
     st.divider()
     
@@ -229,11 +325,7 @@ def main():
         if search_builder and search_builder in builder_list:
             default_builder_idx = builder_list.index(search_builder) + 1
         
-        selected_builder = st.selectbox(
-            "🎯 Focus on Builder",
-            options=builder_options,
-            index=default_builder_idx
-        )
+        selected_builder = st.selectbox("🎯 Focus on Builder", options=builder_options, index=default_builder_idx)
         focus_builder = None if selected_builder == "(None - show all)" else selected_builder
     
     # Overview metrics
@@ -253,6 +345,13 @@ def main():
     col4.metric("Gross Profit", fmt_currency(total_profit))
     col5.metric("ROAS", fmt_roas(roas))
     
+    # Cluster-specific CPR recommendations
+    cluster_cpr = cpr_recs[cpr_recs["ClusterId"] == selected_cluster].head(3)
+    if not cluster_cpr.empty:
+        st.markdown(f"**🎯 Top CPR in Cluster {selected_cluster}:**")
+        cpr_text = " | ".join([f"**{r['BuilderRegionKey']}**: ${r['CPR']:,.0f}" for _, r in cluster_cpr.iterrows()])
+        st.markdown(cpr_text)
+    
     if focus_builder:
         st.info(f"🎯 Focused on: **{focus_builder}**")
     
@@ -261,45 +360,36 @@ def main():
     
     with st.expander("📖 Graph Legend", expanded=False):
         leg1, leg2, leg3, leg4, leg5 = st.columns(5)
-        leg1.markdown("🟠 **Target** - Selected builder")
-        leg2.markdown("🟢 **Inbound** - Sends TO target")
-        leg3.markdown("🔵 **Outbound** - Receives FROM target")
-        leg4.markdown("🟣 **Two-way** - Both directions")
-        leg5.markdown("⚪ **Other** - Not connected to target")
+        leg1.markdown("🟠 **Target** - Selected")
+        leg2.markdown("🟢 **Inbound** - Sends TO")
+        leg3.markdown("🔵 **Outbound** - Receives FROM")
+        leg4.markdown("🟣 **Two-way** - Both")
+        leg5.markdown("⚪ **Other** - Not connected")
     
     render_network_graph(cluster_builders, cluster_edges, G, focus_builder, show_labels, edge_style, node_size_factor)
     
     if focus_builder:
-        render_focus_analysis(focus_builder, cluster_builders, cluster_edges)
+        render_focus_analysis(focus_builder, cluster_builders, cluster_edges, cpr_recs)
     
     # Builder table
     st.subheader("📊 Builder Details")
     
-    display_cols = ["BuilderRegionKey", "Role", "Referrals_in", "Referrals_out", "Revenue", "MediaCost", "Profit", "ROAS", "Referral_Gap"]
+    display_cols = ["BuilderRegionKey", "Role", "Referrals_in", "Referrals_out", "Revenue", "MediaCost", "Profit", "ROAS"]
     display_cols = [c for c in display_cols if c in cluster_builders.columns]
     
     st.dataframe(
-        cluster_builders[display_cols]
-        .sort_values("Profit", ascending=False)
+        cluster_builders[display_cols].sort_values("Profit", ascending=False)
         .style.format({
             "Referrals_in": "{:,.0f}",
             "Referrals_out": "{:,.0f}",
             "Revenue": "${:,.0f}",
             "MediaCost": "${:,.0f}",
             "Profit": "${:,.0f}",
-            "ROAS": "{:.2f}",
-            "Referral_Gap": "{:.1f}"
+            "ROAS": "{:.2f}"
         }),
         hide_index=True,
         use_container_width=True,
         height=400
-    )
-    
-    st.download_button(
-        "📥 Download Cluster Data",
-        data=export_to_excel(cluster_builders, "cluster_builders.xlsx"),
-        file_name=f"cluster_{selected_cluster}_{period_label.replace(' ', '_')}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
 
 
@@ -330,7 +420,6 @@ def render_network_graph(builders, edges, G, focus_builder, show_labels, edge_st
     outbound_only = outbound_nodes - inbound_nodes
     
     traces = []
-    
     max_weight = edges["Referrals"].max() if not edges.empty else 1
     min_weight = edges["Referrals"].min() if not edges.empty else 1
     
@@ -343,79 +432,51 @@ def render_network_graph(builders, edges, G, focus_builder, show_labels, edge_st
         x1, y1 = pos[v]
         
         weight = row["Referrals"]
-        if max_weight > min_weight:
-            norm_weight = 1 + 5 * (weight - min_weight) / (max_weight - min_weight)
-        else:
-            norm_weight = 3
+        norm_weight = 1 + 5 * (weight - min_weight) / (max_weight - min_weight) if max_weight > min_weight else 3
         
         is_focus_edge = focus_builder and (u == focus_builder or v == focus_builder)
+        edge_color = "#1E40AF" if is_focus_edge else "#94A3B8"
+        edge_width = norm_weight * 1.5 if is_focus_edge else norm_weight * 0.8
+        edge_opacity = 1.0 if is_focus_edge else (0.4 if focus_builder else 0.6)
         
-        if is_focus_edge:
-            edge_color = "#1E40AF"
-            edge_width = norm_weight * 1.5
-            edge_opacity = 1.0
-        else:
-            edge_color = "#94A3B8"
-            edge_width = norm_weight * 0.8
-            edge_opacity = 0.4 if focus_builder else 0.6
-        
-        if edge_style == "Curved Arrows" or edge_style == "Curved Lines":
+        if edge_style in ["Curved Arrows", "Curved Lines"]:
             mx, my = (x0 + x1) / 2, (y0 + y1) / 2
             dx, dy = x1 - x0, y1 - y0
             length = np.sqrt(dx**2 + dy**2) + 1e-9
-            offset = 0.15 * length
-            cx = mx - dy / length * offset
-            cy = my + dx / length * offset
+            cx = mx - dy / length * 0.15 * length
+            cy = my + dx / length * 0.15 * length
             
             t_vals = np.linspace(0, 1, 20)
             curve_x = (1-t_vals)**2 * x0 + 2*(1-t_vals)*t_vals * cx + t_vals**2 * x1
             curve_y = (1-t_vals)**2 * y0 + 2*(1-t_vals)*t_vals * cy + t_vals**2 * y1
             
             traces.append(go.Scatter(
-                x=curve_x.tolist(), y=curve_y.tolist(),
-                mode="lines",
-                line=dict(width=edge_width, color=edge_color),
-                opacity=edge_opacity,
-                hoverinfo="text",
-                hovertext=f"{u} → {v}<br>Referrals: {int(weight):,}",
-                showlegend=False
+                x=curve_x.tolist(), y=curve_y.tolist(), mode="lines",
+                line=dict(width=edge_width, color=edge_color), opacity=edge_opacity,
+                hoverinfo="text", hovertext=f"{u} → {v}<br>Referrals: {int(weight):,}", showlegend=False
             ))
             
             if edge_style == "Curved Arrows":
-                t_arrow = 0.8
+                t_arrow, t_before = 0.8, 0.75
                 ax = (1-t_arrow)**2 * x0 + 2*(1-t_arrow)*t_arrow * cx + t_arrow**2 * x1
                 ay = (1-t_arrow)**2 * y0 + 2*(1-t_arrow)*t_arrow * cy + t_arrow**2 * y1
-                
-                t_before = 0.75
                 bx = (1-t_before)**2 * x0 + 2*(1-t_before)*t_before * cx + t_before**2 * x1
                 by = (1-t_before)**2 * y0 + 2*(1-t_before)*t_before * cy + t_before**2 * y1
                 
                 traces.append(go.Scatter(
-                    x=[ax], y=[ay],
-                    mode="markers",
-                    marker=dict(
-                        symbol="triangle-up",
-                        size=8 + norm_weight,
-                        color=edge_color,
-                        angle=np.degrees(np.arctan2(ay - by, ax - bx)) - 90,
-                        opacity=edge_opacity
-                    ),
-                    hoverinfo="skip",
-                    showlegend=False
+                    x=[ax], y=[ay], mode="markers",
+                    marker=dict(symbol="triangle-up", size=8+norm_weight, color=edge_color,
+                               angle=np.degrees(np.arctan2(ay-by, ax-bx))-90, opacity=edge_opacity),
+                    hoverinfo="skip", showlegend=False
                 ))
         else:
             traces.append(go.Scatter(
-                x=[x0, x1, None], y=[y0, y1, None],
-                mode="lines",
-                line=dict(width=edge_width, color=edge_color),
-                opacity=edge_opacity,
-                hoverinfo="text",
-                hovertext=f"{u} → {v}<br>Referrals: {int(weight):,}",
-                showlegend=False
+                x=[x0, x1, None], y=[y0, y1, None], mode="lines",
+                line=dict(width=edge_width, color=edge_color), opacity=edge_opacity,
+                hoverinfo="text", hovertext=f"{u} → {v}<br>Referrals: {int(weight):,}", showlegend=False
             ))
     
     bidx = builders.set_index("BuilderRegionKey")
-    
     categories = {
         "Target": {"x": [], "y": [], "txt": [], "size": [], "color": "#F97316", "symbol": "star"},
         "Inbound": {"x": [], "y": [], "txt": [], "size": [], "color": "#22C55E", "symbol": "circle"},
@@ -427,128 +488,75 @@ def render_network_graph(builders, edges, G, focus_builder, show_labels, edge_st
     for node in G.nodes():
         if node not in pos:
             continue
-        
         x, y = pos[node]
         
         if node in bidx.index:
             b = bidx.loc[node]
-            profit = b.get('Profit', 0)
-            refs_in = int(b.get('Referrals_in', 0))
-            refs_out = int(b.get('Referrals_out', 0))
-            txt = f"<b>{node}</b><br>Profit: ${profit:,.0f}<br>In: {refs_in:,} | Out: {refs_out:,}"
-            base_size = 20 + (refs_in + refs_out) * 0.08
-            size = min(max(base_size, 15), 60) * node_size_factor
+            txt = f"<b>{node}</b><br>Profit: ${b.get('Profit',0):,.0f}<br>In: {int(b.get('Referrals_in',0)):,} | Out: {int(b.get('Referrals_out',0)):,}"
+            size = min(max(20 + (b.get("Referrals_in",0) + b.get("Referrals_out",0)) * 0.08, 15), 60) * node_size_factor
         else:
-            txt = node
-            size = 15 * node_size_factor
+            txt, size = node, 15 * node_size_factor
         
-        if node == focus_builder:
-            cat = "Target"
-            size *= 1.5
-        elif node in two_way:
-            cat = "Two-way"
-        elif node in inbound_only:
-            cat = "Inbound"
-        elif node in outbound_only:
-            cat = "Outbound"
-        else:
-            cat = "Other"
+        cat = "Target" if node == focus_builder else ("Two-way" if node in two_way else ("Inbound" if node in inbound_only else ("Outbound" if node in outbound_only else "Other")))
+        if cat == "Target": size *= 1.5
         
         categories[cat]["x"].append(x)
         categories[cat]["y"].append(y)
         categories[cat]["txt"].append(txt)
         categories[cat]["size"].append(size)
     
-    node_order = ["Other", "Two-way", "Outbound", "Inbound", "Target"]
-    for name in node_order:
+    for name in ["Other", "Two-way", "Outbound", "Inbound", "Target"]:
         cat = categories[name]
-        if not cat["x"]:
-            continue
-        
+        if not cat["x"]: continue
         traces.append(go.Scatter(
-            x=cat["x"], y=cat["y"],
-            mode="markers+text" if show_labels else "markers",
-            text=[t.split("<br>")[0].replace("<b>", "").replace("</b>", "") for t in cat["txt"]],
-            textposition="top center",
-            textfont=dict(size=10, color="#1F2937"),
-            hovertext=cat["txt"],
-            hoverinfo="text",
-            name=name,
-            marker=dict(
-                size=cat["size"],
-                color=cat["color"],
-                symbol=cat["symbol"],
-                opacity=0.9,
-                line=dict(width=2, color="#1F2937")
-            )
+            x=cat["x"], y=cat["y"], mode="markers+text" if show_labels else "markers",
+            text=[t.split("<br>")[0].replace("<b>","").replace("</b>","") for t in cat["txt"]],
+            textposition="top center", textfont=dict(size=10, color="#1F2937"),
+            hovertext=cat["txt"], hoverinfo="text", name=name,
+            marker=dict(size=cat["size"], color=cat["color"], symbol=cat["symbol"], opacity=0.9, line=dict(width=2, color="#1F2937"))
         ))
     
     fig = go.Figure(data=traces)
     fig.update_layout(
-        height=650,
-        showlegend=True,
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5, bgcolor="rgba(255,255,255,0.8)"),
-        xaxis=dict(showgrid=False, zeroline=False, showticklabels=False, fixedrange=False),
-        yaxis=dict(showgrid=False, zeroline=False, showticklabels=False, scaleanchor="x", fixedrange=False),
-        hovermode="closest",
-        dragmode="pan",
-        paper_bgcolor="#F8FAFC",
-        plot_bgcolor="#F8FAFC",
-        margin=dict(l=20, r=20, t=40, b=20)
+        height=650, showlegend=True,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5),
+        xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+        yaxis=dict(showgrid=False, zeroline=False, showticklabels=False, scaleanchor="x"),
+        hovermode="closest", dragmode="pan", paper_bgcolor="#F8FAFC", plot_bgcolor="#F8FAFC"
     )
-    
-    st.plotly_chart(fig, use_container_width=True, config={
-        'scrollZoom': True,
-        'displayModeBar': True,
-        'modeBarButtonsToAdd': ['zoom2d', 'pan2d', 'resetScale2d']
-    })
+    st.plotly_chart(fig, use_container_width=True, config={'scrollZoom': True, 'displayModeBar': True})
 
 
-def render_focus_analysis(focus_builder, builders, edges):
+def render_focus_analysis(focus_builder, builders, edges, cpr_recs):
     st.subheader(f"🔍 {focus_builder} - Flow Analysis")
     
     col1, col2 = st.columns(2)
     
     with col1:
-        st.markdown("**⬅️ Inbound Referrals (who sends TO this builder)**")
-        inbound = (
-            edges[edges["Dest_builder"] == focus_builder]
-            .groupby("Origin_builder", as_index=False)["Referrals"]
-            .sum()
-            .sort_values("Referrals", ascending=False)
-        )
+        st.markdown("**⬅️ Inbound (who sends TO this builder)**")
+        inbound = edges[edges["Dest_builder"] == focus_builder].groupby("Origin_builder", as_index=False)["Referrals"].sum().sort_values("Referrals", ascending=False)
         
         if not inbound.empty:
-            inbound = inbound.merge(
-                builders[["BuilderRegionKey", "ROAS", "MediaCost"]],
-                left_on="Origin_builder", right_on="BuilderRegionKey", how="left"
-            )
-            inbound["Eff_Cost_per_Ref"] = np.where(
-                inbound["Referrals"] > 0,
-                inbound["MediaCost"] / inbound["Referrals"] / inbound["ROAS"].replace(0, np.nan),
-                np.nan
-            )
+            # Merge with CPR data
+            inbound = inbound.merge(cpr_recs[["BuilderRegionKey", "CPR", "MediaCost"]], left_on="Origin_builder", right_on="BuilderRegionKey", how="left")
             
             st.dataframe(
-                inbound[["Origin_builder", "Referrals", "MediaCost", "ROAS", "Eff_Cost_per_Ref"]]
-                .style.format({"Referrals": "{:,.0f}", "MediaCost": "${:,.0f}", "ROAS": "{:.2f}", "Eff_Cost_per_Ref": "${:,.0f}"}),
+                inbound[["Origin_builder", "Referrals", "MediaCost", "CPR"]]
+                .style.format({"Referrals": "{:,.0f}", "MediaCost": "${:,.0f}", "CPR": "${:,.2f}"}),
                 hide_index=True, use_container_width=True
             )
             
-            if inbound["Eff_Cost_per_Ref"].notna().any():
-                best = inbound.loc[inbound["Eff_Cost_per_Ref"].idxmin()]
-                st.success(f"💡 **Best lever:** {best['Origin_builder']} @ ${best['Eff_Cost_per_Ref']:,.0f}/effective referral")
+            # Best lever = lowest CPR among inbound
+            valid_cpr = inbound[inbound["CPR"].notna()]
+            if not valid_cpr.empty:
+                best = valid_cpr.loc[valid_cpr["CPR"].idxmin()]
+                st.success(f"💡 **Best lever to increase referrals TO {focus_builder}:** Invest in **{best['Origin_builder']}** @ **${best['CPR']:,.2f} CPR**")
         else:
             st.info("No inbound referrals")
     
     with col2:
-        st.markdown("**➡️ Outbound Referrals (where this builder sends)**")
-        outbound = (
-            edges[edges["Origin_builder"] == focus_builder]
-            .groupby("Dest_builder", as_index=False)["Referrals"]
-            .sum()
-            .sort_values("Referrals", ascending=False)
-        )
+        st.markdown("**➡️ Outbound (where this builder sends)**")
+        outbound = edges[edges["Origin_builder"] == focus_builder].groupby("Dest_builder", as_index=False)["Referrals"].sum().sort_values("Referrals", ascending=False)
         
         if not outbound.empty:
             st.dataframe(outbound.style.format({"Referrals": "{:,.0f}"}), hide_index=True, use_container_width=True)
