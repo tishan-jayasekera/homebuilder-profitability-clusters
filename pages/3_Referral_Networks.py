@@ -89,71 +89,72 @@ def compute_cpr_recommendations(edges_df, builders_df):
     recs = recs.sort_values("CPR", ascending=True)
     return recs
 
-def render_fulfillment_sankey(plan_df, strategies_df):
+def render_fulfillment_sankey(plan_df):
     """
-    Visualize the flow from Recommended Payer -> Strategy -> Target Builder
+    Visualize flow: Best Payer -> Target Builder
+    Shows how media investment in payers translates to filled shortfalls.
     """
-    if plan_df.empty or strategies_df.empty:
+    if plan_df.empty:
         return None
 
-    # Filter to only actionable items
-    actionable_plan = plan_df[plan_df['Status'] == 'Fulfillable'].copy()
-    if actionable_plan.empty:
+    # Filter to actionable items
+    actionable = plan_df[plan_df['Status'] == 'Fulfillable'].copy()
+    if actionable.empty:
         return None
 
-    # We want flow: Payer -> Target Builder
-    # Get the Payer for each Target from the plan (which picked the best strategy)
+    # Group by Payer -> Target
+    flows = actionable.groupby(['Best_Payer', 'Target_Builder'])['Shortfall'].sum().reset_index()
     
-    sankey_data = []
+    # Create unique node labels
+    payers = flows['Best_Payer'].unique().tolist()
+    targets = flows['Target_Builder'].unique().tolist()
     
-    for _, row in actionable_plan.iterrows():
-        target = row['Target_Builder']
-        shortfall = row['Shortfall']
-        
-        # Find the strategy used (lowest cost per target lead)
-        opts = strategies_df[strategies_df['Dest_Builder'] == target].sort_values('Cost_Per_Target_Lead')
-        if not opts.empty:
-            payer = opts.iloc[0]['MediaPayer_BuilderRegionKey']
-            # Flow: Payer -> Target, value = Shortfall (leads needed)
-            sankey_data.append({'Source': payer, 'Target': target, 'Value': shortfall})
-
-    sankey_df = pd.DataFrame(sankey_data)
+    # We need to distinguish Source Nodes from Target Nodes properly
+    # A builder can be both, so let's suffix them
+    source_labels = [f"{p} (Payer)" for p in payers]
+    target_labels = [f"{t} (Target)" for t in targets]
     
-    # Aggregate flows (multiple targets might use same payer)
-    sankey_df = sankey_df.groupby(['Source', 'Target']).sum().reset_index()
-
-    # Create nodes
-    all_nodes = list(pd.concat([sankey_df['Source'], sankey_df['Target']]).unique())
-    node_map = {node: i for i, node in enumerate(all_nodes)}
+    all_labels = source_labels + target_labels
+    label_map = {label: i for i, label in enumerate(all_labels)}
     
     # Create links
-    links = {
-        'source': [node_map[src] for src in sankey_df['Source']],
-        'target': [node_map[tgt] for tgt in sankey_df['Target']],
-        'value': sankey_df['Value'],
-        'color': 'rgba(31, 119, 180, 0.3)' # Light blue links
-    }
-
-    # Node colors - distinguish Payer (Source) vs Target
-    node_colors = []
-    for node in all_nodes:
-        if node in sankey_df['Source'].values:
-            node_colors.append('#1F77B4') # Blue for Payers
-        else:
-            node_colors.append('#FF7F0E') # Orange for Targets
-
+    sources = []
+    targets_ix = []
+    values = []
+    
+    for _, row in flows.iterrows():
+        src_label = f"{row['Best_Payer']} (Payer)"
+        tgt_label = f"{row['Target_Builder']} (Target)"
+        
+        sources.append(label_map[src_label])
+        targets_ix.append(label_map[tgt_label])
+        values.append(row['Shortfall'])
+    
+    # Colors
+    # Payers = Blue, Targets = Orange
+    node_colors = ['#1E88E5'] * len(source_labels) + ['#FF7043'] * len(target_labels)
+    
     fig = go.Figure(data=[go.Sankey(
         node=dict(
-            pad=15,
+            pad=20,
             thickness=20,
             line=dict(color="black", width=0.5),
-            label=all_nodes,
+            label=[l.replace(" (Payer)", "").replace(" (Target)", "") for l in all_labels],
             color=node_colors
         ),
-        link=links
+        link=dict(
+            source=sources,
+            target=targets_ix,
+            value=values,
+            color='rgba(200, 200, 200, 0.3)'
+        )
     )])
     
-    fig.update_layout(title_text="Fulfillment Flow: Payer → Target Builder (Leads)", font_size=10, height=400)
+    fig.update_layout(
+        title_text="Strategy Flow: Investment Source → Shortfall Target",
+        font_size=12,
+        height=500
+    )
     return fig
 
 
@@ -261,7 +262,6 @@ def main():
     else:
         # --- ADVANCED MODE: SHORTFALL TARGETING ---
         st.markdown("### 🎯 Operational Strategy View")
-        st.caption("Identifying builders with lead shortfalls and mapping the most efficient media partners to fulfill them.")
         
         # 1. Calc Shortfalls
         shortfall_data = calculate_shortfalls(events)
@@ -278,8 +278,8 @@ def main():
                 shortfall_data.loc[mask, 'Urgency_Weight'] = 2.0
                 shortfall_data.loc[mask, 'Weighted_Demand'] = 100
         
-        # 2. Network Diagnosis
-        st.subheader("1. Network Diagnosis")
+        # --- STEP 1: DIAGNOSIS (Problem) ---
+        st.subheader("1. Diagnosis: Lead Shortfalls")
         
         critical_shortfalls = shortfall_data[shortfall_data['Shortfall'] > 0].copy()
         
@@ -293,38 +293,45 @@ def main():
             m1, m2, m3 = st.columns(3)
             m1.metric("Total Lead Gap", f"{int(total_gap)}")
             m2.metric("Builders w/ Shortfalls", f"{critical_count}")
-            m3.metric("Critical Urgency (<60 days)", f"{high_urgency}", delta_color="inverse")
+            m3.metric("Critical Urgency", f"{high_urgency}", delta_color="inverse", help="Builders with WIP deadline < 60 days")
             
-            # 3. Fulfillment Planning
+            # --- STEP 2: STRATEGY (Fulfillment Plan) ---
             st.divider()
-            st.subheader("2. Fulfillment Plan & Reconciliation")
+            st.subheader("2. Reconciliation Plan")
+            st.caption("How to fulfill these shortfalls using the existing referral network.")
             
             strategies = get_targeted_fulfillment_strategies(events, shortfall_data)
             full_plan = generate_network_fulfillment_plan(shortfall_data, strategies)
             
             if not full_plan.empty:
-                # Summary of the Plan
+                # Top Level Strategy Stats
                 total_budget = full_plan['Est_Budget_Required'].sum()
                 fill_count = full_plan[full_plan['Status'] == 'Fulfillable'].shape[0]
                 gap_count = full_plan[full_plan['Status'] != 'Fulfillable'].shape[0]
                 
-                # Sankey Diagram of the Plan
-                sankey_fig = render_fulfillment_sankey(full_plan, strategies)
-                if sankey_fig:
-                    st.plotly_chart(sankey_fig, use_container_width=True)
+                s1, s2, s3 = st.columns(3)
+                s1.metric("Est. Media Requirement", fmt_currency(total_budget))
+                s2.metric("Solvable Shortfalls", fill_count)
+                s3.metric("Unserviceable Gaps", gap_count, delta_color="inverse")
                 
-                p1, p2, p3 = st.columns(3)
-                p1.metric("Est. Media Requirement", fmt_currency(total_budget))
-                p2.metric("Solvable Builders", fill_count)
-                p3.metric("Unserviceable Gaps", gap_count, delta_color="inverse")
-                
+                # Detailed Plan Table
                 st.dataframe(
                     full_plan[['Priority', 'Target_Builder', 'Shortfall', 'Status', 'Recommended_Action', 'Est_Budget_Required']]
                     .rename(columns={'Est_Budget_Required': 'Est. Cost'})
                     .style.format({'Est. Cost': '${:,.0f}'})
-                    .applymap(lambda v: 'color: red' if v == 'Under-Serviced' else 'color: green', subset=['Status']),
+                    .applymap(lambda v: 'color: red; font-weight: bold' if v == 'Under-Serviced' else 'color: green', subset=['Status']),
                     use_container_width=True, hide_index=True
                 )
+                
+                # --- STEP 3: VISUALIZATION (Execution) ---
+                st.divider()
+                st.subheader("3. Execution Flow")
+                
+                sankey_fig = render_fulfillment_sankey(full_plan)
+                if sankey_fig:
+                    st.plotly_chart(sankey_fig, use_container_width=True)
+                else:
+                    st.info("No fulfillable flows to visualize.")
             else:
                  st.info("No actionable fulfillment plan could be generated.")
             
