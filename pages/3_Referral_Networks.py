@@ -20,8 +20,6 @@ from src.normalization import normalize_events
 from src.builder_pnl import build_builder_pnl
 from src.referral_clusters import run_referral_clustering, compute_network_metrics
 from src.utils import fmt_currency, fmt_roas
-# NEW: Import optimization logic
-from src.network_optimization import calculate_shortfalls, compute_effective_network_cpr
 
 st.set_page_config(page_title="Referral Networks", page_icon="🔗", layout="wide")
 
@@ -148,16 +146,6 @@ def main():
             st.info("No date column found")
         
         st.divider()
-        
-        # --- NEW: Optimization Mode Selector ---
-        st.header("🚀 Optimization Mode")
-        opt_mode = st.radio(
-            "Recommendation Engine",
-            ["Standard (Lowest CPR)", "Advanced (Shortfall Targeting)"],
-            help="Standard: Minimizes cost per referral.\nAdvanced: Minimizes cost to fulfill specific builder lead shortfalls."
-        )
-        
-        st.divider()
         st.header("🎛️ Clustering Parameters")
         
         resolution = st.slider("Resolution", min_value=0.5, max_value=2.5, value=1.5, step=0.1)
@@ -205,110 +193,63 @@ def main():
     builder_master = compute_network_metrics(G, builder_master)
     
     # ==========================================
-    # 💡 RECOMMENDATION ENGINE
+    # 💡 RECOMMENDATION ENGINE - TOP OF PAGE
     # ==========================================
-    st.header("💡 Investment Recommendations")
+    st.header("💡 CPR Recommendations")
+    st.markdown("**Lowest Cost Per Referral (CPR)** = Most efficient builders to invest media spend in")
     
-    cpr_recs = pd.DataFrame()
+    cpr_recs = compute_cpr_recommendations(edges_clean, builder_master)
     
-    if opt_mode == "Standard (Lowest CPR)":
-        st.markdown("**Goal:** Minimize `Media Cost / Total Referrals`.")
+    if not cpr_recs.empty:
+        # Top 5 recommendations
+        top_5 = cpr_recs.head(5)
         
-        cpr_recs = compute_cpr_recommendations(edges_clean, builder_master)
-        
-        if not cpr_recs.empty:
-            # Top 5 recommendations (Standard)
-            top_5 = cpr_recs.head(5)
-            rec_cols = st.columns(5)
-            for i, (_, row) in enumerate(top_5.iterrows()):
-                with rec_cols[i]:
-                    st.metric(
-                        label=f"#{i+1} {row['BuilderRegionKey'][:20]}...",
-                        value=f"${row['CPR']:,.0f}",
-                        delta=f"{int(row['Total_Referrals_Sent']):,} refs",
-                        delta_color="off"
-                    )
-            
-            # Detailed Table for Standard
-            with st.expander("📊 Full CPR Ranking (Standard)", expanded=False):
-                display_recs = cpr_recs[["BuilderRegionKey", "ClusterId", "Total_Referrals_Sent", "MediaCost", "CPR", "ROAS", "Profit"]].copy()
-                st.dataframe(
-                    display_recs.style.format({
-                        "Total_Referrals_Sent": "{:,.0f}", "MediaCost": "${:,.0f}", 
-                        "CPR": "${:,.2f}", "ROAS": "{:.2f}", "Profit": "${:,.0f}"
-                    }).background_gradient(subset=["CPR"], cmap="RdYlGn_r"),
-                    use_container_width=True
+        rec_cols = st.columns(5)
+        for i, (_, row) in enumerate(top_5.iterrows()):
+            with rec_cols[i]:
+                st.metric(
+                    label=f"#{i+1} {row['BuilderRegionKey'][:20]}...",
+                    value=f"${row['CPR']:,.0f}",
+                    delta=f"{int(row['Total_Referrals_Sent']):,} refs sent",
+                    delta_color="off"
                 )
         
-    else:
-        # --- ADVANCED MODE (Shortfall Targeting) ---
-        st.markdown("**Goal:** Minimize `Media Cost / Needed Referrals`. Prioritizes builders sending to those with **Shortfalls** & **Tight Deadlines**.")
-        
-        # 1. Define Shortfalls (Simulation inputs)
-        with st.expander("⚙️ Configure Demand / Targets", expanded=False):
-            st.info("In a production environment, this data would load from `LeadTarget_from_job` and `WIP_JOB_LIVE_END`.")
+        # Full recommendation table
+        with st.expander("📊 Full CPR Ranking (All Builders)", expanded=False):
+            display_recs = cpr_recs[["BuilderRegionKey", "ClusterId", "Total_Referrals_Sent", "MediaCost", "CPR", "ROAS", "Profit"]].copy()
+            display_recs.columns = ["Builder", "Cluster", "Referrals Sent", "Media Cost", "CPR", "ROAS", "Profit"]
             
-            # Use module to calc shortfalls (with mocking)
-            shortfall_data = calculate_shortfalls(events)
-            
-            # Interactive simulation
-            builders_list = sorted(shortfall_data['BuilderRegionKey'].unique())
-            target_builder = st.selectbox("Simulate Critical Need For:", ["(None)"] + builders_list)
-            
-            if target_builder != "(None)":
-                mask = shortfall_data['BuilderRegionKey'] == target_builder
-                shortfall_data.loc[mask, 'Shortfall'] = 50
-                shortfall_data.loc[mask, 'Urgency_Weight'] = 2.0
-                shortfall_data.loc[mask, 'Weighted_Demand'] = 100
-                st.success(f"Simulating 50 lead shortfall for {target_builder}!")
-
             st.dataframe(
-                shortfall_data[shortfall_data['Shortfall']>0].sort_values('Weighted_Demand', ascending=False).head(10)
-                .style.format({'Urgency_Weight': '{:.1f}x'}),
-                height=150,
-                use_container_width=True
+                display_recs.style.format({
+                    "Referrals Sent": "{:,.0f}",
+                    "Media Cost": "${:,.0f}",
+                    "CPR": "${:,.2f}",
+                    "ROAS": "{:.2f}",
+                    "Profit": "${:,.0f}"
+                }).background_gradient(subset=["CPR"], cmap="RdYlGn_r"),
+                hide_index=True,
+                use_container_width=True,
+                height=300
             )
-
-        # 2. Run Advanced Optimization
-        recs = compute_effective_network_cpr(events, shortfall_data)
+            
+            st.download_button(
+                "📥 Download CPR Recommendations",
+                data=export_to_excel(cpr_recs, "cpr_recommendations.xlsx"),
+                file_name=f"cpr_recommendations_{period_key}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
         
-        # Map back to cpr_recs format for compatibility with search features below
-        if not recs.empty:
-            # We rename columns to match what the UI expects later (CPR -> Raw CPR mostly)
-            # But the 'Effective_CPR' is the real metric here.
-            
-            best_rec = recs.iloc[0]
-            
-            # Metric Cards
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Top Investment", best_rec['BuilderRegionKey'])
-            c2.metric("Effective CPR", fmt_currency(best_rec['Effective_CPR']), help="Cost per USEFUL referral")
-            c3.metric("Raw CPR", fmt_currency(best_rec['Raw_CPR']), help="Cost per GENERIC referral")
-            c4.metric("Efficiency Gain", f"{best_rec['Raw_CPR']/best_rec['Effective_CPR']:.0%}" if best_rec['Effective_CPR'] > 0 else "N/A", delta_color="inverse")
-            
-            st.subheader(f"Why invest in {best_rec['BuilderRegionKey']}?")
-            st.markdown(f"""
-            - **Utility:** {best_rec['Useful_Share']:.1%} of their referrals go to builders with active shortfalls.
-            - **Leverage:** They help **{best_rec['Beneficiaries_Count']}** distinct builders who are behind target.
-            - **Primary Beneficiary:** {best_rec['Top_Beneficiary']}
-            """)
-            
-            with st.expander("📊 Full Effective CPR Ranking", expanded=True):
-                st.dataframe(
-                    recs[['BuilderRegionKey', 'Raw_CPR', 'Effective_CPR', 'Useful_Share', 'Beneficiaries_Count', 'Top_Beneficiary']]
-                    .style.format({
-                        'Raw_CPR': '${:,.0f}',
-                        'Effective_CPR': '${:,.0f}',
-                        'Useful_Share': '{:.1%}'
-                    }).background_gradient(subset=['Effective_CPR'], cmap='RdYlGn_r'),
-                    use_container_width=True
-                )
-            
-            # Prepare cpr_recs for downstream compatibility
-            cpr_recs = recs.rename(columns={'Raw_CPR': 'CPR', 'Effective_CPR': 'Effective_CPR'})
-            # Merge cluster IDs back in
-            cpr_recs = cpr_recs.merge(builder_master[['BuilderRegionKey', 'ClusterId']], on='BuilderRegionKey', how='left')
-
+        # Best overall recommendation
+        best = cpr_recs.iloc[0]
+        st.success(f"""
+        🏆 **Top Recommendation:** Increase media spend on **{best['BuilderRegionKey']}** (Cluster {int(best['ClusterId'])})
+        - **CPR:** ${best['CPR']:,.2f} per referral
+        - **Referrals Sent:** {int(best['Total_Referrals_Sent']):,}
+        - **Current Media Cost:** ${best['MediaCost']:,.0f}
+        - **ROAS:** {best['ROAS']:.2f}x
+        """)
+    else:
+        st.warning("Not enough data to generate CPR recommendations.")
     
     st.divider()
     
@@ -333,21 +274,13 @@ def main():
         auto_cluster = builder_to_cluster.get(search_builder)
         
         # Show this builder's CPR if available
-        if not cpr_recs.empty and "BuilderRegionKey" in cpr_recs.columns:
-            builder_cpr = cpr_recs[cpr_recs["BuilderRegionKey"] == search_builder]
-            if not builder_cpr.empty:
-                val = builder_cpr.iloc[0]["CPR"]
-                rank = cpr_recs.index.get_loc(builder_cpr.index[0]) + 1
-                
-                if opt_mode == "Advanced (Shortfall Targeting)" and "Effective_CPR" in builder_cpr.columns:
-                     eff_val = builder_cpr.iloc[0]["Effective_CPR"]
-                     st.info(f"✅ **{search_builder}** → Cluster {int(auto_cluster)} | Effective CPR: **${eff_val:,.2f}** | Raw CPR: ${val:,.2f}")
-                else:
-                    st.info(f"✅ **{search_builder}** → Cluster {int(auto_cluster)} | CPR: **${val:,.2f}** (Rank #{rank})")
-            else:
-                st.info(f"✅ **{search_builder}** → Cluster {int(auto_cluster)} | No CPR data (no referrals sent)")
+        builder_cpr = cpr_recs[cpr_recs["BuilderRegionKey"] == search_builder]
+        if not builder_cpr.empty:
+            cpr_val = builder_cpr.iloc[0]["CPR"]
+            rank = cpr_recs.index.get_loc(builder_cpr.index[0]) + 1
+            st.info(f"✅ **{search_builder}** → Cluster {int(auto_cluster)} | CPR: **${cpr_val:,.2f}** (Rank #{rank})")
         else:
-             st.info(f"✅ **{search_builder}** → Cluster {int(auto_cluster)}")
+            st.info(f"✅ **{search_builder}** → Cluster {int(auto_cluster)} | No CPR data (no referrals sent)")
     
     st.divider()
     
@@ -413,16 +346,11 @@ def main():
     col5.metric("ROAS", fmt_roas(roas))
     
     # Cluster-specific CPR recommendations
-    if not cpr_recs.empty:
-        cluster_cpr = cpr_recs[cpr_recs["ClusterId"] == selected_cluster].head(3)
-        if not cluster_cpr.empty:
-            st.markdown(f"**🎯 Top Efficiency in Cluster {selected_cluster}:**")
-            
-            if opt_mode == "Advanced (Shortfall Targeting)" and "Effective_CPR" in cluster_cpr.columns:
-                 cpr_text = " | ".join([f"**{r['BuilderRegionKey']}**: ${r['Effective_CPR']:,.0f} (Eff.)" for _, r in cluster_cpr.iterrows()])
-            else:
-                 cpr_text = " | ".join([f"**{r['BuilderRegionKey']}**: ${r['CPR']:,.0f}" for _, r in cluster_cpr.iterrows()])
-            st.markdown(cpr_text)
+    cluster_cpr = cpr_recs[cpr_recs["ClusterId"] == selected_cluster].head(3)
+    if not cluster_cpr.empty:
+        st.markdown(f"**🎯 Top CPR in Cluster {selected_cluster}:**")
+        cpr_text = " | ".join([f"**{r['BuilderRegionKey']}**: ${r['CPR']:,.0f}" for _, r in cluster_cpr.iterrows()])
+        st.markdown(cpr_text)
     
     if focus_builder:
         st.info(f"🎯 Focused on: **{focus_builder}**")
@@ -610,33 +538,19 @@ def render_focus_analysis(focus_builder, builders, edges, cpr_recs):
         
         if not inbound.empty:
             # Merge with CPR data
-            inbound = inbound.merge(cpr_recs, left_on="Origin_builder", right_on="BuilderRegionKey", how="left")
-            
-            # Format depends on columns available (Standard vs Advanced)
-            cols = ["Origin_builder", "Referrals", "MediaCost", "CPR"]
-            if "Effective_CPR" in inbound.columns:
-                cols.append("Effective_CPR")
-            
-            # Ensure columns exist before display
-            display_cols = [c for c in cols if c in inbound.columns]
+            inbound = inbound.merge(cpr_recs[["BuilderRegionKey", "CPR", "MediaCost"]], left_on="Origin_builder", right_on="BuilderRegionKey", how="left")
             
             st.dataframe(
-                inbound[display_cols]
-                .style.format({"Referrals": "{:,.0f}", "MediaCost": "${:,.0f}", "CPR": "${:,.2f}", "Effective_CPR": "${:,.0f}"}),
+                inbound[["Origin_builder", "Referrals", "MediaCost", "CPR"]]
+                .style.format({"Referrals": "{:,.0f}", "MediaCost": "${:,.0f}", "CPR": "${:,.2f}"}),
                 hide_index=True, use_container_width=True
             )
             
-            # Best lever logic
-            if "Effective_CPR" in inbound.columns:
-                 valid = inbound[inbound["Effective_CPR"] > 0]
-                 if not valid.empty:
-                     best = valid.loc[valid["Effective_CPR"].idxmin()]
-                     st.success(f"💡 **Best Strategic Lever:** Invest in **{best['Origin_builder']}** @ **${best['Effective_CPR']:,.0f} Effective CPR**")
-            else:
-                valid_cpr = inbound[inbound["CPR"].notna()]
-                if not valid_cpr.empty:
-                    best = valid_cpr.loc[valid_cpr["CPR"].idxmin()]
-                    st.success(f"💡 **Best Lever:** Invest in **{best['Origin_builder']}** @ **${best['CPR']:,.2f} CPR**")
+            # Best lever = lowest CPR among inbound
+            valid_cpr = inbound[inbound["CPR"].notna()]
+            if not valid_cpr.empty:
+                best = valid_cpr.loc[valid_cpr["CPR"].idxmin()]
+                st.success(f"💡 **Best lever to increase referrals TO {focus_builder}:** Invest in **{best['Origin_builder']}** @ **${best['CPR']:,.2f} CPR**")
         else:
             st.info("No inbound referrals")
     
