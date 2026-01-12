@@ -20,7 +20,12 @@ from src.normalization import normalize_events
 from src.builder_pnl import build_builder_pnl
 from src.referral_clusters import run_referral_clustering, compute_network_metrics
 from src.utils import fmt_currency, fmt_roas
-from src.network_optimization import calculate_shortfalls, get_targeted_fulfillment_strategies, compute_effective_network_cpr
+from src.network_optimization import (
+    calculate_shortfalls, 
+    get_targeted_fulfillment_strategies, 
+    generate_network_fulfillment_plan,
+    compute_effective_network_cpr
+)
 
 st.set_page_config(page_title="Referral Networks", page_icon="🔗", layout="wide")
 
@@ -206,87 +211,102 @@ def main():
                 shortfall_data.loc[mask, 'Urgency_Weight'] = 2.0
                 shortfall_data.loc[mask, 'Weighted_Demand'] = 100
         
-        # 2. Identify Top Candidates (The Problem)
-        critical_shortfalls = shortfall_data[shortfall_data['Shortfall'] > 0].sort_values('Weighted_Demand', ascending=False)
+        # 2. Network Diagnosis
+        st.subheader("1. Network Diagnosis")
+        
+        critical_shortfalls = shortfall_data[shortfall_data['Shortfall'] > 0].copy()
         
         if critical_shortfalls.empty:
             st.success("✅ No critical lead shortfalls detected.")
         else:
-            col_prob, col_sol = st.columns([1, 2])
+            total_gap = critical_shortfalls['Shortfall'].sum()
+            critical_count = len(critical_shortfalls)
+            high_urgency = len(critical_shortfalls[critical_shortfalls['Urgency_Weight'] >= 1.5])
             
-            with col_prob:
-                st.subheader("1. Top Shortfall Candidates")
-                st.markdown("Builders who need leads **now**.")
-                
-                # Interactive selection
-                candidate = st.radio(
-                    "Select Candidate to Solve:",
-                    options=critical_shortfalls['BuilderRegionKey'].head(5),
-                    format_func=lambda x: f"{x} (Need: {int(critical_shortfalls[critical_shortfalls['BuilderRegionKey']==x]['Shortfall'].iloc[0])})"
-                )
-                
-                selected_shortfall = critical_shortfalls[critical_shortfalls['BuilderRegionKey'] == candidate].iloc[0]
-                
-                st.info(f"""
-                **Candidate Profile:**
-                - **Shortfall:** {int(selected_shortfall['Shortfall'])} leads
-                - **Urgency:** {selected_shortfall['Urgency_Weight']:.1f}x
-                - **Weighted Demand:** {selected_shortfall['Weighted_Demand']:.1f}
-                """)
+            m1, m2, m3 = st.columns(3)
+            m1.metric("Total Lead Gap", f"{int(total_gap)}")
+            m2.metric("Builders w/ Shortfalls", f"{critical_count}")
+            m3.metric("Critical Urgency (<60 days)", f"{high_urgency}", delta_color="inverse")
             
-            with col_sol:
-                st.subheader(f"2. Media Fulfillment Strategy for {candidate}")
-                st.markdown(f"Best payers to target {candidate} with minimal waste.")
-                
-                # 3. Generate Strategies (The Solution)
-                strategies = get_targeted_fulfillment_strategies(events, shortfall_data)
-                
-                # Filter for selected candidate
-                candidate_strategies = strategies[strategies['Dest_Builder'] == candidate].copy()
-                
+            # Interactive Problem Selection
+            st.markdown("#### Top Shortfall Candidates")
+            candidate = st.selectbox(
+                "Select Candidate to Solve:",
+                options=critical_shortfalls.sort_values('Weighted_Demand', ascending=False)['BuilderRegionKey'],
+                format_func=lambda x: f"{x} (Need: {int(critical_shortfalls[critical_shortfalls['BuilderRegionKey']==x]['Shortfall'].iloc[0])})"
+            )
+            
+            selected_shortfall = critical_shortfalls[critical_shortfalls['BuilderRegionKey'] == candidate].iloc[0]
+            
+            # 3. Strategy Analysis
+            st.divider()
+            st.subheader(f"2. Strategy for {candidate}")
+            
+            # Generate all strategies
+            strategies = get_targeted_fulfillment_strategies(events, shortfall_data)
+            candidate_strategies = strategies[strategies['Dest_Builder'] == candidate].copy()
+            
+            col_strat, col_detail = st.columns([2, 1])
+            
+            with col_strat:
                 if candidate_strategies.empty:
-                    st.warning(f"No existing referral pathways found to {candidate}. Consider direct media or new partnerships.")
+                    st.error(f"🔴 **Unserviceable:** No existing referral pathways found to {candidate}.")
+                    st.caption("Action: Consider direct media spend or establishing new partnerships.")
                 else:
-                    # Metrics for top strategy
                     best = candidate_strategies.iloc[0]
+                    st.success(f"🟢 **Recommendation:** Invest in **{best['MediaPayer_BuilderRegionKey']}**")
                     
-                    m1, m2, m3 = st.columns(3)
-                    m1.metric("Best Partner", best['MediaPayer_BuilderRegionKey'])
-                    m2.metric("Est. Cost to Fill", fmt_currency(best['Cost_Per_Target_Lead']), help="Cost to get 1 lead to Target")
-                    m3.metric("Network Flow", f"{best['Flow_Rate']:.1%}", help="% of Partner's leads that go to Target")
-                    
-                    st.markdown("#### Strategic Options")
                     st.dataframe(
                         candidate_strategies[['MediaPayer_BuilderRegionKey', 'Payer_Raw_CPL', 'Flow_Rate', 'Cost_Per_Target_Lead']]
                         .rename(columns={
-                            'MediaPayer_BuilderRegionKey': 'Invest In (Payer)',
+                            'MediaPayer_BuilderRegionKey': 'Source (Payer)',
                             'Payer_Raw_CPL': 'Base CPL',
-                            'Flow_Rate': 'Flow % to Target',
-                            'Cost_Per_Target_Lead': 'Effective CPL for Target'
+                            'Flow_Rate': 'Flow %',
+                            'Cost_Per_Target_Lead': 'Target CPL'
                         })
-                        .style.format({
-                            'Base CPL': '${:,.0f}',
-                            'Flow % to Target': '{:.1%}',
-                            'Effective CPL for Target': '${:,.0f}'
-                        })
-                        .background_gradient(subset=['Effective CPL for Target'], cmap='RdYlGn_r'),
-                        use_container_width=True,
-                        hide_index=True
+                        .style.format({'Base CPL': '${:,.0f}', 'Flow %': '{:.1%}', 'Target CPL': '${:,.0f}'})
+                        .background_gradient(subset=['Target CPL'], cmap='RdYlGn_r'),
+                        use_container_width=True, hide_index=True
                     )
             
+            with col_detail:
+                deadline = selected_shortfall.get('WIP_JOB_LIVE_END', pd.NaT)
+                deadline_str = deadline.strftime('%Y-%m-%d') if pd.notnull(deadline) else "N/A"
+                
+                st.info(f"""
+                **Candidate Status**
+                - **Shortfall:** {int(selected_shortfall['Shortfall'])} leads
+                - **Deadline:** {deadline_str}
+                - **Urgency:** {selected_shortfall['Urgency_Weight']:.1f}x
+                """)
+            
+            # 4. Reconciliation
             st.divider()
+            st.subheader("3. Reconciliation: Network Fulfillment Plan")
+            st.caption("This plan calculates the media requirement to fulfill ALL solvable shortfalls in the network.")
             
-            # 4. Global Strategy Table
-            st.subheader("Global Fulfillment Plan (All Critical Shortfalls)")
-            st.dataframe(
-                strategies.head(10)[['Dest_Builder', 'Shortfall', 'MediaPayer_BuilderRegionKey', 'Cost_Per_Target_Lead']]
-                .rename(columns={'Dest_Builder': 'Target Builder', 'MediaPayer_BuilderRegionKey': 'Recommended Payer', 'Cost_Per_Target_Lead': 'Cost to Serve'})
-                .style.format({'Cost to Serve': '${:,.0f}'}),
-                use_container_width=True,
-                hide_index=True
-            )
+            full_plan = generate_network_fulfillment_plan(shortfall_data, strategies)
             
-            # For map compatibility
+            if not full_plan.empty:
+                # Summary of the Plan
+                total_budget = full_plan['Est_Budget_Required'].sum()
+                fill_count = full_plan[full_plan['Status'] == 'Fulfillable'].shape[0]
+                gap_count = full_plan[full_plan['Status'] != 'Fulfillable'].shape[0]
+                
+                p1, p2, p3 = st.columns(3)
+                p1.metric("Est. Media Requirement", fmt_currency(total_budget))
+                p2.metric("Solvable Builders", fill_count)
+                p3.metric("Unserviceable Gaps", gap_count, delta_color="inverse")
+                
+                st.dataframe(
+                    full_plan[['Priority', 'Target_Builder', 'Shortfall', 'Status', 'Recommended_Action', 'Est_Budget_Required']]
+                    .rename(columns={'Est_Budget_Required': 'Est. Cost'})
+                    .style.format({'Est. Cost': '${:,.0f}'})
+                    .applymap(lambda v: 'color: red' if v == 'Under-Serviced' else 'color: green', subset=['Status']),
+                    use_container_width=True, hide_index=True
+                )
+            
+            # Compatibility for map
             cpr_recs = compute_cpr_recommendations(edges_clean, builder_master)
 
     st.divider()
