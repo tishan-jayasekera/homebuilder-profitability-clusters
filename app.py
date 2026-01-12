@@ -32,7 +32,6 @@ def get_available_pages():
     for f in pages_dir.iterdir():
         if f.suffix == '.py' and not f.name.startswith('_'):
             name_lower = f.name.lower()
-            # Map keywords to page files
             if 'builder' in name_lower or 'pnl' in name_lower:
                 pages['pnl'] = f"pages/{f.name}"
             elif 'orphan' in name_lower:
@@ -67,15 +66,25 @@ def main():
         st.divider()
         st.subheader("Data Status")
         
+        # FIX: Use proper if/else instead of ternary (avoids DeltaGenerator display bug)
         col1, col2 = st.columns(2)
         with col1:
-            st.success("Events ✓") if 'events_file' in st.session_state else st.warning("Events ✗")
+            if 'events_file' in st.session_state:
+                st.success("Events ✓")
+            else:
+                st.warning("Events ✗")
         with col2:
-            st.success("Origin ✓") if 'origin_file' in st.session_state else st.warning("Origin ✗")
+            if 'origin_file' in st.session_state:
+                st.success("Origin ✓")
+            else:
+                st.warning("Origin ✗")
         
         col3, _ = st.columns(2)
         with col3:
-            st.success("Media ✓") if 'media_file' in st.session_state else st.warning("Media ✗")
+            if 'media_file' in st.session_state:
+                st.success("Media ✓")
+            else:
+                st.warning("Media ✗")
     
     st.markdown("---")
     
@@ -136,16 +145,38 @@ def main():
     
     # Debug info
     pages_dir = Path(__file__).parent / "pages"
-    with st.expander("🔧 Debug: Directory Structure"):
+    src_dir = Path(__file__).parent / "src"
+    
+    with st.expander("🔧 Debug: Directory Structure", expanded=True):
+        st.write(f"**App location:** `{Path(__file__).parent}`")
         st.write(f"**Pages directory exists:** {pages_dir.exists()}")
+        st.write(f"**Src directory exists:** {src_dir.exists()}")
+        
+        if not pages_dir.exists() or not src_dir.exists():
+            st.error("⚠️ **Missing directories!** You need to create the folder structure.")
+            st.code("""
+# Run these commands in your project root:
+
+mkdir -p pages src .streamlit
+
+# Then rename your files:
+# src-data-loader.py → src/data_loader.py
+# src-normalization.py → src/normalization.py  
+# src-builder-pnl.py → src/builder_pnl.py
+# src-orphan-media.py → src/orphan_media.py
+# src-referral-clusters.py → src/referral_clusters.py
+# src-utils.py → src/utils.py
+# src-init.py → src/__init__.py
+
+# page-builder-pnl.py → pages/1_Builder_PnL.py
+# page-orphan-media.py → pages/2_Orphan_Media.py  
+# page-referral-networks.py → pages/3_Referral_Networks.py
+            """, language="bash")
+        
         if pages_dir.exists():
             found = [f.name for f in pages_dir.iterdir() if f.suffix == '.py']
             st.write(f"**Pages found:** {found if found else 'None'}")
-        else:
-            st.error(f"Missing directory: {pages_dir}")
         
-        src_dir = Path(__file__).parent / "src"
-        st.write(f"**Src directory exists:** {src_dir.exists()}")
         if src_dir.exists():
             found = [f.name for f in src_dir.iterdir() if f.suffix == '.py']
             st.write(f"**Src modules found:** {found if found else 'None'}")
@@ -161,7 +192,7 @@ def main():
             import pandas as pd
             
             if 'events_df' not in st.session_state:
-                st.session_state['events_file'].seek(0)  # Reset file pointer
+                st.session_state['events_file'].seek(0)
                 df = pd.read_excel(st.session_state['events_file'])
                 st.session_state['events_df'] = df
             else:
