@@ -708,18 +708,26 @@ def render_builder_panel(builder, connections, shortfall_df, leverage_df, builde
     tab_in, tab_out, tab_partners = st.tabs(["📥 Supply (In)", "📤 Demand (Out)", "🤝 Partners"])
     
     with tab_in:
+        # Use full connections, not just direct guidance
         if connections['inbound']:
             df = pd.DataFrame(connections['inbound'])
-            df = df.rename(columns={'partner': 'Source', 'count': 'Vol', 'value': 'Spend'})
-            # Merge efficiency if available in direct guidance
+            # Ensure proper renaming and column existence
+            df = df.rename(columns={'partner': 'Source', 'count': 'Volume', 'value': 'Spend'})
+            
+            # Merge efficiency from direct guidance (if available)
             if direct is not None and not direct.empty:
                 df = df.merge(direct[['Origin_builder', 'Eff_MPR']], left_on='Source', right_on='Origin_builder', how='left')
                 df = df.drop(columns=['Origin_builder'])
                 df.rename(columns={'Eff_MPR': 'Eff. Cost'}, inplace=True)
             
+            # Format columns
+            format_dict = {'Spend': '${:,.0f}'}
+            if 'Eff. Cost' in df.columns:
+                format_dict['Eff. Cost'] = '${:,.0f}'
+                
             st.dataframe(
-                df.style.format({'Spend': '${:,.0f}', 'Eff. Cost': '${:,.0f}'})
-                .background_gradient(subset=['Vol'], cmap='Greens'),
+                df.style.format(format_dict)
+                .background_gradient(subset=['Volume'], cmap='Greens'),
                 hide_index=True, use_container_width=True, height=200
             )
         else:
@@ -728,9 +736,9 @@ def render_builder_panel(builder, connections, shortfall_df, leverage_df, builde
     with tab_out:
         if connections['outbound']:
             df = pd.DataFrame(connections['outbound'])
-            df = df.rename(columns={'partner': 'Destination', 'count': 'Vol'})
+            df = df.rename(columns={'partner': 'Destination', 'count': 'Volume'})
             st.dataframe(
-                df.style.background_gradient(subset=['Vol'], cmap='Oranges'),
+                df.style.background_gradient(subset=['Volume'], cmap='Oranges'),
                 hide_index=True, use_container_width=True, height=200
             )
         else:
