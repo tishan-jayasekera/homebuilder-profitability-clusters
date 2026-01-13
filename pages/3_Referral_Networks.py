@@ -1,1025 +1,944 @@
 """
-Referral Network Analysis
-A structured analytical view of the referral ecosystem.
+Network Intelligence Engine — V2 (Operational + Traceable)
+Commercial focus:
+- Who is under/over-served (forecast-aware)
+- Which network sources can close gaps at lowest effective CPR
+- Portfolio media plan that reconciles overserve vs underserve, fully auditable
 """
-import streamlit as st
-import pandas as pd
-import numpy as np
-import networkx as nx
-import plotly.graph_objects as go
-import plotly.express as px
-from plotly.subplots import make_subplots
+
+from __future__ import annotations
+
 import sys
 from pathlib import Path
+from typing import Dict, List, Optional, Tuple
 
+import numpy as np
+import pandas as pd
+import streamlit as st
+import networkx as nx
+import plotly.graph_objects as go
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Repo imports
+# ──────────────────────────────────────────────────────────────────────────────
 root = Path(__file__).parent.parent
 if str(root) not in sys.path:
     sys.path.insert(0, str(root))
 
-from src.data_loader import load_events, export_to_excel
+from src.data_loader import load_events  # keep existing
 from src.normalization import normalize_events
 from src.referral_clusters import run_referral_clustering
-from src.utils import fmt_currency
 from src.builder_pnl import build_builder_pnl
-from src.network_optimization import (
-    calculate_shortfalls, analyze_network_leverage,
-    simulate_campaign_spend, analyze_campaign_network
-)
 
-st.set_page_config(page_title="Referral Network Analysis", page_icon="🔗", layout="wide")
+# Optimiser: prefer src, fallback to root module
+try:
+    from src.network_optimization import (
+        OptimConfig,
+        calculate_shortfalls,
+        analyze_network_leverage,
+        generate_investment_strategies,
+        optimise_portfolio_media_plan,
+    )
+except Exception:
+    from network_optimization import (
+        OptimConfig,
+        calculate_shortfalls,
+        analyze_network_leverage,
+        generate_investment_strategies,
+        optimise_portfolio_media_plan,
+    )
 
-# ============================================================================
-# CLEAN, READABLE STYLES
-# ============================================================================
-st.markdown("""
+# Formatting helper
+try:
+    from src.utils import fmt_currency
+except Exception:
+    def fmt_currency(x):
+        try:
+            return f"${float(x):,.0f}"
+        except Exception:
+            return "—"
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Page config
+# ──────────────────────────────────────────────────────────────────────────────
+st.set_page_config(page_title="Network Intelligence", page_icon="🔗", layout="wide")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Styling
+# ──────────────────────────────────────────────────────────────────────────────
+CSS = """
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+/* Layout polish */
+.block-container { padding-top: 1.2rem; padding-bottom: 2.5rem; }
+h1, h2, h3 { letter-spacing: -0.02em; }
+hr { margin: 1.1rem 0; }
 
-html, body, [class*="css"] { font-family: 'Inter', -apple-system, sans-serif; }
-#MainMenu, footer, .stDeployButton { display: none; }
+/* Cards */
+.ni-card{
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  border-radius: 16px;
+  padding: 16px 16px 14px 16px;
+  box-shadow: 0 8px 20px -14px rgba(0,0,0,0.25);
+}
+.ni-card:hover{ border-color:#d1d5db; }
 
-/* Page header */
-.page-header {
-    border-bottom: 2px solid #e5e7eb;
-    padding-bottom: 1rem;
-    margin-bottom: 2rem;
+.ni-kpi-label{
+  font-size: 0.74rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-weight: 700;
+  color: #6b7280;
 }
-.page-title {
-    font-size: 1.75rem;
-    font-weight: 700;
-    color: #111827;
-    margin: 0;
+.ni-kpi-value{
+  font-size: 1.55rem;
+  font-weight: 800;
+  color: #111827;
+  line-height: 1.05;
+  margin-top: 2px;
 }
-.page-subtitle {
-    color: #6b7280;
-    font-size: 0.95rem;
-    margin-top: 0.25rem;
-}
-
-/* Section styling */
-.section {
-    margin-bottom: 2.5rem;
-}
-.section-header {
-    display: flex;
-    align-items: center;
-    gap: 0.75rem;
-    margin-bottom: 1rem;
-    padding-bottom: 0.5rem;
-    border-bottom: 1px solid #e5e7eb;
-}
-.section-number {
-    background: #111827;
-    color: white;
-    width: 28px;
-    height: 28px;
-    border-radius: 50%;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 0.8rem;
-    font-weight: 600;
-    flex-shrink: 0;
-}
-.section-title {
-    font-size: 1.1rem;
-    font-weight: 600;
-    color: #111827;
-    margin: 0;
-}
-.section-desc {
-    color: #6b7280;
-    font-size: 0.85rem;
-    margin-left: auto;
+.ni-kpi-sub{
+  font-size: 0.86rem;
+  color: #6b7280;
+  margin-top: 4px;
 }
 
-/* KPI row */
-.kpi-row {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-    gap: 1rem;
-    margin-bottom: 1.5rem;
+/* Badges */
+.ni-badge{
+  display:inline-flex; align-items:center;
+  padding: 4px 10px; border-radius: 999px;
+  font-size: 0.78rem; font-weight: 800;
+  border:1px solid transparent;
 }
-.kpi-box {
-    background: #f9fafb;
-    border: 1px solid #e5e7eb;
-    border-radius: 8px;
-    padding: 1rem;
-}
-.kpi-label {
-    font-size: 0.7rem;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    color: #6b7280;
-    margin-bottom: 0.25rem;
-}
-.kpi-value {
-    font-size: 1.35rem;
-    font-weight: 700;
-    color: #111827;
-}
-.kpi-sub {
-    font-size: 0.75rem;
-    color: #9ca3af;
-    margin-top: 0.15rem;
-}
+.ni-red{ background:#fef2f2; color:#991b1b; border-color:#fecaca; }
+.ni-amber{ background:#fffbeb; color:#92400e; border-color:#fde68a; }
+.ni-green{ background:#f0fdf4; color:#166534; border-color:#bbf7d0; }
+.ni-blue{ background:#eff6ff; color:#1e40af; border-color:#dbeafe; }
 
-/* Insight callout */
-.insight {
-    background: #fffbeb;
-    border: 1px solid #fde68a;
-    border-left: 4px solid #f59e0b;
-    border-radius: 6px;
-    padding: 1rem 1.25rem;
-    margin: 1rem 0;
+/* Section headers */
+.ni-section{
+  display:flex; align-items:center; justify-content:space-between;
+  margin: 0.4rem 0 0.8rem 0;
 }
-.insight-title {
-    font-weight: 600;
-    color: #92400e;
-    font-size: 0.85rem;
-    margin-bottom: 0.35rem;
+.ni-section-title{
+  font-size:1.15rem; font-weight:900; color:#111827;
 }
-.insight-text {
-    color: #78350f;
-    font-size: 0.9rem;
-    line-height: 1.5;
-}
+.ni-section-sub{ font-size:0.92rem; color:#6b7280; }
 
-/* Action callout */
-.action-box {
-    background: #eff6ff;
-    border: 1px solid #bfdbfe;
-    border-left: 4px solid #3b82f6;
-    border-radius: 6px;
-    padding: 1rem 1.25rem;
-    margin: 1rem 0;
-}
-.action-title {
-    font-weight: 600;
-    color: #1e40af;
-    font-size: 0.85rem;
-    margin-bottom: 0.35rem;
-}
-.action-text {
-    color: #1e3a8a;
-    font-size: 0.9rem;
-    line-height: 1.5;
-}
-
-/* Builder card */
-.builder-card {
-    background: white;
-    border: 1px solid #e5e7eb;
-    border-radius: 10px;
-    padding: 1.25rem;
-    margin-bottom: 1rem;
-}
-.builder-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: flex-start;
-    margin-bottom: 1rem;
-}
-.builder-name {
-    font-size: 1rem;
-    font-weight: 600;
-    color: #111827;
-}
-.builder-cluster {
-    font-size: 0.75rem;
-    color: #6b7280;
-    margin-top: 0.15rem;
-}
-
-/* Status pills */
-.pill {
-    display: inline-flex;
-    align-items: center;
-    padding: 0.25rem 0.6rem;
-    border-radius: 12px;
-    font-size: 0.7rem;
-    font-weight: 600;
-}
-.pill-critical { background: #fef2f2; color: #dc2626; border: 1px solid #fecaca; }
-.pill-warning { background: #fffbeb; color: #d97706; border: 1px solid #fde68a; }
-.pill-healthy { background: #f0fdf4; color: #16a34a; border: 1px solid #bbf7d0; }
-.pill-neutral { background: #f3f4f6; color: #4b5563; border: 1px solid #e5e7eb; }
-
-/* Mini metrics */
-.mini-metrics {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 0.75rem;
-    margin-top: 1rem;
-    padding-top: 1rem;
-    border-top: 1px solid #f3f4f6;
-}
-.mini-metric {
-    text-align: center;
-}
-.mini-metric-value {
-    font-size: 1rem;
-    font-weight: 600;
-    color: #111827;
-}
-.mini-metric-label {
-    font-size: 0.65rem;
-    text-transform: uppercase;
-    color: #9ca3af;
-    margin-top: 0.1rem;
-}
-
-/* Flow table */
-.flow-row {
-    display: flex;
-    align-items: center;
-    padding: 0.6rem 0;
-    border-bottom: 1px solid #f3f4f6;
-}
-.flow-row:last-child { border-bottom: none; }
-.flow-source {
-    flex: 1;
-    font-size: 0.85rem;
-    color: #374151;
-}
-.flow-value {
-    font-weight: 600;
-    color: #111827;
-    font-size: 0.9rem;
-}
-.flow-bar {
-    width: 60px;
-    height: 6px;
-    background: #e5e7eb;
-    border-radius: 3px;
-    margin-left: 0.75rem;
-    overflow: hidden;
-}
-.flow-bar-fill {
-    height: 100%;
-    background: #3b82f6;
-    border-radius: 3px;
-}
-
-/* Campaign target list */
-.target-list {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.5rem;
-    margin: 0.75rem 0;
-}
-.target-chip {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.4rem;
-    background: #f3f4f6;
-    border: 1px solid #e5e7eb;
-    border-radius: 6px;
-    padding: 0.4rem 0.7rem;
-    font-size: 0.8rem;
-    color: #374151;
-}
-.target-chip .dot {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-}
-.target-chip .dot.red { background: #ef4444; }
-.target-chip .dot.amber { background: #f59e0b; }
-.target-chip .dot.green { background: #10b981; }
-
-/* Allocation table */
-.alloc-table {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: 0.85rem;
-}
-.alloc-table th {
-    text-align: left;
-    padding: 0.75rem 0.5rem;
-    font-size: 0.7rem;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    color: #6b7280;
-    border-bottom: 2px solid #e5e7eb;
-    font-weight: 600;
-}
-.alloc-table td {
-    padding: 0.75rem 0.5rem;
-    border-bottom: 1px solid #f3f4f6;
-    color: #374151;
-}
-.alloc-table tr:hover td {
-    background: #f9fafb;
-}
+/* Table helpers */
+.small-note { font-size: 0.88rem; color: #6b7280; }
 </style>
-""", unsafe_allow_html=True)
+"""
+st.markdown(CSS, unsafe_allow_html=True)
 
-# ============================================================================
-# SESSION STATE
-# ============================================================================
-if 'targets' not in st.session_state:
-    st.session_state.targets = []
-if 'focus_builder' not in st.session_state:
-    st.session_state.focus_builder = None
-if 'sim_results' not in st.session_state:
-    st.session_state.sim_results = None
 
-# ============================================================================
-# DATA LOADING
-# ============================================================================
+# ──────────────────────────────────────────────────────────────────────────────
+# Session state
+# ──────────────────────────────────────────────────────────────────────────────
+if "campaign_targets" not in st.session_state:
+    st.session_state.campaign_targets = []
+if "selected_builder" not in st.session_state:
+    st.session_state.selected_builder = None
+if "plan_result" not in st.session_state:
+    st.session_state.plan_result = None
+
+
+def _add_target(b: str):
+    if b and b not in st.session_state.campaign_targets:
+        st.session_state.campaign_targets.append(b)
+
+
+def _remove_target(b: str):
+    if b in st.session_state.campaign_targets:
+        st.session_state.campaign_targets.remove(b)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Data loading
+# ──────────────────────────────────────────────────────────────────────────────
 @st.cache_data(show_spinner=False)
-def load_data():
-    if 'events_file' not in st.session_state:
+def load_and_process_from_upload(upload_key: str) -> Optional[pd.DataFrame]:
+    """Upload key ensures cache busts when file changes."""
+    if "events_file" not in st.session_state:
         return None
-    events = load_events(st.session_state['events_file'])
-    return normalize_events(events) if events is not None else None
+    events = load_events(st.session_state["events_file"])
+    if events is None or len(events) == 0:
+        return None
+    return normalize_events(events)
 
-@st.cache_data(show_spinner=False)
-def process_network(_events, start_date=None, end_date=None):
-    df = _events.copy()
-    
-    if start_date and end_date:
-        mask = (df['lead_date'] >= pd.Timestamp(start_date)) & (df['lead_date'] <= pd.Timestamp(end_date))
-        df = df[mask]
-    
-    period_days = (pd.Timestamp(end_date) - pd.Timestamp(start_date)).days if start_date and end_date else 90
-    
-    pnl = build_builder_pnl(df, lens='recipient', freq='ALL')
-    shortfalls = calculate_shortfalls(df, period_days=period_days)
-    leverage = analyze_network_leverage(df)
-    clusters = run_referral_clustering(df, target_max_clusters=12)
-    
-    builder_master = clusters.get('builder_master', pd.DataFrame())
-    if not builder_master.empty and 'BuilderRegionKey' in pnl.columns:
-        builder_master = builder_master.merge(
-            pnl[['BuilderRegionKey', 'Profit', 'ROAS', 'MediaCost', 'Revenue', 'N_referrals']],
-            on='BuilderRegionKey', how='left'
-        ).fillna(0)
-    
-    # Monthly trends
-    df['month'] = pd.to_datetime(df['lead_date']).dt.to_period('M').dt.start_time
-    monthly = df[df['is_referral'] == True].groupby('month').size().reset_index(name='referrals')
-    
+
+def _first_col(df: pd.DataFrame, candidates: List[str]) -> Optional[str]:
+    for c in candidates:
+        if c in df.columns:
+            return c
+    return None
+
+
+def _required_cols_check(events: pd.DataFrame) -> Tuple[bool, List[str]]:
+    """Minimal viable columns for full engine; we’ll still run partial if missing."""
+    missing = []
+    if _first_col(events, ["lead_date", "RefDate", "ref_date", "LeadDate", "date"]) is None:
+        missing.append("lead_date (or RefDate/ref_date)")
+    if _first_col(events, ["is_referral", "IsReferral", "isReferral"]) is None:
+        missing.append("is_referral")
+    if _first_col(events, ["Dest_BuilderRegionKey", "Dest_builder", "DestBuilderRegionKey", "Dest"]) is None:
+        missing.append("Dest_BuilderRegionKey")
+    if _first_col(events, ["MediaPayer_BuilderRegionKey", "Origin_builder", "Source_BuilderRegionKey", "Source"]) is None:
+        missing.append("MediaPayer_BuilderRegionKey")
+    return (len(missing) == 0), missing
+
+
+def _filter_by_date(events: pd.DataFrame, start: Optional[pd.Timestamp], end: Optional[pd.Timestamp]) -> pd.DataFrame:
+    date_col = _first_col(events, ["lead_date", "RefDate", "ref_date", "LeadDate", "date"])
+    if not date_col or start is None or end is None:
+        return events
+    df = events.copy()
+    df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
+    return df[(df[date_col].notna()) & (df[date_col] >= start) & (df[date_col] <= end)].copy()
+
+
+def _get_all_builders(events: pd.DataFrame) -> List[str]:
+    b = set()
+    for col in ["Dest_BuilderRegionKey", "MediaPayer_BuilderRegionKey", "Origin_builder", "Dest_builder"]:
+        if col in events.columns:
+            b.update(events[col].dropna().astype(str).unique())
+    return sorted(b)
+
+
+def _get_builder_connections(events: pd.DataFrame, builder: str) -> Dict[str, List[Dict]]:
+    """Direct connections (inbound/outbound/mutual), robust to column names."""
+    if not builder:
+        return {"inbound": [], "outbound": [], "two_way": []}
+
+    is_ref = _first_col(events, ["is_referral", "IsReferral", "isReferral"])
+    src = _first_col(events, ["MediaPayer_BuilderRegionKey", "Origin_builder", "Source_BuilderRegionKey", "Source"])
+    dst = _first_col(events, ["Dest_BuilderRegionKey", "Dest_builder", "DestBuilderRegionKey", "Dest"])
+    spend = _first_col(events, ["MediaCost_referral_event", "MediaCost", "media_cost", "Spend", "Cost"])
+    leadid = _first_col(events, ["LeadId", "lead_id", "id"])
+
+    df = events.copy()
+    if is_ref is not None:
+        if df[is_ref].dtype == object:
+            df[is_ref] = df[is_ref].astype(str).str.lower().isin(["true", "1", "yes", "y"])
+        df = df[df[is_ref] == True].copy()
+
+    if df.empty or src is None or dst is None:
+        return {"inbound": [], "outbound": [], "two_way": []}
+
+    # inbound: src -> builder
+    inbound = df[df[dst].astype(str) == str(builder)].copy()
+    if leadid and leadid in inbound.columns:
+        agg_in = inbound.groupby(src).agg(
+            refs_in=(leadid, "count"),
+            spend_in=(spend, "sum") if spend else (leadid, "count"),
+        ).reset_index()
+    else:
+        agg_in = inbound.groupby(src).size().reset_index(name="refs_in")
+        agg_in["spend_in"] = np.nan
+
+    agg_in = agg_in.rename(columns={src: "partner"})
+
+    # outbound: builder -> dst
+    outbound = df[df[src].astype(str) == str(builder)].copy()
+    if leadid and leadid in outbound.columns:
+        agg_out = outbound.groupby(dst).agg(refs_out=(leadid, "count")).reset_index()
+    else:
+        agg_out = outbound.groupby(dst).size().reset_index(name="refs_out")
+    agg_out = agg_out.rename(columns={dst: "partner"})
+
+    merged = pd.merge(agg_in, agg_out, on="partner", how="outer").fillna(0)
+    two = merged[(merged["refs_in"] > 0) & (merged["refs_out"] > 0)].copy()
+    ino = merged[(merged["refs_in"] > 0) & (merged["refs_out"] == 0)].copy()
+    outo = merged[(merged["refs_in"] == 0) & (merged["refs_out"] > 0)].copy()
+
     return {
-        'events': df,
-        'pnl': pnl,
-        'shortfalls': shortfalls,
-        'leverage': leverage,
-        'builder_master': builder_master,
-        'edges': clusters.get('edges_clean', pd.DataFrame()),
-        'graph': clusters.get('graph', nx.Graph()),
-        'cluster_summary': clusters.get('cluster_summary', pd.DataFrame()),
-        'monthly': monthly,
-        'period_days': period_days,
+        "two_way": two.sort_values(["refs_in", "refs_out"], ascending=False).to_dict("records"),
+        "inbound": ino.sort_values("refs_in", ascending=False).to_dict("records"),
+        "outbound": outo.sort_values("refs_out", ascending=False).to_dict("records"),
     }
 
-def get_builder_detail(builder, data):
-    bm = data['builder_master']
-    sf = data['shortfalls']
-    edges = data['edges']
-    
-    row = bm[bm['BuilderRegionKey'] == builder]
-    if row.empty:
-        return None
-    
-    r = row.iloc[0]
-    sf_row = sf[sf['BuilderRegionKey'] == builder]
-    
-    inbound = edges[edges['Dest_builder'] == builder].copy() if not edges.empty else pd.DataFrame()
-    outbound = edges[edges['Origin_builder'] == builder].copy() if not edges.empty else pd.DataFrame()
-    
-    return {
-        'builder': builder,
-        'cluster': int(r.get('ClusterId', 0)),
-        'profit': float(r.get('Profit', 0)),
-        'revenue': float(r.get('Revenue', 0)),
-        'media_cost': float(r.get('MediaCost', 0)),
-        'roas': float(r.get('ROAS', 0)),
-        'refs_in': int(r.get('Referrals_in', 0)),
-        'refs_out': int(r.get('Referrals_out', 0)),
-        'role': r.get('Role', 'unknown'),
-        'shortfall': float(sf_row['Projected_Shortfall'].iloc[0]) if not sf_row.empty else 0,
-        'risk_score': float(sf_row['Risk_Score'].iloc[0]) if not sf_row.empty else 0,
-        'inbound_df': inbound.nlargest(10, 'Referrals') if not inbound.empty else pd.DataFrame(),
-        'outbound_df': outbound.nlargest(10, 'Referrals') if not outbound.empty else pd.DataFrame(),
-    }
 
-# ============================================================================
-# VISUALIZATION
-# ============================================================================
-def render_network_graph(G, pos, builder_master, focus=None, targets=None):
+# ──────────────────────────────────────────────────────────────────────────────
+# Viz helpers
+# ──────────────────────────────────────────────────────────────────────────────
+def kpi_card(label: str, value: str, sub: str = ""):
+    st.markdown(
+        f"""
+        <div class="ni-card">
+          <div class="ni-kpi-label">{label}</div>
+          <div class="ni-kpi-value">{value}</div>
+          <div class="ni-kpi-sub">{sub}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def badge_for_service(flag: str) -> str:
+    if flag == "UNDER":
+        return '<span class="ni-badge ni-red">UNDER</span>'
+    if flag == "OVER":
+        return '<span class="ni-badge ni-amber">OVER</span>'
+    return '<span class="ni-badge ni-green">ON TRACK</span>'
+
+
+def render_network_map(G: nx.Graph, pos: Dict, selected: Optional[str] = None, connections: Optional[Dict] = None) -> go.Figure:
     fig = go.Figure()
-    
-    targets = targets or []
-    cluster_map = builder_master.set_index('BuilderRegionKey')['ClusterId'].to_dict() if not builder_master.empty else {}
-    profit_map = builder_master.set_index('BuilderRegionKey')['Profit'].to_dict() if 'Profit' in builder_master.columns else {}
-    
-    colors = px.colors.qualitative.Set2
-    
-    # Edges
-    edge_x, edge_y = [], []
-    for u, v in G.edges():
-        if u in pos and v in pos:
-            x0, y0 = pos[u]
-            x1, y1 = pos[v]
-            edge_x.extend([x0, x1, None])
-            edge_y.extend([y0, y1, None])
-    
-    fig.add_trace(go.Scatter(
-        x=edge_x, y=edge_y, mode='lines',
-        line=dict(width=0.4, color='#d1d5db'),
-        hoverinfo='skip', showlegend=False
-    ))
-    
-    # Nodes
-    node_x, node_y, node_color, node_size, node_text, node_line_color, node_line_width = [], [], [], [], [], [], []
-    degrees = dict(G.degree(weight='weight'))
-    max_deg = max(degrees.values()) if degrees else 1
-    
-    for node in G.nodes():
-        if node not in pos:
+
+    highlight = set()
+    role = {}
+    if selected and connections:
+        highlight.add(selected)
+        role[selected] = "selected"
+        for r in connections.get("inbound", []):
+            highlight.add(r["partner"]); role[r["partner"]] = "in"
+        for r in connections.get("outbound", []):
+            highlight.add(r["partner"]); role[r["partner"]] = "out"
+        for r in connections.get("two_way", []):
+            highlight.add(r["partner"]); role[r["partner"]] = "mutual"
+
+    ROLE_COL = {
+        "selected": "#ef4444",
+        "in": "#10b981",
+        "out": "#f59e0b",
+        "mutual": "#3b82f6",
+        "dim": "#e5e7eb",
+    }
+
+    # Background edges (single trace)
+    ex, ey = [], []
+    for u, v, data in G.edges(data=True):
+        if u not in pos or v not in pos:
             continue
-        x, y = pos[node]
-        node_x.append(x)
-        node_y.append(y)
-        
-        deg = degrees.get(node, 0)
-        size = 8 + (deg / max_deg) * 25
-        
-        cid = cluster_map.get(node, 0)
-        color = colors[cid % len(colors)]
-        
-        line_color = '#e5e7eb'
-        line_width = 1
-        
-        if node == focus:
-            line_color = '#3b82f6'
-            line_width = 3
-            size += 8
-        elif node in targets:
-            line_color = '#10b981'
-            line_width = 2
-            size += 4
-        
-        profit = profit_map.get(node, 0)
-        node_color.append(color)
-        node_size.append(size)
-        node_line_color.append(line_color)
-        node_line_width.append(line_width)
-        node_text.append(f"<b>{node}</b><br>Cluster {cid}<br>Profit: ${profit:,.0f}<br>Volume: {deg:,.0f}")
-    
-    fig.add_trace(go.Scatter(
-        x=node_x, y=node_y, mode='markers',
-        marker=dict(
-            size=node_size, color=node_color,
-            line=dict(color=node_line_color, width=node_line_width)
-        ),
-        text=node_text, hoverinfo='text', showlegend=False
+        x0, y0 = pos[u]; x1, y1 = pos[v]
+        ex += [x0, x1, None]
+        ey += [y0, y1, None]
+    fig.add_trace(go.Scattergl(
+        x=ex, y=ey, mode="lines",
+        line=dict(color="#e5e7eb", width=0.6),
+        opacity=0.35 if selected else 0.55,
+        hoverinfo="skip", showlegend=False
     ))
-    
+
+    # Highlight edges around selected
+    if selected:
+        for u, v, data in G.edges(data=True):
+            if u not in pos or v not in pos:
+                continue
+            if u != selected and v != selected:
+                continue
+            other = v if u == selected else u
+            col = ROLE_COL.get(role.get(other, "dim"), "#9ca3af")
+            w = 1.8 + 0.15 * float(data.get("weight", 1))
+            x0, y0 = pos[u]; x1, y1 = pos[v]
+            fig.add_trace(go.Scattergl(
+                x=[x0, x1], y=[y0, y1], mode="lines",
+                line=dict(color=col, width=w),
+                opacity=0.95, hoverinfo="skip", showlegend=False
+            ))
+
+    # Nodes
+    node_x, node_y, node_color, node_size, node_text, node_op = [], [], [], [], [], []
+    deg = dict(G.degree(weight="weight"))
+    mx = max(deg.values()) if deg else 1.0
+
+    for n in G.nodes():
+        if n not in pos:
+            continue
+        x, y = pos[n]
+        node_x.append(x); node_y.append(y)
+
+        base = 10 + 22 * (deg.get(n, 0) / mx)
+        if selected:
+            if n == selected:
+                c = ROLE_COL["selected"]; s = base + 12; op = 1.0
+                t = f"<b>{n}</b><br>FOCUS<br>Weighted degree: {deg.get(n,0):.0f}"
+            elif n in highlight:
+                r = role.get(n, "dim")
+                c = ROLE_COL.get(r, "#9ca3af"); s = base + 5; op = 0.95
+                lab = {"in":"Inbound source","out":"Outbound dest","mutual":"Mutual partner"}.get(r,"")
+                t = f"<b>{n}</b><br>{lab}<br>Weighted degree: {deg.get(n,0):.0f}"
+            else:
+                c = "#9ca3af"; s = base * 0.65; op = 0.20
+                t = f"{n}"
+        else:
+            c = "#3b82f6"; s = base; op = 0.90
+            t = f"<b>{n}</b><br>Weighted degree: {deg.get(n,0):.0f}"
+
+        node_color.append(c); node_size.append(s); node_text.append(t); node_op.append(op)
+
+    fig.add_trace(go.Scattergl(
+        x=node_x, y=node_y, mode="markers",
+        marker=dict(size=node_size, color=node_color, opacity=node_op, line=dict(color="white", width=1.2)),
+        text=node_text, hoverinfo="text", showlegend=False
+    ))
+
     fig.update_layout(
-        height=450,
         margin=dict(l=0, r=0, t=0, b=0),
-        paper_bgcolor='white',
-        plot_bgcolor='white',
+        height=620,
+        paper_bgcolor="white",
+        plot_bgcolor="white",
         xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
         yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
-        hovermode='closest'
+        hovermode="closest",
+        dragmode="pan",
     )
-    
     return fig
 
-def render_trend_chart(monthly):
-    if monthly.empty:
+
+def sankey_from_plan_edges(plan_edges: pd.DataFrame, targets_set: set, min_leads: float = 2.0) -> Optional[go.Figure]:
+    if plan_edges is None or plan_edges.empty:
         return None
-    
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(
-        x=monthly['month'], y=monthly['referrals'],
-        mode='lines+markers',
-        line=dict(color='#3b82f6', width=2),
-        marker=dict(size=6),
-        fill='tozeroy',
-        fillcolor='rgba(59, 130, 246, 0.1)'
-    ))
-    
-    fig.update_layout(
-        height=200,
-        margin=dict(l=0, r=0, t=10, b=0),
-        paper_bgcolor='white',
-        plot_bgcolor='white',
-        xaxis=dict(showgrid=False, title=None),
-        yaxis=dict(showgrid=True, gridcolor='#f3f4f6', title=None),
-        showlegend=False
-    )
-    
-    return fig
 
-def render_cluster_flows(edges, builder_master):
-    if edges.empty or builder_master.empty:
+    df = plan_edges.copy()
+    df = df[df["Expected_Leads"] >= float(min_leads)].copy()
+    if df.empty:
         return None
-    
-    cluster_map = builder_master.set_index('BuilderRegionKey')['ClusterId'].to_dict()
-    
-    df = edges.copy()
-    df['from_cluster'] = df['Origin_builder'].map(cluster_map)
-    df['to_cluster'] = df['Dest_builder'].map(cluster_map)
-    
-    matrix = df.groupby(['from_cluster', 'to_cluster'])['Referrals'].sum().unstack(fill_value=0)
-    
-    fig = go.Figure(go.Heatmap(
-        z=matrix.values,
-        x=[f"Cluster {c}" for c in matrix.columns],
-        y=[f"Cluster {c}" for c in matrix.index],
-        colorscale='Blues',
-        hoverongaps=False,
-        hovertemplate="From %{y} → %{x}<br>Referrals: %{z:,}<extra></extra>"
-    ))
-    
-    fig.update_layout(
-        height=300,
-        margin=dict(l=0, r=0, t=10, b=0),
-        paper_bgcolor='white',
-        xaxis=dict(title=None, side='top'),
-        yaxis=dict(title=None, autorange='reversed'),
-    )
-    
+
+    # Keep only sources that actually hit targets OR show all with highlight
+    df["IsTarget"] = df["Dest"].astype(str).isin({str(x) for x in targets_set})
+
+    # Nodes
+    sources = df["Source"].astype(str).unique().tolist()
+    targets = df["Dest"].astype(str).unique().tolist()
+
+    labels = sources + targets
+    idx = {k: i for i, k in enumerate(labels)}
+
+    s_idx = df["Source"].astype(str).map(idx).tolist()
+    t_idx = df["Dest"].astype(str).map(idx).tolist()
+    vals = df["Expected_Leads"].astype(float).tolist()
+
+    # Color targets lightly
+    node_colors = []
+    for lab in labels:
+        if lab in sources:
+            node_colors.append("#3b82f6")
+        elif lab in targets_set:
+            node_colors.append("#10b981")
+        else:
+            node_colors.append("#9ca3af")
+
+    fig = go.Figure(data=[go.Sankey(
+        node=dict(
+            pad=14, thickness=18,
+            line=dict(color="rgba(0,0,0,0.15)", width=0.8),
+            label=labels, color=node_colors
+        ),
+        link=dict(
+            source=s_idx, target=t_idx, value=vals,
+            color="rgba(148,163,184,0.35)",
+            hovertemplate="Leads: %{value:.1f}<extra></extra>"
+        )
+    )])
+    fig.update_layout(height=420, margin=dict(l=10, r=10, t=10, b=10))
     return fig
 
-# ============================================================================
-# MAIN APPLICATION
-# ============================================================================
+
+def export_audit_pack_xlsx(
+    out_path: str,
+    sheets: Dict[str, pd.DataFrame],
+) -> bytes:
+    """Return XLSX bytes for st.download_button."""
+    import io
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as w:
+        for name, df in sheets.items():
+            if df is None:
+                continue
+            if not isinstance(df, pd.DataFrame):
+                continue
+            df.to_excel(w, sheet_name=str(name)[:31], index=False)
+    buf.seek(0)
+    return buf.read()
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Main
+# ──────────────────────────────────────────────────────────────────────────────
 def main():
-    events = load_data()
-    
+    st.markdown(
+        """
+        <div class="ni-section">
+          <div>
+            <div class="ni-section-title">🔗 Network Intelligence OS</div>
+            <div class="ni-section-sub">Forecast-aware shortfalls → network leverage → lowest-eCPR media plan (audited)</div>
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    events = load_and_process_from_upload("events_file")
     if events is None:
-        st.warning("⚠️ Please upload Events data on the Home page to begin analysis.")
-        st.page_link("app.py", label="← Go to Home", icon="🏠")
+        st.warning("⚠️ Please upload Events on the Home page first.")
         return
-    
-    # Sidebar filters
+
+    ok, missing = _required_cols_check(events)
+    if not ok:
+        st.error("Your events file is missing required columns for the full engine:")
+        st.write(missing)
+        st.info("You can still browse clusters, but optimisation may be partial.")
+        st.divider()
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Sidebar controls (period + engine params)
+    # ──────────────────────────────────────────────────────────────────────────
     with st.sidebar:
-        st.markdown("### Filters")
-        
-        dates = pd.to_datetime(events['lead_date'], errors='coerce').dropna()
-        min_d, max_d = dates.min().date(), dates.max().date()
-        
-        date_range = st.date_input("Date Range", value=(min_d, max_d), min_value=min_d, max_value=max_d)
-        
-        st.markdown("---")
-        st.markdown("### Campaign Targets")
-        
-        if st.session_state.targets:
-            for t in st.session_state.targets:
-                col1, col2 = st.columns([4, 1])
-                col1.caption(t[:25])
-                if col2.button("×", key=f"rm_{t}"):
-                    st.session_state.targets.remove(t)
-                    st.rerun()
-            
-            if st.button("Clear All", use_container_width=True):
-                st.session_state.targets = []
-                st.session_state.sim_results = None
+        st.markdown("## ⚙️ Controls")
+
+        date_col = _first_col(events, ["lead_date", "RefDate", "ref_date", "LeadDate", "date"])
+        if date_col:
+            tmp = events.copy()
+            tmp[date_col] = pd.to_datetime(tmp[date_col], errors="coerce")
+            ds = tmp[date_col].dropna()
+        else:
+            ds = pd.Series([], dtype="datetime64[ns]")
+
+        if not ds.empty:
+            min_d, max_d = ds.min().date(), ds.max().date()
+            dr = st.date_input("Analysis Period", value=(min_d, max_d))
+            if dr and len(dr) == 2:
+                start_date, end_date = pd.Timestamp(dr[0]), pd.Timestamp(dr[1])
+            else:
+                start_date, end_date = None, None
+        else:
+            st.caption("No date column found; using all rows.")
+            start_date, end_date = None, None
+
+        st.markdown("### 🧠 Engine")
+        cfg = OptimConfig(
+            pace_lookback_days=st.slider("Pace lookback (days)", 7, 60, 14, 1),
+            transfer_lookback_days=st.slider("Transfer lookback (days)", 30, 365, 90, 5),
+            overserve_tolerance=st.slider("Overserve tolerance", 0.0, 0.5, 0.10, 0.01),
+            prior_strength=st.slider("Transfer smoothing (prior strength)", 5.0, 100.0, 25.0, 5.0),
+            min_transfer_events=st.slider("Min transfer events", 1, 25, 5, 1),
+            urgency_days_scale=st.slider("Urgency days scale", 7.0, 60.0, 21.0, 1.0),
+            pace_gap_alpha=st.slider("Pace gap weight", 0.5, 3.0, 1.25, 0.05),
+            max_step_spend=st.number_input("Max spend step", min_value=1_000, value=25_000, step=1_000),
+            min_step_spend=st.number_input("Min spend step", min_value=100, value=500, step=100),
+        )
+
+        st.markdown("### 🧩 Clustering")
+        max_clusters = st.slider("Max clusters", 3, 25, 12, 1)
+        resolution = st.slider("Resolution", 0.5, 2.5, 1.5, 0.1)
+
+        st.markdown("### 💸 Media plan")
+        new_money = st.number_input("New money ($)", min_value=0, value=0, step=5_000)
+        max_mult = st.slider("Max spend multiplier (vs baseline)", 0.5, 3.0, 1.0, 0.05)
+        overserve_penalty = st.slider("Overserve penalty", 0.0, 1.0, 0.25, 0.05)
+
+        st.divider()
+        st.markdown("### 🛒 Campaign Cart")
+        if st.session_state.campaign_targets:
+            for t in list(st.session_state.campaign_targets):
+                c1, c2 = st.columns([0.82, 0.18])
+                with c1:
+                    st.write(f"• {t}")
+                with c2:
+                    if st.button("✕", key=f"rm_{t}"):
+                        _remove_target(t)
+                        st.rerun()
+            if st.button("Clear cart", use_container_width=True):
+                st.session_state.campaign_targets = []
                 st.rerun()
         else:
-            st.caption("No targets selected")
-    
-    # Process data
-    start_d, end_d = (date_range[0], date_range[1]) if len(date_range) == 2 else (min_d, max_d)
-    
-    with st.spinner("Analyzing network..."):
-        data = process_network(events, start_d, end_d)
-    
-    G = data['graph']
-    bm = data['builder_master']
-    sf = data['shortfalls']
-    edges = data['edges']
-    
-    # ========================================================================
-    # PAGE HEADER
-    # ========================================================================
-    st.markdown("""
-    <div class="page-header">
-        <h1 class="page-title">🔗 Referral Network Analysis</h1>
-        <p class="page-subtitle">Understanding referral flows, identifying opportunities, and optimizing media allocation</p>
-    </div>
-    """, unsafe_allow_html=True)
-    
-    # ========================================================================
-    # SECTION 1: EXECUTIVE SUMMARY
-    # ========================================================================
-    st.markdown("""
-    <div class="section">
-        <div class="section-header">
-            <span class="section-number">1</span>
-            <span class="section-title">Executive Summary</span>
-            <span class="section-desc">Key network metrics at a glance</span>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-    
-    total_nodes = len(G.nodes)
-    total_edges = len(G.edges)
-    total_refs = edges['Referrals'].sum() if not edges.empty else 0
-    total_profit = bm['Profit'].sum() if 'Profit' in bm.columns else 0
-    at_risk_count = len(sf[sf['Risk_Score'] > 25]) if not sf.empty else 0
-    avg_roas = bm['ROAS'].mean() if 'ROAS' in bm.columns else 0
-    
-    st.markdown(f"""
-    <div class="kpi-row">
-        <div class="kpi-box">
-            <div class="kpi-label">Network Size</div>
-            <div class="kpi-value">{total_nodes}</div>
-            <div class="kpi-sub">active builders</div>
-        </div>
-        <div class="kpi-box">
-            <div class="kpi-label">Total Referrals</div>
-            <div class="kpi-value">{total_refs:,}</div>
-            <div class="kpi-sub">in period</div>
-        </div>
-        <div class="kpi-box">
-            <div class="kpi-label">Network Profit</div>
-            <div class="kpi-value">${total_profit/1000:,.0f}K</div>
-            <div class="kpi-sub">total attributed</div>
-        </div>
-        <div class="kpi-box">
-            <div class="kpi-label">Avg ROAS</div>
-            <div class="kpi-value">{avg_roas:.2f}x</div>
-            <div class="kpi-sub">return on spend</div>
-        </div>
-        <div class="kpi-box">
-            <div class="kpi-label">At-Risk Builders</div>
-            <div class="kpi-value">{at_risk_count}</div>
-            <div class="kpi-sub">need attention</div>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-    
-    # Trend chart
-    trend_fig = render_trend_chart(data['monthly'])
-    if trend_fig:
-        st.plotly_chart(trend_fig, use_container_width=True, config={'displayModeBar': False})
-    
-    # ========================================================================
-    # SECTION 2: NETWORK TOPOLOGY
-    # ========================================================================
-    st.markdown("""
-    <div class="section">
-        <div class="section-header">
-            <span class="section-number">2</span>
-            <span class="section-title">Network Topology</span>
-            <span class="section-desc">Visual map of referral relationships</span>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-    
-    col1, col2 = st.columns([2, 1])
-    
-    with col1:
-        # Builder selector
-        all_builders = sorted(G.nodes())
-        
-        c1, c2 = st.columns([3, 1])
-        with c1:
-            selected = st.selectbox("Select a builder to focus", [""] + all_builders, 
-                                     index=0 if not st.session_state.focus_builder else 
-                                     all_builders.index(st.session_state.focus_builder) + 1 if st.session_state.focus_builder in all_builders else 0,
-                                     label_visibility="collapsed", placeholder="Search builders...")
-        with c2:
-            if selected and st.button("➕ Add to Targets", use_container_width=True):
-                if selected not in st.session_state.targets:
-                    st.session_state.targets.append(selected)
-                    st.rerun()
-        
-        if selected:
-            st.session_state.focus_builder = selected
-        
-        # Network visualization
-        pos = nx.spring_layout(G, seed=42, k=0.7)
-        net_fig = render_network_graph(G, pos, bm, st.session_state.focus_builder, st.session_state.targets)
-        st.plotly_chart(net_fig, use_container_width=True, config={'displayModeBar': False})
-        
-        st.caption("Node size = referral volume. Colors = clusters. Blue border = selected. Green border = campaign target.")
-    
-    with col2:
-        # Builder detail panel
-        if st.session_state.focus_builder:
-            detail = get_builder_detail(st.session_state.focus_builder, data)
-            
-            if detail:
-                # Risk pill
-                risk = detail['risk_score']
-                if risk > 50:
-                    pill = '<span class="pill pill-critical">Critical Risk</span>'
-                elif risk > 25:
-                    pill = '<span class="pill pill-warning">At Risk</span>'
-                else:
-                    pill = '<span class="pill pill-healthy">Healthy</span>'
-                
-                st.markdown(f"""
-                <div class="builder-card">
-                    <div class="builder-header">
-                        <div>
-                            <div class="builder-name">{detail['builder']}</div>
-                            <div class="builder-cluster">Cluster {detail['cluster']} • {detail['role'].replace('_', ' ').title()}</div>
-                        </div>
-                        {pill}
-                    </div>
-                    <div class="mini-metrics">
-                        <div class="mini-metric">
-                            <div class="mini-metric-value">${detail['profit']:,.0f}</div>
-                            <div class="mini-metric-label">Profit</div>
-                        </div>
-                        <div class="mini-metric">
-                            <div class="mini-metric-value">{detail['roas']:.2f}x</div>
-                            <div class="mini-metric-label">ROAS</div>
-                        </div>
-                        <div class="mini-metric">
-                            <div class="mini-metric-value">{detail['shortfall']:.0f}</div>
-                            <div class="mini-metric-label">Shortfall</div>
-                        </div>
-                    </div>
-                </div>
-                """, unsafe_allow_html=True)
-                
-                # Inbound sources
-                st.markdown("**Top Inbound Sources**")
-                if not detail['inbound_df'].empty:
-                    max_refs = detail['inbound_df']['Referrals'].max()
-                    for _, row in detail['inbound_df'].head(5).iterrows():
-                        pct = (row['Referrals'] / max_refs * 100) if max_refs > 0 else 0
-                        st.markdown(f"""
-                        <div class="flow-row">
-                            <span class="flow-source">{row['Origin_builder'][:20]}</span>
-                            <span class="flow-value">{int(row['Referrals'])}</span>
-                            <div class="flow-bar"><div class="flow-bar-fill" style="width: {pct}%"></div></div>
-                        </div>
-                        """, unsafe_allow_html=True)
-                else:
-                    st.caption("No inbound referrals")
-                
-                # Outbound destinations
-                st.markdown("**Top Outbound Destinations**")
-                if not detail['outbound_df'].empty:
-                    max_refs = detail['outbound_df']['Referrals'].max()
-                    for _, row in detail['outbound_df'].head(5).iterrows():
-                        pct = (row['Referrals'] / max_refs * 100) if max_refs > 0 else 0
-                        st.markdown(f"""
-                        <div class="flow-row">
-                            <span class="flow-source">{row['Dest_builder'][:20]}</span>
-                            <span class="flow-value">{int(row['Referrals'])}</span>
-                            <div class="flow-bar"><div class="flow-bar-fill" style="width: {pct}%"></div></div>
-                        </div>
-                        """, unsafe_allow_html=True)
-                else:
-                    st.caption("No outbound referrals")
+            st.caption("Add builders from Demand / Search.")
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Filtered events (period) + build model tables
+    # ──────────────────────────────────────────────────────────────────────────
+    events_f = _filter_by_date(events, start_date, end_date)
+    asof = pd.Timestamp(end_date).normalize() if end_date is not None else pd.Timestamp.today().normalize()
+
+    with st.spinner("Building network intelligence…"):
+        # 1) Demand (forecast-aware)
+        demand = calculate_shortfalls(events_f, asof=asof, cfg=cfg)
+
+        # 2) Leverage (smoothed transfers + base CPR)
+        leverage = analyze_network_leverage(events_f, asof=asof, cfg=cfg)
+
+        # 3) Clusters + Graph
+        clus = run_referral_clustering(events_f, resolution=resolution, target_max_clusters=max_clusters)
+        G = clus.get("graph", nx.Graph())
+        edges_clean = clus.get("edges_clean", pd.DataFrame())
+        builder_master = clus.get("builder_master", pd.DataFrame())
+        cluster_summary = clus.get("cluster_summary", pd.DataFrame())
+
+        # 4) P&L enrich (optional)
+        pnl = build_builder_pnl(events_f, lens="recipient", freq="ALL")
+        if isinstance(pnl, pd.DataFrame) and not pnl.empty and "BuilderRegionKey" in pnl.columns and not builder_master.empty:
+            keep = [c for c in ["BuilderRegionKey", "Profit", "ROAS", "MediaCost", "Referrals_in"] if c in pnl.columns]
+            pnl_sub = pnl[keep].copy()
+            builder_master = builder_master.merge(pnl_sub, on="BuilderRegionKey", how="left")
+            for c in ["Profit", "ROAS", "MediaCost"]:
+                if c in builder_master.columns:
+                    builder_master[c] = builder_master[c].fillna(0.0)
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Tabs (exec → demand → network → plan → export)
+    # ──────────────────────────────────────────────────────────────────────────
+    tab_exec, tab_demand, tab_network, tab_plan, tab_export = st.tabs(
+        ["📌 Executive", "⚡ Demand", "🕸️ Network", "💸 Media Plan", "📦 Export"]
+    )
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # EXEC TAB
+    # ──────────────────────────────────────────────────────────────────────────
+    with tab_exec:
+        st.markdown('<div class="ni-section"><div class="ni-section-title">Executive Snapshot</div><div class="ni-section-sub">What matters right now</div></div>', unsafe_allow_html=True)
+
+        if demand is None or demand.empty:
+            st.warning("No demand table generated.")
         else:
-            st.markdown("""
-            <div class="builder-card">
-                <p style="color: #6b7280; font-size: 0.9rem; margin: 0;">
-                    Select a builder from the dropdown to see detailed analytics.
-                </p>
-            </div>
-            """, unsafe_allow_html=True)
-            
-            # Show at-risk builders
-            at_risk = sf[sf['Risk_Score'] > 25].nlargest(5, 'Risk_Score') if not sf.empty else pd.DataFrame()
-            if not at_risk.empty:
-                st.markdown("**⚠️ Builders Needing Attention**")
-                for _, row in at_risk.iterrows():
-                    risk = row['Risk_Score']
-                    pill_class = "pill-critical" if risk > 50 else "pill-warning"
-                    st.markdown(f"""
-                    <div style="display: flex; justify-content: space-between; align-items: center; padding: 0.5rem 0; border-bottom: 1px solid #f3f4f6;">
-                        <span style="font-size: 0.85rem; color: #374151;">{row['BuilderRegionKey'][:25]}</span>
-                        <span class="pill {pill_class}">{int(risk)}</span>
-                    </div>
-                    """, unsafe_allow_html=True)
-    
-    # ========================================================================
-    # SECTION 3: CLUSTER ANALYSIS
-    # ========================================================================
-    st.markdown("""
-    <div class="section">
-        <div class="section-header">
-            <span class="section-number">3</span>
-            <span class="section-title">Cluster Analysis</span>
-            <span class="section-desc">How referrals flow between builder communities</span>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.markdown("**Inter-Cluster Flow Matrix**")
-        heatmap = render_cluster_flows(edges, bm)
-        if heatmap:
-            st.plotly_chart(heatmap, use_container_width=True, config={'displayModeBar': False})
-        st.caption("Darker colors = higher referral volume between clusters")
-    
-    with col2:
-        st.markdown("**Cluster Performance**")
-        if not bm.empty and 'ClusterId' in bm.columns:
-            cluster_perf = bm.groupby('ClusterId').agg({
-                'BuilderRegionKey': 'count',
-                'Profit': 'sum',
-                'Referrals_in': 'sum',
-                'ROAS': 'mean'
-            }).rename(columns={
-                'BuilderRegionKey': 'Builders',
-                'Referrals_in': 'Referrals'
-            }).reset_index()
-            
+            under = demand[demand["ServiceFlag"] == "UNDER"].copy()
+            over = demand[demand["ServiceFlag"] == "OVER"].copy()
+
+            total_shortfall = under["Shortfall"].sum() if not under.empty else 0.0
+            med_days = float(np.nanmedian(under["Days_Remaining_Fill"])) if not under.empty else np.nan
+
+            # quick spend estimate: sum(best ecpr per under builder) * shortfall
+            est = 0.0
+            if leverage is not None and not leverage.empty and not under.empty:
+                for b, sf in under.set_index("BuilderRegionKey")["Shortfall"].to_dict().items():
+                    cand = leverage[leverage["Dest_BuilderRegionKey"].astype(str) == str(b)].copy()
+                    cand = cand[cand.get("Pass_Min_Events", True) == True]
+                    if cand.empty:
+                        continue
+                    best_ecpr = float(cand["eCPR"].replace([np.inf, -np.inf], np.nan).dropna().min()) if cand["eCPR"].notna().any() else np.nan
+                    if np.isfinite(best_ecpr):
+                        est += float(sf) * best_ecpr
+
+            c1, c2, c3, c4 = st.columns(4)
+            with c1: kpi_card("Builders under-served", f"{len(under):,}", "Forecast shortfall > 0")
+            with c2: kpi_card("Total shortfall", f"{total_shortfall:,.0f}", "Leads required to hit target")
+            with c3: kpi_card("Median days remaining", "—" if not np.isfinite(med_days) else f"{int(med_days):,}", "Campaign urgency signal")
+            with c4: kpi_card("Rough close-cost", "—" if est <= 0 else fmt_currency(est), "Using best historical eCPR per target")
+
+            st.markdown("#### 🔥 Top at-risk builders")
+            hot = demand.copy()
+            hot["ServiceBadge"] = hot["ServiceFlag"].apply(badge_for_service)
+            cols = ["BuilderRegionKey", "ServiceBadge", "LeadTarget", "Actual_Referrals", "Pace_Leads_per_Day", "Days_Remaining", "Projected_Finish", "Shortfall", "Surplus", "DemandScore"]
+            cols = [c for c in cols if c in hot.columns]
+            hot_view = hot.loc[:, cols].head(30).copy()
+
             st.dataframe(
-                cluster_perf.style.format({
-                    'Profit': '${:,.0f}',
-                    'Referrals': '{:,.0f}',
-                    'ROAS': '{:.2f}x'
-                }),
-                hide_index=True,
+                hot_view,
                 use_container_width=True,
-                height=300
+                hide_index=True,
+                column_config={
+                    "ServiceBadge": st.column_config.TextColumn("Service", width="small"),
+                    "Pace_Leads_per_Day": st.column_config.NumberColumn("Pace/day", format="%.2f"),
+                    "DemandScore": st.column_config.NumberColumn("DemandScore", format="%.1f"),
+                },
             )
-    
-    # ========================================================================
-    # SECTION 4: CAMPAIGN OPTIMIZATION
-    # ========================================================================
-    st.markdown("""
-    <div class="section">
-        <div class="section-header">
-            <span class="section-number">4</span>
-            <span class="section-title">Campaign Optimization</span>
-            <span class="section-desc">Allocate budget to fill gaps efficiently</span>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-    
-    targets = st.session_state.targets
-    
-    if not targets:
-        st.markdown("""
-        <div class="insight">
-            <div class="insight-title">💡 How to use this section</div>
-            <div class="insight-text">
-                Select builders from the network above and click "Add to Targets" to build a campaign.
-                The optimizer will find the most efficient sources to fill their lead gaps.
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-    else:
-        # Target summary
-        total_shortfall = sum(
-            sf[sf['BuilderRegionKey'] == t]['Projected_Shortfall'].iloc[0]
-            for t in targets if not sf[sf['BuilderRegionKey'] == t].empty
-        )
-        
-        # Target chips
-        chips_html = ""
-        for t in targets:
-            t_sf = sf[sf['BuilderRegionKey'] == t]
-            risk = t_sf['Risk_Score'].iloc[0] if not t_sf.empty else 0
-            dot_class = "red" if risk > 50 else "amber" if risk > 25 else "green"
-            chips_html += f'<span class="target-chip"><span class="dot {dot_class}"></span>{t[:20]}</span>'
-        
-        st.markdown(f"""
-        <div class="builder-card">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem;">
-                <div>
-                    <div style="font-weight: 600; color: #111827;">Campaign Targets</div>
-                    <div style="font-size: 0.8rem; color: #6b7280;">{len(targets)} builders selected</div>
-                </div>
-                <div style="text-align: right;">
-                    <div style="font-size: 1.5rem; font-weight: 700; color: #dc2626;">{int(total_shortfall):,}</div>
-                    <div style="font-size: 0.75rem; color: #6b7280;">leads needed</div>
-                </div>
-            </div>
-            <div class="target-list">{chips_html}</div>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        # Budget input and optimization
-        col1, col2 = st.columns([2, 1])
-        with col1:
-            budget = st.number_input("Campaign Budget ($)", min_value=1000, value=50000, step=5000)
-        with col2:
-            st.write("")
-            optimize = st.button("🎯 Optimize Allocation", type="primary", use_container_width=True)
-        
-        if optimize:
-            analysis = analyze_campaign_network(targets, data['leverage'], sf)
-            sources = analysis.get('sources', [])
-            sim = simulate_campaign_spend(targets, budget, sources, sf)
-            st.session_state.sim_results = sim
-        
-        # Results
-        if st.session_state.sim_results:
-            sim = st.session_state.sim_results
-            summ = sim['summary']
-            
-            st.markdown("---")
-            
-            # Result KPIs
-            st.markdown(f"""
-            <div class="kpi-row">
-                <div class="kpi-box">
-                    <div class="kpi-label">Projected Leads</div>
-                    <div class="kpi-value">{int(summ['leads_to_targets']):,}</div>
-                </div>
-                <div class="kpi-box">
-                    <div class="kpi-label">Gap Coverage</div>
-                    <div class="kpi-value">{summ['coverage_pct']:.0%}</div>
-                </div>
-                <div class="kpi-box">
-                    <div class="kpi-label">Effective CPR</div>
-                    <div class="kpi-value">${summ['effective_cpr']:.0f}</div>
-                </div>
-                <div class="kpi-box">
-                    <div class="kpi-label">Leakage</div>
-                    <div class="kpi-value">{summ['leakage_pct']:.0%}</div>
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
-            
-            # Insight
-            if summ['coverage_pct'] >= 0.8:
-                st.markdown("""
-                <div class="action-box">
-                    <div class="action-title">✅ Strong Coverage</div>
-                    <div class="action-text">This budget can cover most of the shortfall. Review the allocation below and proceed with confidence.</div>
-                </div>
-                """, unsafe_allow_html=True)
-            elif summ['coverage_pct'] >= 0.5:
-                st.markdown("""
-                <div class="insight">
-                    <div class="insight-title">⚡ Partial Coverage</div>
-                    <div class="insight-text">Consider increasing budget or prioritizing the highest-risk targets to improve coverage.</div>
-                </div>
-                """, unsafe_allow_html=True)
+            st.caption("DemandScore = Shortfall × Urgency × Pace gap. Use it to prioritise where the next dollar goes.")
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # DEMAND TAB
+    # ──────────────────────────────────────────────────────────────────────────
+    with tab_demand:
+        st.markdown('<div class="ni-section"><div class="ni-section-title">Demand & Coverage</div><div class="ni-section-sub">Forecast-aware: pace + days remaining</div></div>', unsafe_allow_html=True)
+
+        if demand is None or demand.empty:
+            st.warning("No demand table available.")
+        else:
+            under = demand[demand["ServiceFlag"] == "UNDER"].copy()
+            over = demand[demand["ServiceFlag"] == "OVER"].copy()
+
+            d1, d2, d3 = st.columns([1.2, 1.0, 0.8])
+            with d1:
+                default_pick = under["BuilderRegionKey"].iloc[0] if not under.empty else demand["BuilderRegionKey"].iloc[0]
+                focus = st.selectbox("Focus builder", options=demand["BuilderRegionKey"].astype(str).tolist(), index=int(demand.index[demand["BuilderRegionKey"] == default_pick][0]) if default_pick in demand["BuilderRegionKey"].values else 0)
+            with d2:
+                if st.button("➕ Add focus to cart", use_container_width=True):
+                    _add_target(str(focus)); st.rerun()
+            with d3:
+                topn = st.number_input("Auto-target Top N UNDER", min_value=0, value=0, step=5, help="Set >0 to auto-populate cart from the demand table (Top N by DemandScore).")
+                if topn and topn > 0:
+                    picks = under["BuilderRegionKey"].astype(str).head(int(topn)).tolist()
+                    for p in picks:
+                        _add_target(p)
+                    st.success(f"Added {len(picks)} builders to cart.")
+                    st.rerun()
+
+            # Focus row summary
+            fr = demand[demand["BuilderRegionKey"].astype(str) == str(focus)].head(1)
+            if not fr.empty:
+                r = fr.iloc[0]
+                m1, m2, m3, m4, m5 = st.columns(5)
+                m1.metric("Service", r.get("ServiceFlag", "—"))
+                m2.metric("Target", f"{r.get('LeadTarget', 0):,.0f}")
+                m3.metric("Actual", f"{r.get('Actual_Referrals', 0):,.0f}")
+                m4.metric("Shortfall", f"{r.get('Shortfall', 0):,.0f}")
+                m5.metric("Days remaining", "—" if pd.isna(r.get("Days_Remaining", np.nan)) else f"{int(r.get('Days_Remaining')):,}")
+
+            st.divider()
+
+            st.markdown("#### 🎯 Best sources to close the focus gap (lowest eCPR)")
+            if leverage is None or leverage.empty:
+                st.info("No leverage table (transfers) available.")
             else:
-                st.markdown("""
-                <div class="insight">
-                    <div class="insight-title">⚠️ Limited Coverage</div>
-                    <div class="insight-text">Budget is insufficient to meaningfully address shortfalls. Consider focusing on fewer targets or increasing budget significantly.</div>
-                </div>
-                """, unsafe_allow_html=True)
-            
-            # Allocation table
-            allocs = pd.DataFrame(sim['allocations'])
-            if not allocs.empty and len(allocs[allocs['budget'] > 0]) > 0:
-                st.markdown("**Recommended Allocation**")
-                
-                display_df = allocs[allocs['budget'] > 0][['source', 'budget', 'leads_to_targets', 'effective_cpr', 'target_rate']].copy()
-                display_df.columns = ['Source', 'Budget', 'Est. Leads', 'CPR', 'Precision']
-                
-                st.dataframe(
-                    display_df.style.format({
-                        'Budget': '${:,.0f}',
-                        'Est. Leads': '{:.0f}',
-                        'CPR': '${:.0f}',
-                        'Precision': '{:.0%}'
-                    }),
-                    hide_index=True,
-                    use_container_width=True
-                )
-                
-                # Download
-                csv = display_df.to_csv(index=False)
-                st.download_button("📥 Download Allocation", csv, "campaign_allocation.csv", "text/csv")
-    
-    # ========================================================================
-    # SECTION 5: DATA EXPORT
-    # ========================================================================
-    st.markdown("""
-    <div class="section">
-        <div class="section-header">
-            <span class="section-number">5</span>
-            <span class="section-title">Data Export</span>
-            <span class="section-desc">Download underlying data for further analysis</span>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-    
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        st.markdown("**Builder Master**")
-        st.caption(f"{len(bm)} builders")
-        csv = bm.to_csv(index=False)
-        st.download_button("Download CSV", csv, "builder_master.csv", "text/csv", use_container_width=True)
-    
-    with col2:
-        st.markdown("**Edge List**")
-        st.caption(f"{len(edges)} connections")
-        csv = edges.to_csv(index=False)
-        st.download_button("Download CSV", csv, "edges.csv", "text/csv", use_container_width=True)
-    
-    with col3:
-        st.markdown("**Shortfall Analysis**")
-        st.caption(f"{len(sf)} builders")
-        csv = sf.to_csv(index=False)
-        st.download_button("Download CSV", csv, "shortfalls.csv", "text/csv", use_container_width=True)
+                strat = generate_investment_strategies(str(focus), demand, leverage)
+                if strat is None or strat.empty:
+                    st.info("No usable historical paths to this builder (or shortfall is 0).")
+                else:
+                    st.dataframe(
+                        strat.head(20),
+                        use_container_width=True,
+                        hide_index=True,
+                        column_config={
+                            "Transfer_Rate": st.column_config.NumberColumn("Transfer", format="%.2%"),
+                            "Base_CPR": st.column_config.NumberColumn("Base CPR", format="$%.0f"),
+                            "Effective_CPR": st.column_config.NumberColumn("eCPR", format="$%.0f"),
+                            "Investment_Required": st.column_config.NumberColumn("Investment", format="$%.0f"),
+                            "Confidence": st.column_config.NumberColumn("Confidence", format="%.2f"),
+                        },
+                    )
+                    st.caption("eCPR = CPR_base / smoothed transfer rate. Confidence rises with more source volume.")
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # NETWORK TAB
+    # ──────────────────────────────────────────────────────────────────────────
+    with tab_network:
+        st.markdown('<div class="ni-section"><div class="ni-section-title">Network Map & Builder Drilldown</div><div class="ni-section-sub">Explore clusters, partnerships, and flow concentration</div></div>', unsafe_allow_html=True)
+
+        all_builders = _get_all_builders(events_f)
+        cA, cB = st.columns([1.3, 0.7])
+        with cA:
+            selected = st.selectbox("Search builder", options=[""] + all_builders, index=0)
+        with cB:
+            if st.button("➕ Add to cart", use_container_width=True, disabled=(not selected)):
+                _add_target(str(selected))
+                st.rerun()
+
+        if selected:
+            st.session_state.selected_builder = str(selected)
+
+        c1, c2 = st.columns([1.65, 0.95])
+
+        with c1:
+            if len(G.nodes) == 0:
+                st.info("No graph to render for this period.")
+            else:
+                pos = nx.spring_layout(G, seed=42, k=0.65, iterations=50, weight="weight")
+                conns = _get_builder_connections(events_f, st.session_state.selected_builder) if st.session_state.selected_builder else None
+                fig = render_network_map(G, pos, st.session_state.selected_builder, conns)
+                st.plotly_chart(fig, use_container_width=True)
+
+        with c2:
+            b = st.session_state.selected_builder
+            if not b:
+                st.info("Select a builder to see the drilldown.")
+            else:
+                st.markdown("#### Builder panel")
+                # Demand summary
+                if demand is not None and not demand.empty:
+                    row = demand[demand["BuilderRegionKey"].astype(str) == str(b)].head(1)
+                    if not row.empty:
+                        rr = row.iloc[0]
+                        st.markdown(f"**Service:** {rr.get('ServiceFlag','—')}  \n"
+                                    f"**Shortfall:** {rr.get('Shortfall',0):,.0f}  \n"
+                                    f"**Pace/day:** {rr.get('Pace_Leads_per_Day',0):.2f}  \n"
+                                    f"**Days remaining:** {rr.get('Days_Remaining','—')}")
+                # Connections
+                conns = _get_builder_connections(events_f, b)
+                t_in, t_out, t_mut = st.tabs(["📥 Inbound", "📤 Outbound", "🤝 Mutual"])
+                with t_in:
+                    df = pd.DataFrame(conns.get("inbound", []))
+                    if df.empty:
+                        st.caption("No inbound sources.")
+                    else:
+                        st.dataframe(df.rename(columns={"partner":"Source","refs_in":"Refs","spend_in":"Spend"}), use_container_width=True, hide_index=True)
+                with t_out:
+                    df = pd.DataFrame(conns.get("outbound", []))
+                    if df.empty:
+                        st.caption("No outbound destinations.")
+                    else:
+                        st.dataframe(df.rename(columns={"partner":"Dest","refs_out":"Refs"}), use_container_width=True, hide_index=True)
+                with t_mut:
+                    df = pd.DataFrame(conns.get("two_way", []))
+                    if df.empty:
+                        st.caption("No mutual partners.")
+                    else:
+                        st.dataframe(df.rename(columns={"partner":"Partner","refs_in":"In","refs_out":"Out"}), use_container_width=True, hide_index=True)
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # MEDIA PLAN TAB
+    # ──────────────────────────────────────────────────────────────────────────
+    with tab_plan:
+        st.markdown('<div class="ni-section"><div class="ni-section-title">Portfolio Media Plan</div><div class="ni-section-sub">Close forecast shortfalls at lowest cost (network-aware)</div></div>', unsafe_allow_html=True)
+
+        if demand is None or demand.empty:
+            st.warning("No demand table available.")
+        elif leverage is None or leverage.empty:
+            st.warning("No leverage table available.")
+        else:
+            # Target set selection
+            under = demand[demand["ServiceFlag"] == "UNDER"].copy()
+            mode = st.radio("Target set", ["Cart", "All UNDER builders"], horizontal=True)
+
+            if mode == "Cart":
+                targets = [str(x) for x in st.session_state.campaign_targets]
+            else:
+                targets = under["BuilderRegionKey"].astype(str).tolist()
+
+            if not targets:
+                st.info("Add builders to cart (or choose All UNDER builders).")
+            else:
+                # Slice demand to include all builders, but focus deficits weights on targets
+                demand_seen = demand.copy()
+                # Build weights: boost target builders in DemandScore, keep others for overserve penalties
+                demand_seen["IsTarget"] = demand_seen["BuilderRegionKey"].astype(str).isin(set(targets))
+                demand_seen.loc[~demand_seen["IsTarget"], "DemandScore"] = 0.0
+
+                c1, c2, c3, c4 = st.columns(4)
+                with c1:
+                    kpi_card("Targets", f"{len(targets):,}", "Builders in optimisation set")
+                with c2:
+                    kpi_card("Total shortfall", f"{under[under['BuilderRegionKey'].astype(str).isin(set(targets))]['Shortfall'].sum():,.0f}", "Forecast shortfalls only")
+                with c3:
+                    kpi_card("New money", fmt_currency(new_money), "Added to baseline budgets")
+                with c4:
+                    kpi_card("Max spend mult", f"{max_mult:.2f}×", "Budget guardrail")
+
+                if st.button("⚡ Generate portfolio plan", type="primary", use_container_width=True):
+                    res = optimise_portfolio_media_plan(
+                        demand_seen,
+                        leverage,
+                        cfg=cfg,
+                        max_spend_multiplier=float(max_mult),
+                        new_money=float(new_money),
+                        overserve_penalty=float(overserve_penalty),
+                    )
+                    st.session_state.plan_result = res
+
+                res = st.session_state.plan_result
+                if res is None:
+                    st.info("Generate a plan to see allocations and reconciliation.")
+                else:
+                    if "error" in res:
+                        st.error("Plan engine error:")
+                        st.dataframe(res["error"], use_container_width=True, hide_index=True)
+                    else:
+                        plan_by_source = res.get("plan_by_source", pd.DataFrame())
+                        plan_edges = res.get("plan_edges", pd.DataFrame())
+                        post = res.get("post_state", pd.DataFrame())
+                        log = res.get("allocation_log", pd.DataFrame())
+                        budgets = res.get("source_budgets", pd.DataFrame())
+
+                        # Summary
+                        tgt_set = set(targets)
+                        pre_tgt = demand[demand["BuilderRegionKey"].astype(str).isin(tgt_set)].copy()
+                        post_tgt = post[post["BuilderRegionKey"].astype(str).isin(tgt_set)].copy()
+
+                        pre_sf = float(pre_tgt["Shortfall"].sum()) if not pre_tgt.empty else 0.0
+                        post_sf = float(post_tgt["Shortfall_Post"].sum()) if not post_tgt.empty else 0.0
+                        covered = max(0.0, pre_sf - post_sf)
+                        spend = float(plan_by_source["Spend"].sum()) if (plan_by_source is not None and not plan_by_source.empty) else 0.0
+                        eff_cpr = (spend / covered) if covered > 0 else np.nan
+                        overserve_added = float(post["Overserve_Post"].sum()) if post is not None and not post.empty else 0.0
+
+                        s1, s2, s3, s4 = st.columns(4)
+                        with s1: kpi_card("Spend", fmt_currency(spend), "Total planned spend")
+                        with s2: kpi_card("Shortfall covered", f"{covered:,.0f}", f"Pre {pre_sf:,.0f} → Post {post_sf:,.0f}")
+                        with s3: kpi_card("Effective CPR", "—" if not np.isfinite(eff_cpr) else fmt_currency(eff_cpr), "Spend / covered shortfall")
+                        with s4: kpi_card("Overserve (post)", f"{overserve_added:,.0f}", "Penalty-managed spillover")
+
+                        st.divider()
+
+                        # Sankey
+                        st.markdown("#### Flow map (Expected leads)")
+                        fig_s = sankey_from_plan_edges(plan_edges, tgt_set, min_leads=2.0)
+                        if fig_s:
+                            st.plotly_chart(fig_s, use_container_width=True)
+                        else:
+                            st.caption("No meaningful flows to chart (try reducing min transfer events or increasing budget).")
+
+                        # Tables
+                        st.markdown("#### Buy list (by source)")
+                        if plan_by_source is None or plan_by_source.empty:
+                            st.info("No sources were selected (budget or leverage constraints).")
+                        else:
+                            st.dataframe(
+                                plan_by_source,
+                                use_container_width=True,
+                                hide_index=True,
+                                column_config={
+                                    "Spend": st.column_config.NumberColumn("Spend", format="$%.0f"),
+                                    "CPR_base": st.column_config.NumberColumn("Base CPR", format="$%.0f"),
+                                    "Leads_Generated": st.column_config.NumberColumn("Leads", format="%.1f"),
+                                    "Budget": st.column_config.NumberColumn("Budget cap", format="$%.0f"),
+                                },
+                            )
+
+                        st.markdown("#### Attribution (source → dest)")
+                        if plan_edges is None or plan_edges.empty:
+                            st.caption("No edge attribution table.")
+                        else:
+                            # highlight targets first
+                            pe = plan_edges.copy()
+                            pe["IsTarget"] = pe["Dest"].astype(str).isin(tgt_set)
+                            pe = pe.sort_values(["IsTarget", "Expected_Leads"], ascending=[False, False])
+                            st.dataframe(
+                                pe.head(250),
+                                use_container_width=True,
+                                hide_index=True,
+                                column_config={
+                                    "Expected_Leads": st.column_config.NumberColumn("Expected leads", format="%.1f"),
+                                    "Spend_on_Source": st.column_config.NumberColumn("Spend", format="$%.0f"),
+                                    "Effective_CPR_to_Dest": st.column_config.NumberColumn("eCPR(dest)", format="$%.0f"),
+                                },
+                            )
+
+                        st.markdown("#### Reconciliation (pre → post)")
+                        if post is not None and not post.empty:
+                            post_view = post.copy()
+                            post_view["IsTarget"] = post_view["BuilderRegionKey"].astype(str).isin(tgt_set)
+                            post_view = post_view.sort_values(["IsTarget", "Shortfall_Post", "Overserve_Post"], ascending=[False, False, False])
+                            keep = [
+                                "BuilderRegionKey","IsTarget","ServiceFlag","LeadTarget","Projected_Finish","Expected_Leads_Added",
+                                "Projected_Finish_Post","Shortfall","Shortfall_Post","Overserve_Post","DemandScore"
+                            ]
+                            keep = [c for c in keep if c in post_view.columns]
+                            st.dataframe(post_view[keep].head(300), use_container_width=True, hide_index=True)
+
+                        with st.expander("Allocation log (debug/trace)", expanded=False):
+                            st.dataframe(log, use_container_width=True, hide_index=True)
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # EXPORT TAB
+    # ──────────────────────────────────────────────────────────────────────────
+    with tab_export:
+        st.markdown('<div class="ni-section"><div class="ni-section-title">Audit Pack</div><div class="ni-section-sub">Download every table behind the plan</div></div>', unsafe_allow_html=True)
+
+        res = st.session_state.plan_result
+        if res is None or ("error" in (res or {})):
+            st.info("Generate a plan first (Media Plan tab) to export a complete audit pack.")
+        else:
+            sheets = {
+                "Demand": res.get("demand_table", pd.DataFrame()),
+                "Leverage": leverage if leverage is not None else pd.DataFrame(),
+                "SourceBudgets": res.get("source_budgets", pd.DataFrame()),
+                "PlanBySource": res.get("plan_by_source", pd.DataFrame()),
+                "PlanEdges": res.get("plan_edges", pd.DataFrame()),
+                "PostState": res.get("post_state", pd.DataFrame()),
+                "AllocationLog": res.get("allocation_log", pd.DataFrame()),
+                "ClusterSummary": cluster_summary if isinstance(cluster_summary, pd.DataFrame) else pd.DataFrame(),
+                "EdgesClean": edges_clean if isinstance(edges_clean, pd.DataFrame) else pd.DataFrame(),
+            }
+            xbytes = export_audit_pack_xlsx("network_audit_pack.xlsx", sheets)
+            st.download_button(
+                "📥 Download Network Audit Pack (XLSX)",
+                data=xbytes,
+                file_name=f"network_audit_pack_{pd.Timestamp.today().strftime('%Y%m%d')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+            )
+            st.caption("Includes: demand model, smoothed transfers, budgets, allocations, attribution, and reconciliation.")
 
 
 if __name__ == "__main__":
