@@ -86,15 +86,22 @@ def render_risk_matrix(shortfall_df):
         st.info("No builders currently at risk.")
         return
 
+    # Create detailed label for granular data
+    df['Label'] = df['BuilderRegionKey']
+    if 'WIP_JOB_MATCHED' in df.columns:
+        df['Label'] = df['Label'] + " (" + df['WIP_JOB_MATCHED'].astype(str).fillna('') + ")"
+    elif 'Suburb' in df.columns:
+        df['Label'] = df['Label'] + " (" + df['Suburb'].astype(str).fillna('') + ")"
+
     fig = px.scatter(
         df,
         x="Days_Remaining",
         y="Projected_Shortfall",
         size="Risk_Score",
         color="Risk_Score",
-        hover_name="BuilderRegionKey",
+        hover_name="Label",
         color_continuous_scale="RdYlGn_r",
-        text="BuilderRegionKey",
+        text="Label", # Use granular label
         title="Risk Matrix: Shortfall Size vs. Time Remaining",
         labels={"Days_Remaining": "Days Until Campaign End", "Projected_Shortfall": "Projected Lead Deficit"}
     )
@@ -111,12 +118,6 @@ def render_media_plan_table(plan_df):
         st.success("✅ No interventions required. All builders on track.")
         return
 
-    # Formatting for display
-    display_df = plan_df.copy()
-    
-    st.markdown("### 📋 Master Media Plan")
-    st.markdown("Recommended interventions to close projected gaps.")
-    
     # Metrics
     total_inv = plan_df['Est_Investment'].sum()
     leads_closed = plan_df['Gap_Leads'].sum()
@@ -126,6 +127,20 @@ def render_media_plan_table(plan_df):
     c1.metric("Total Investment Required", fmt_currency(total_inv))
     c2.metric("Total Lead Gap to Close", f"{int(leads_closed):,}")
     c3.metric("Blended eCPR", fmt_currency(avg_cpr))
+
+    st.markdown("### 📋 Master Media Plan")
+    st.markdown("Recommended interventions to close projected gaps.")
+
+    # Prepare display columns (dynamic based on granularity)
+    cols = ['Priority', 'Target_Builder']
+    if 'Project' in plan_df.columns: cols.append('Project')
+    if 'Suburb' in plan_df.columns: cols.append('Suburb')
+    cols.extend(['Gap_Leads', 'Recommended_Source', 'Action', 'Est_Investment', 'Effective_CPR', 'Strategy_Note'])
+    
+    # Filter only columns that actually exist
+    cols = [c for c in cols if c in plan_df.columns]
+    
+    display_df = plan_df[cols].copy()
     
     # Table
     st.dataframe(
@@ -195,8 +210,6 @@ def main():
 
     # --- TOP LEVEL CALCULATIONS ---
     # 1. Demand & Risk Analysis
-    # We pass 'events_selected' for velocity calculation (current pace)
-    # We pass 'events_full' (total_events_df) for cumulative progress vs targets
     shortfall_data = calculate_shortfalls(
         events_df=events_selected,
         targets_df=None, 
@@ -238,11 +251,18 @@ def main():
             render_risk_matrix(shortfall_data)
             
         with col_surplus:
-            st.subheader("Over-Serviced Builders")
-            st.caption("Potential to reduce spend or shift media from these builders:")
+            st.subheader("Over-Serviced Targets")
+            st.caption("Potential to reduce spend or shift media from these areas:")
+            
+            surplus_cols = ['BuilderRegionKey']
+            if 'WIP_JOB_MATCHED' in shortfall_data.columns: surplus_cols.append('WIP_JOB_MATCHED')
+            if 'Suburb' in shortfall_data.columns: surplus_cols.append('Suburb')
+            surplus_cols.extend(['Projected_Surplus', 'LeadTarget'])
+            
             surplus_df = shortfall_data[shortfall_data['Projected_Surplus'] > 0].sort_values('Projected_Surplus', ascending=False).head(10)
+            
             st.dataframe(
-                surplus_df[['BuilderRegionKey', 'Projected_Surplus', 'LeadTarget']]
+                surplus_df[surplus_cols]
                 .style.format({'Projected_Surplus': "{:,.0f}", 'LeadTarget': "{:,.0f}"})
                 .background_gradient(cmap="Greens", subset=['Projected_Surplus']),
                 use_container_width=True,
@@ -331,18 +351,40 @@ def main():
         at_risk = shortfall_data[shortfall_data['Projected_Shortfall'] > 0]['BuilderRegionKey'].tolist()
         all_builders = sorted(shortfall_data['BuilderRegionKey'].unique())
         
-        # prioritize at risk in dropdown
+        # prioritize at risk in dropdown (deduplicate list)
+        at_risk = sorted(list(set(at_risk)))
         sorted_opts = at_risk + [b for b in all_builders if b not in at_risk]
         
         sel_builder = st.selectbox("Select Builder", sorted_opts)
         
         if sel_builder:
-            row = shortfall_data[shortfall_data['BuilderRegionKey'] == sel_builder].iloc[0]
+            # Aggregate data for the selected builder across all their projects
+            builder_subset = shortfall_data[shortfall_data['BuilderRegionKey'] == sel_builder]
+            
+            # Weighted average for Days Remaining? Just take max or min? Min is safest (most urgent).
+            days_rem = builder_subset['Days_Remaining'].min()
+            total_target = builder_subset['LeadTarget'].sum()
+            total_proj = builder_subset['Projected_Total'].sum()
+            total_gap = builder_subset['Net_Gap'].sum()
             
             c1, c2, c3 = st.columns(3)
-            c1.metric("Lead Target", int(row['LeadTarget']))
-            c2.metric("Projected Total", int(row['Projected_Total']), delta=int(row['Net_Gap']))
-            c3.metric("Days Remaining", int(row['Days_Remaining']))
+            c1.metric("Lead Target (All Projects)", int(total_target))
+            c2.metric("Projected Total", int(total_proj), delta=int(total_gap))
+            c3.metric("Min Days Remaining", int(days_rem))
+            
+            # Show breakdown if multiple projects
+            if len(builder_subset) > 1:
+                st.subheader("Project/Suburb Breakdown")
+                disp_cols = ['LeadTarget', 'Actual_Referrals', 'Velocity_LeadsPerDay', 'Projected_Total', 'Projected_Shortfall']
+                if 'WIP_JOB_MATCHED' in builder_subset.columns: disp_cols.insert(0, 'WIP_JOB_MATCHED')
+                if 'Suburb' in builder_subset.columns: disp_cols.insert(1, 'Suburb')
+                
+                st.dataframe(
+                    builder_subset[disp_cols]
+                    .style.format({'Velocity_LeadsPerDay': '{:.2f}', 'Projected_Total': '{:.1f}', 'Projected_Shortfall': '{:.1f}'})
+                    .background_gradient(subset=['Projected_Shortfall'], cmap="Reds"),
+                    use_container_width=True
+                )
             
             st.divider()
             
