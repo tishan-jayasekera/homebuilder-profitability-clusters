@@ -614,6 +614,19 @@ def render_campaign_planner(targets, shortfall_df, leverage_df):
         allocs = pd.DataFrame(sim['allocations'])
         
         if not allocs.empty:
+            # Justification Logic
+            def generate_justification(row):
+                cpr = row['effective_cpr']
+                rate = row['target_rate']
+                # Categorize efficiency
+                if cpr < 300: eff_desc = "Highly efficient"
+                elif cpr < 600: eff_desc = "Cost-effective"
+                else: eff_desc = "Strategic"
+                
+                return f"{eff_desc} source (${int(cpr)}/lead). {int(rate*100)}% of volume reaches targets."
+
+            allocs['Justification'] = allocs.apply(generate_justification, axis=1)
+
             # Prepare clean table
             df_disp = allocs.rename(columns={
                 'source': 'Source Builder',
@@ -628,7 +641,7 @@ def render_campaign_planner(targets, shortfall_df, leverage_df):
 
             # Data Editor with Progress Bars
             st.dataframe(
-                df_disp[['Source Builder', 'Budget', 'Leads (Target)', 'CPR']],
+                df_disp[['Source Builder', 'Budget', 'Leads (Target)', 'CPR', 'Justification']],
                 column_config={
                     "Budget": st.column_config.ProgressColumn(
                         "Budget Allocation",
@@ -638,6 +651,7 @@ def render_campaign_planner(targets, shortfall_df, leverage_df):
                     ),
                     "Leads (Target)": st.column_config.NumberColumn("Est. Leads", format="%d"),
                     "CPR": st.column_config.NumberColumn("Eff. CPR", format="$%d"),
+                    "Justification": st.column_config.TextColumn("Investment Rationale", width="medium"),
                 },
                 hide_index=True,
                 use_container_width=True
