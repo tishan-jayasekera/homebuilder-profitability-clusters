@@ -11,13 +11,6 @@ def calculate_shortfalls(
     """
     Step 1: Calculate Demand (Shortfalls) with Pace & Projection.
     Now supports Scenario Planning modifiers.
-    
-    Args:
-        events_df: Events data for the selected period (used for Velocity/Pace).
-        targets_df: Optional dataframe with builder targets.
-        period_days: Duration of the selected period in days. Used for velocity calc.
-        total_events_df: Optional cumulative events data. Used for Actuals vs Target.
-        scenario_params: Dict with optional keys: 'velocity_mult', 'target_mult'.
     """
     if scenario_params is None:
         scenario_params = {}
@@ -38,7 +31,6 @@ def calculate_shortfalls(
 
     # 3. Targets: Retrieve or Mock
     if targets_df is None:
-        # Robust check for builder keys
         if 'Dest_BuilderRegionKey' in target_source_df.columns:
             builders = target_source_df['Dest_BuilderRegionKey'].dropna().unique()
         else:
@@ -50,7 +42,6 @@ def calculate_shortfalls(
              targets_df = target_source_df[['Dest_BuilderRegionKey', 'LeadTarget_from_job', 'WIP_JOB_LIVE_END']].drop_duplicates('Dest_BuilderRegionKey').copy()
              targets_df = targets_df.rename(columns={'Dest_BuilderRegionKey': 'BuilderRegionKey', 'LeadTarget_from_job': 'LeadTarget'})
         else:
-            # Create mock targets if missing
             targets_df = pd.DataFrame({
                 'BuilderRegionKey': builders,
                 'LeadTarget': 50, 
@@ -79,7 +70,6 @@ def calculate_shortfalls(
     else:
         df['Days_Remaining'] = 30 # Default assumption
 
-    # Ensure no negative days
     df['Days_Remaining'] = df['Days_Remaining'].clip(lower=0)
     
     # Determine Velocity
@@ -96,7 +86,7 @@ def calculate_shortfalls(
             
     base_velocity = df['Period_Referrals'] / velocity_days
     
-    # Apply Scenario: Velocity Multiplier (e.g., market growth/contraction)
+    # Apply Scenario: Velocity Multiplier
     df['Velocity_LeadsPerDay'] = base_velocity * velocity_mult
     
     # 7. Projection
@@ -115,7 +105,6 @@ def calculate_shortfalls(
         0
     )
     
-    # Risk Index: High Shortfall + Low Time
     df['Risk_Score'] = (
         (df['Projected_Shortfall'] * 5) + 
         (df['CatchUp_Pace_Req'] * 20)
@@ -152,7 +141,6 @@ def analyze_network_leverage(events_df: pd.DataFrame) -> pd.DataFrame:
     
     leverage['Transfer_Rate'] = leverage['Referrals_to_Target'] / leverage['Total_Referrals_Sent']
     
-    # eCPR: The actual cost to get a lead to the Specific Target
     leverage['eCPR'] = np.where(
         leverage['Transfer_Rate'] > 0,
         leverage['CPR_base'] / leverage['Transfer_Rate'],
@@ -170,80 +158,101 @@ def generate_global_media_plan(
     """
     Step 3: Global Media Planning.
     Matches EVERY shortfall builder to their most efficient available leverage points.
+    """
+    # Simply reuse targeted logic for all deficit builders
+    deficits = shortfall_df[shortfall_df['Projected_Shortfall'] > 0]['BuilderRegionKey'].unique().tolist()
+    return optimize_campaign_spend(deficits, shortfall_df, leverage_df, strict_capacity)
+
+
+def optimize_campaign_spend(
+    target_builders: list,
+    shortfall_df: pd.DataFrame,
+    leverage_df: pd.DataFrame,
+    strict_capacity: bool = False
+) -> pd.DataFrame:
+    """
+    Optimizes media spend specifically for a list of target builders.
     
     Args:
-        strict_capacity: If True, only recommends sources that have Projected_Surplus > 0.
+        target_builders: List of builder IDs to optimize for.
+        shortfall_df: Dataframe with gap and surplus info.
+        leverage_df: Dataframe with eCPR and source info.
+        strict_capacity: If True, only uses sources with surplus.
+        
+    Returns:
+        DataFrame representing the media plan.
     """
     plan_rows = []
     
-    # Filter only those with projected shortfall
-    deficits = shortfall_df[shortfall_df['Projected_Shortfall'] > 0].copy()
-    
-    if deficits.empty:
-        return pd.DataFrame()
-
     # Identify Surplus Builders (The Supply Registry)
-    surplus_builders = shortfall_df[shortfall_df['Projected_Surplus'] > 0]['BuilderRegionKey'].tolist()
+    surplus_builders = set(shortfall_df[shortfall_df['Projected_Surplus'] > 0]['BuilderRegionKey'].tolist())
     
-    # Sort by Risk (fix critical fires first)
-    deficits = deficits.sort_values('Risk_Score', ascending=False)
+    # Get shortfall data for targets
+    target_data = shortfall_df[shortfall_df['BuilderRegionKey'].isin(target_builders)].copy()
     
-    for _, builder_row in deficits.iterrows():
+    for _, builder_row in target_data.iterrows():
         target = builder_row['BuilderRegionKey']
         gap = builder_row['Projected_Shortfall']
+        risk = builder_row['Risk_Score']
         
-        # 1. Base candidates: Sources connected to this target
-        candidates = leverage_df[leverage_df['Dest_BuilderRegionKey'] == target].copy()
-        
-        if candidates.empty:
-            # Cold Start
+        # If no gap, skip or note
+        if gap <= 0:
             plan_rows.append({
-                'Priority': 'Critical' if builder_row['Risk_Score'] > 50 else 'High',
                 'Target_Builder': target,
-                'Gap_Leads': gap,
-                'Recommended_Source': 'NO HISTORICAL PATH',
-                'Action': 'Establish New Partnership',
-                'Est_Investment': np.nan,
-                'Effective_CPR': np.nan,
-                'Strategy_Note': 'No historical flow. Needs cold start.'
+                'Status': 'On Track',
+                'Gap_Leads': 0,
+                'Recommended_Source': '-',
+                'Est_Investment': 0,
+                'Strategy_Note': 'Builder is hitting targets.'
             })
             continue
 
-        # 2. Apply Capacity Constraints
+        # 1. Find candidates
+        candidates = leverage_df[leverage_df['Dest_BuilderRegionKey'] == target].copy()
+        
+        if candidates.empty:
+            plan_rows.append({
+                'Target_Builder': target,
+                'Status': 'Cold Start',
+                'Gap_Leads': gap,
+                'Recommended_Source': 'NO HISTORICAL DATA',
+                'Est_Investment': np.nan,
+                'Effective_CPR': np.nan,
+                'Strategy_Note': 'No existing inbound paths found.'
+            })
+            continue
+
+        # 2. Capacity Constraint
         if strict_capacity:
-            # Strictly filter for sources with surplus
-            constrained_candidates = candidates[candidates['MediaPayer_BuilderRegionKey'].isin(surplus_builders)].copy()
-            
-            if constrained_candidates.empty:
-                # Fallback: Find best non-surplus source but flag it
+            valid_candidates = candidates[candidates['MediaPayer_BuilderRegionKey'].isin(surplus_builders)].copy()
+            if valid_candidates.empty:
+                # Fallback
                 best_source = candidates.sort_values('eCPR', ascending=True).iloc[0]
                 plan_rows.append({
-                    'Priority': 'Critical',
                     'Target_Builder': target,
+                    'Status': 'Constrained',
                     'Gap_Leads': gap,
                     'Recommended_Source': best_source['MediaPayer_BuilderRegionKey'],
-                    'Action': 'WARNING: Source Constrained',
                     'Est_Investment': gap * best_source['eCPR'],
                     'Effective_CPR': best_source['eCPR'],
-                    'Strategy_Note': f"Best path found, but source {best_source['MediaPayer_BuilderRegionKey']} has no projected surplus."
+                    'Strategy_Note': 'WARNING: Best source has no surplus.'
                 })
                 continue
             else:
-                candidates = constrained_candidates
-            
-        # 3. Pick Best Source (Lowest eCPR)
+                candidates = valid_candidates
+        
+        # 3. Optimization (Lowest eCPR)
         best_source = candidates.sort_values('eCPR', ascending=True).iloc[0]
         invest_needed = gap * best_source['eCPR']
         
         plan_rows.append({
-            'Priority': 'Critical' if builder_row['Risk_Score'] > 50 else 'High',
             'Target_Builder': target,
+            'Status': 'Actionable',
             'Gap_Leads': gap,
             'Recommended_Source': best_source['MediaPayer_BuilderRegionKey'],
-            'Action': f"Scale Media on {best_source['MediaPayer_BuilderRegionKey']}",
             'Est_Investment': invest_needed,
             'Effective_CPR': best_source['eCPR'],
-            'Strategy_Note': f"Levg: {best_source['Transfer_Rate']:.1%} TR via {best_source['MediaPayer_BuilderRegionKey']}"
+            'Strategy_Note': f"Scale {best_source['MediaPayer_BuilderRegionKey']} (eCPR: ${best_source['eCPR']:.0f})"
         })
         
     return pd.DataFrame(plan_rows)
@@ -256,18 +265,13 @@ def analyze_network_health(events_df: pd.DataFrame) -> pd.DataFrame:
     """
     if events_df.empty: return pd.DataFrame()
     
-    # Builders who received leads
     receivers = events_df[events_df['is_referral'] == True]['Dest_BuilderRegionKey'].value_counts().reset_index()
     receivers.columns = ['Builder', 'Leads_Received']
     
-    # Builders who sent leads
     senders = events_df[events_df['is_referral'] == True]['MediaPayer_BuilderRegionKey'].value_counts().reset_index()
     senders.columns = ['Builder', 'Leads_Sent']
     
-    # Merge
     health = pd.merge(receivers, senders, on='Builder', how='outer').fillna(0)
-    
-    # Health Metrics
     health['Ratio_Give_Take'] = np.where(health['Leads_Received'] > 0, health['Leads_Sent'] / health['Leads_Received'], 0)
     
     def diagnose(row):
@@ -285,7 +289,7 @@ def analyze_network_health(events_df: pd.DataFrame) -> pd.DataFrame:
 
 
 def generate_investment_strategies(focus_builder: str, shortfall_data: pd.DataFrame, leverage_data: pd.DataFrame, events_df: pd.DataFrame) -> pd.DataFrame:
-    """Wrapper for single-builder detailed view (compatibility)."""
+    """Wrapper for single-builder detailed view."""
     
     target_row = shortfall_data[shortfall_data['BuilderRegionKey'] == focus_builder]
     if target_row.empty: return pd.DataFrame()
@@ -297,7 +301,6 @@ def generate_investment_strategies(focus_builder: str, shortfall_data: pd.DataFr
     if strategies.empty: return pd.DataFrame()
     
     results = []
-    shortfall_map = shortfall_data.set_index('BuilderRegionKey')[col].to_dict()
     
     for _, strat in strategies.iterrows():
         source = strat['MediaPayer_BuilderRegionKey']

@@ -1,5 +1,5 @@
 """
-Referral Networks Dashboard - Streamlit Page
+Referral Networks Dashboard - Network Intelligence Engine
 Filename: pages/3_Referral_Networks.py
 """
 import streamlit as st
@@ -7,7 +7,6 @@ import pandas as pd
 import numpy as np
 import networkx as nx
 import plotly.graph_objects as go
-import plotly.express as px
 
 import sys
 from pathlib import Path
@@ -16,43 +15,43 @@ root = Path(__file__).parent.parent
 if str(root) not in sys.path:
     sys.path.insert(0, str(root))
 
-from src.data_loader import load_events, export_to_excel
+from src.data_loader import load_events
 from src.normalization import normalize_events
 from src.referral_clusters import run_referral_clustering
-from src.utils import fmt_currency, fmt_roas
 from src.network_optimization import (
     calculate_shortfalls, 
     analyze_network_leverage, 
-    generate_global_media_plan,
-    analyze_network_health,
-    generate_investment_strategies
+    optimize_campaign_spend,
+    analyze_network_health
 )
 
-st.set_page_config(page_title="Referral Networks", page_icon="🔗", layout="wide")
+st.set_page_config(page_title="Network Intelligence", page_icon="🕸️", layout="wide")
 
 # ==========================================
-# STYLING
+# STYLING & INIT
 # ==========================================
 st.markdown("""
 <style>
-    .metric-card {
-        background-color: #f8f9fa;
-        border: 1px solid #e9ecef;
-        padding: 15px;
+    .kpi-box {
+        background-color: #F8FAFC;
+        border: 1px solid #E2E8F0;
         border-radius: 8px;
-        text-align: center;
+        padding: 15px;
+        margin-bottom: 10px;
     }
-    .metric-value { font-size: 24px; font-weight: bold; color: #0F172A; }
-    .metric-label { font-size: 14px; color: #64748B; margin-bottom: 5px; }
-    .priority-critical { color: #dc2626; font-weight: bold; }
-    .priority-high { color: #ea580c; font-weight: bold; }
+    .kpi-label { font-size: 12px; color: #64748B; font-weight: 600; text-transform: uppercase; }
+    .kpi-value { font-size: 20px; font-weight: 700; color: #0F172A; }
+    .kpi-sub { font-size: 12px; color: #64748B; }
+    .add-btn { width: 100%; }
 </style>
 """, unsafe_allow_html=True)
 
-st.title("🔗 Referral Network & Optimization Engine")
-st.markdown("Leverage network effects to close lead gaps efficiently.")
+if 'campaign_targets' not in st.session_state:
+    st.session_state['campaign_targets'] = []
 
-
+# ==========================================
+# DATA LOADING
+# ==========================================
 def load_data():
     if 'events_file' not in st.session_state:
         return None
@@ -61,75 +60,93 @@ def load_data():
         return None
     return normalize_events(events)
 
-def get_date_range_info(events):
-    date_col = 'lead_date' if 'lead_date' in events.columns else 'RefDate'
-    if date_col not in events.columns:
-        return None, [], None
-    dates = pd.to_datetime(events[date_col], errors='coerce').dropna()
-    if dates.empty:
-        return date_col, [], None
-    min_date, max_date = dates.min(), dates.max()
-    month_starts = pd.date_range(start=min_date.replace(day=1), end=max_date.replace(day=1), freq='MS')
-    return date_col, month_starts
-
-def render_interactive_network_plotly(G, selected_cluster_id):
+# ==========================================
+# VISUALIZATION ENGINE
+# ==========================================
+def render_ego_network(G, focus_node, all_nodes_metrics=None):
     """
-    Render interactive network using Plotly (Standard, no extra deps).
-    Highlights the selected cluster.
+    Renders a directed Ego Graph for the focus node.
+    - One-Way flows: Thin grey lines
+    - Two-Way flows: Thick blue lines
     """
-    # 1. Compute Layout
-    # Use spring layout for organic look
-    pos = nx.spring_layout(G, seed=42, k=0.5) 
+    # 1. Extract Subgraph
+    if focus_node and focus_node in G:
+        # Radius 1 includes direct neighbors
+        sub_G = nx.ego_graph(G, focus_node, radius=1)
+    else:
+        # Fallback to main graph (maybe simplified if too large)
+        sub_G = G
 
-    # 2. Edges
-    edge_x = []
-    edge_y = []
+    # 2. Layout
+    pos = nx.spring_layout(sub_G, seed=42, k=0.5)
+
+    # 3. Edges (Categorized)
+    edge_traces = []
     
-    for u, v, data in G.edges(data=True):
-        # Filter: Only show edges connected to selected cluster (to reduce noise)
-        u_cluster = G.nodes[u].get('cluster')
-        v_cluster = G.nodes[v].get('cluster')
+    for u, v, data in sub_G.edges(data=True):
+        weight = data.get('weight', 1)
         
-        if u_cluster == selected_cluster_id or v_cluster == selected_cluster_id:
-            x0, y0 = pos[u]
-            x1, y1 = pos[v]
-            edge_x.extend([x0, x1, None])
-            edge_y.extend([y0, y1, None])
+        # Check Reciprocity
+        is_reciprocal = sub_G.has_edge(v, u)
+        
+        if is_reciprocal:
+            color = '#3B82F6' # Blue
+            width = 3 + (np.log(weight) * 0.5)
+            opacity = 0.8
+        else:
+            color = '#94A3B8' # Grey
+            width = 1
+            opacity = 0.5
 
-    edge_trace = go.Scatter(
-        x=edge_x, y=edge_y,
-        line=dict(width=0.5, color='#888'),
-        hoverinfo='none',
-        mode='lines'
-    )
+        # Straight line for simplicity/performance in Streamlit
+        # (Curvature requires spline logic which is heavy for Plotly lines unless using annotations)
+        x0, y0 = pos[u]
+        x1, y1 = pos[v]
+        
+        edge_traces.append(go.Scatter(
+            x=[x0, x1, None],
+            y=[y0, y1, None],
+            line=dict(width=width, color=color),
+            opacity=opacity,
+            hoverinfo='text',
+            text=f"{u} → {v} ({int(weight)} leads)",
+            mode='lines'
+        ))
 
-    # 3. Nodes
+    # 4. Nodes
     node_x = []
     node_y = []
     node_color = []
-    node_text = []
     node_size = []
-
-    for node in G.nodes():
-        if node not in pos: continue
-        
+    node_text = []
+    
+    for node in sub_G.nodes():
         x, y = pos[node]
         node_x.append(x)
         node_y.append(y)
         
-        cluster = G.nodes[node].get('cluster', -1)
-        role = G.nodes[node].get('Role', 'Unknown')
+        # Size by Risk if available, else default
+        risk = 0
+        if all_nodes_metrics is not None and node in all_nodes_metrics.index:
+            risk = all_nodes_metrics.loc[node, 'Risk_Score']
         
-        # Color logic: Highlight selected cluster
-        if cluster == selected_cluster_id:
-            node_color.append(1) # Highlight
-            sz = 20
+        # Highlight Focus Node
+        if node == focus_node:
+            node_color.append('#EF4444') # Red for focus
+            node_size.append(30)
         else:
-            node_color.append(0) # Grey out
-            sz = 10
+            # Color by Role if available in graph attributes
+            role = sub_G.nodes[node].get('Role', 'Unknown')
+            if 'Hub' in role:
+                node_color.append('#10B981') # Green
+            elif 'Zombie' in role:
+                node_color.append('#64748B') # Grey
+            else:
+                node_color.append('#3B82F6') # Blue
             
-        node_size.append(sz)
-        node_text.append(f"<b>{node}</b><br>Cluster: {cluster}<br>Role: {role}")
+            node_size.append(15 + (risk/10))
+
+        node_text.append(f"<b>{node}</b><br>Risk: {risk:.0f}")
 
     node_trace = go.Scatter(
         x=node_x, y=node_y,
@@ -137,265 +154,214 @@ def render_interactive_network_plotly(G, selected_cluster_id):
         hoverinfo='text',
         text=node_text,
         marker=dict(
-            showscale=False,
-            colorscale=[[0, '#CBD5E1'], [1, '#1D4ED8']], # Grey vs Blue
             color=node_color,
             size=node_size,
-            line_width=2
+            line=dict(width=2, color='white')
         )
     )
 
+    # 5. Figure Construction
     fig = go.Figure(
-        data=[edge_trace, node_trace],
+        data=edge_traces + [node_trace],
         layout=go.Layout(
-            title=dict(
-                text=f"Cluster {selected_cluster_id} Ecosystem",
-                font=dict(size=16)
-            ),
+            title="",
             showlegend=False,
             hovermode='closest',
-            margin=dict(b=20,l=5,r=5,t=40),
+            margin=dict(b=0,l=0,r=0,t=0),
             xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
             yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
-            plot_bgcolor='white'
+            plot_bgcolor='white',
+            height=500
         )
     )
     
     return fig
 
+# ==========================================
+# MAIN APP
+# ==========================================
 def main():
     events_full = load_data()
     
     if events_full is None:
         st.warning("⚠️ Please upload events data on the Home page first.")
-        st.page_link("app.py", label="← Go to Home", icon="🏠")
         return
 
-    # --- SIDEBAR CONTROLS ---
-    date_col, available_months = get_date_range_info(events_full)
-    
+    # --- SIDEBAR: CAMPAIGN CART ---
     with st.sidebar:
-        st.header("📅 Time Period")
-        use_all_time = st.checkbox("Use All Time", value=True)
+        st.header("🛒 Campaign Plan")
         
-        if use_all_time or not len(available_months):
-            events_selected = events_full
-            if date_col and not events_full.empty:
-                dates = pd.to_datetime(events_full[date_col], errors='coerce')
-                period_days = max((dates.max() - dates.min()).days, 1)
+        cart = st.session_state['campaign_targets']
+        
+        if not cart:
+            st.info("Select builders to add them to your optimization plan.")
+        else:
+            st.success(f"{len(cart)} Builders Selected")
+            for b in cart:
+                st.caption(f"• {b}")
+                
+            if st.button("Clear Cart", type="secondary"):
+                st.session_state['campaign_targets'] = []
+                st.rerun()
+
+        st.divider()
+        
+        # Global Scenario Settings
+        st.subheader("⚙️ Scenario")
+        scen_v_mult = st.slider("Market Velocity", 0.5, 1.5, 1.0, 0.1)
+        scen_strict = st.checkbox("Strict Capacity Check", value=True)
+        
+        if cart:
+            st.divider()
+            if st.button("✨ Generate Plan", type="primary", use_container_width=True):
+                st.session_state['show_plan'] = True
+    
+    # --- MAIN UI ---
+    st.title("Network Intelligence Engine")
+    
+    # 1. Global Calculations
+    # Note: We calculate metrics globally first to populate search & graphs
+    with st.spinner("Analyzing ecosystem..."):
+        shortfall_df = calculate_shortfalls(
+            events_full, 
+            scenario_params={'velocity_mult': scen_v_mult}
+        )
+        leverage_df = analyze_network_leverage(events_full)
+        health_df = analyze_network_health(events_full)
+        
+        # Run Clustering for Graph
+        cluster_res = run_referral_clustering(events_full)
+        G = cluster_res.get('graph', nx.Graph())
+        
+        # Enrich Graph with Health Roles
+        if not health_df.empty:
+            role_dict = health_df.set_index('Builder')['Role'].to_dict()
+            nx.set_node_attributes(G, role_dict, 'Role')
+
+    # 2. Search Interface
+    all_builders = sorted(shortfall_df['BuilderRegionKey'].unique())
+    
+    c1, c2 = st.columns([3, 1])
+    with c1:
+        selected_builder = st.selectbox(
+            "🔍 Find a Builder", 
+            options=["None"] + all_builders,
+            index=0
+        )
+    
+    # 3. Context & Visualization
+    if selected_builder != "None":
+        
+        # --- Builder Context Row ---
+        b_metrics = shortfall_df[shortfall_df['BuilderRegionKey'] == selected_builder].iloc[0]
+        
+        # Safe Integer Conversion
+        tgt = int(b_metrics['LeadTarget']) if pd.notna(b_metrics['LeadTarget']) else 0
+        proj = int(b_metrics['Projected_Total']) if pd.notna(b_metrics['Projected_Total']) else 0
+        gap = int(b_metrics['Net_Gap']) if pd.notna(b_metrics['Net_Gap']) else 0
+        risk = int(b_metrics['Risk_Score']) if pd.notna(b_metrics['Risk_Score']) else 0
+        
+        col_kpi1, col_kpi2, col_kpi3, col_act = st.columns([1, 1, 1, 1.5])
+        
+        with col_kpi1:
+            st.markdown(f"""
+            <div class="kpi-box">
+                <div class="kpi-label">Lead Target</div>
+                <div class="kpi-value">{tgt}</div>
+            </div>
+            """, unsafe_allow_html=True)
+            
+        with col_kpi2:
+            color = "#EF4444" if gap < 0 else "#10B981"
+            st.markdown(f"""
+            <div class="kpi-box">
+                <div class="kpi-label">Proj. Gap</div>
+                <div class="kpi-value" style="color: {color}">{gap:+}</div>
+            </div>
+            """, unsafe_allow_html=True)
+            
+        with col_kpi3:
+            st.markdown(f"""
+            <div class="kpi-box">
+                <div class="kpi-label">Risk Score</div>
+                <div class="kpi-value">{risk}</div>
+            </div>
+            """, unsafe_allow_html=True)
+            
+        with col_act:
+            st.markdown("<br>", unsafe_allow_html=True)
+            if selected_builder not in st.session_state['campaign_targets']:
+                if st.button("➕ Add to Campaign", use_container_width=True):
+                    st.session_state['campaign_targets'].append(selected_builder)
+                    st.rerun()
             else:
-                period_days = 90
+                if st.button("❌ Remove from Campaign", use_container_width=True):
+                    st.session_state['campaign_targets'].remove(selected_builder)
+                    st.rerun()
+
+        # --- The Ecosystem Map (Ego Graph) ---
+        st.subheader(f"Ecosystem: {selected_builder}")
+        
+        viz_col, info_col = st.columns([2.5, 1])
+        
+        with viz_col:
+            # Pass metrics for sizing
+            metrics_idx = shortfall_df.set_index('BuilderRegionKey')
+            fig = render_ego_network(G, selected_builder, metrics_idx)
+            st.plotly_chart(fig, use_container_width=True)
+            
+        with info_col:
+            st.markdown("**Leverage Opportunities**")
+            # Show top sources for this builder
+            sources = leverage_df[leverage_df['Dest_BuilderRegionKey'] == selected_builder].sort_values('eCPR')
+            
+            if not sources.empty:
+                for _, s in sources.head(4).iterrows():
+                    st.info(f"**{s['MediaPayer_BuilderRegionKey']}**\n\nCPR: ${s['eCPR']:.0f} • TR: {s['Transfer_Rate']:.0%}")
+            else:
+                st.warning("No existing inbound flow found.")
+
+    else:
+        # Default View (Global)
+        st.info("Select a builder above to explore their specific network ecosystem and risks.")
+        
+        # Show Cluster Map (Simplified)
+        if G.number_of_nodes() > 0:
+            st.subheader("Global Cluster Map")
+            # Just render the whole graph (lightweight version)
+            fig_global = render_ego_network(G, None)
+            st.plotly_chart(fig_global, use_container_width=True)
         else:
-            start_month, end_month = st.select_slider(
-                "Select Analysis Range",
-                options=available_months,
-                value=(available_months[0], available_months[-1]),
-                format_func=lambda x: x.strftime("%b %Y")
-            )
-            end_date_filter = end_month + pd.offsets.MonthEnd(1)
-            mask = (pd.to_datetime(events_full[date_col]) >= start_month) & (pd.to_datetime(events_full[date_col]) <= end_date_filter)
-            events_selected = events_full.loc[mask].copy()
-            period_days = max((end_date_filter - start_month).days, 1)
-            st.info(f"Analyzing {period_days} days.")
+            st.warning("No network data available.")
 
+    # 4. Campaign Planner (Bottom Section)
+    if st.session_state.get('show_plan', False) and st.session_state['campaign_targets']:
         st.divider()
+        st.header("📋 Campaign Optimization Plan")
         
-        # --- SCENARIO SIMULATOR ---
-        with st.expander("🎲 Scenario Simulator", expanded=False):
-            st.caption("Adjust to forecast future network states.")
-            
-            scen_target_mult = st.slider(
-                "Target Multiplier", 0.5, 2.0, 1.0, 0.1,
-                help="Scale builder targets up or down (e.g. 1.2 = 20% higher targets)"
-            )
-            
-            scen_velocity_mult = st.slider(
-                "Velocity Multiplier", 0.5, 2.0, 1.0, 0.1,
-                help="Scale current lead pace (e.g. 1.1 = Market heats up by 10%)"
-            )
-            
-            scen_strict_cap = st.checkbox(
-                "Strict Capacity Check", value=False,
-                help="If checked, only recommend sources that have a projected surplus."
-            )
-            
-            scenario_params = {
-                'target_mult': scen_target_mult,
-                'velocity_mult': scen_velocity_mult
-            }
-
-    # --- CALCULATIONS ---
-    # 1. Shortfall Analysis (With Scenario Params)
-    shortfall_data = calculate_shortfalls(
-        events_df=events_selected,
-        targets_df=None, 
-        period_days=period_days,
-        total_events_df=events_full,
-        scenario_params=scenario_params
-    )
-    
-    # 2. Leverage Analysis
-    leverage_data = analyze_network_leverage(events_selected)
-    
-    # 3. Global Plan Generation (With Strict Capacity Param)
-    media_plan = generate_global_media_plan(shortfall_data, leverage_data, strict_capacity=scen_strict_cap)
-    
-    # 4. Network Health
-    health_data = analyze_network_health(events_selected)
-
-    # --- TABS ---
-    tab_plan, tab_explorer, tab_health, tab_details = st.tabs([
-        "🚀 Optimization Plan", 
-        "🕸️ Network Explorer", 
-        "🏥 Network Health",
-        "🔍 Builder Deep Dive"
-    ])
-
-    # ----------------------------------------
-    # TAB 1: OPTIMIZATION PLAN
-    # ----------------------------------------
-    with tab_plan:
-        st.header("Strategic Media Allocation")
+        plan_df = optimize_campaign_spend(
+            st.session_state['campaign_targets'],
+            shortfall_df,
+            leverage_df,
+            strict_capacity=scen_strict
+        )
         
-        # Top Metrics
-        total_shortfall = shortfall_data['Projected_Shortfall'].sum()
-        builders_at_risk = shortfall_data[shortfall_data['Projected_Shortfall'] > 0]['BuilderRegionKey'].nunique()
-        total_surplus = shortfall_data['Projected_Surplus'].sum()
-        
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Projected Shortfall", f"{int(total_shortfall):,}", help="Based on scenario settings")
-        c2.metric("Builders At Risk", f"{builders_at_risk}")
-        c3.metric("Available Surplus", f"{int(total_surplus):,}")
-        
-        if scen_target_mult != 1.0 or scen_velocity_mult != 1.0:
-            st.info(f"⚡ Scenario Active: Targets x{scen_target_mult}, Velocity x{scen_velocity_mult}")
-
-        st.divider()
-        
-        # Media Plan Table
-        if media_plan.empty:
-            st.success("✅ No interventions required. All builders on track.")
-        else:
-            st.markdown("### 📋 Recommended Interventions")
+        if not plan_df.empty:
             st.dataframe(
-                media_plan.style.format({
+                plan_df.style.format({
                     "Est_Investment": "${:,.0f}",
                     "Effective_CPR": "${:,.0f}",
                     "Gap_Leads": "{:,.0f}"
-                }).background_gradient(subset=['Est_Investment'], cmap="Reds"),
+                }).background_gradient(subset=['Est_Investment'], cmap="Greens"),
                 use_container_width=True,
                 hide_index=True
             )
             
-            # Risk Matrix
-            if not shortfall_data.empty:
-                risk_df = shortfall_data[shortfall_data['Projected_Shortfall'] > 0].copy()
-                if not risk_df.empty:
-                    fig = px.scatter(
-                        risk_df,
-                        x="Days_Remaining",
-                        y="Projected_Shortfall",
-                        size="Risk_Score",
-                        color="Risk_Score",
-                        hover_name="BuilderRegionKey",
-                        color_continuous_scale="RdYlGn_r",
-                        title="Risk Matrix (Urgency vs Gap)"
-                    )
-                    fig.add_vline(x=30, line_dash="dash", line_color="red")
-                    st.plotly_chart(fig, use_container_width=True)
-
-    # ----------------------------------------
-    # TAB 2: NETWORK EXPLORER
-    # ----------------------------------------
-    with tab_explorer:
-        st.subheader("Interactive Ecosystem Map")
-        
-        c1, c2 = st.columns(2)
-        with c1:
-            resolution = st.slider("Clustering Resolution", 0.5, 2.5, 1.5, 0.1)
-        with c2:
-            target_clusters = st.slider("Max Clusters", 3, 25, 15, 1)
-        
-        # Run Clustering
-        with st.spinner("Analyzing network topology..."):
-            results = run_referral_clustering(events_selected, resolution=resolution, target_max_clusters=target_clusters)
+            total_inv = plan_df['Est_Investment'].sum()
+            st.metric("Total Campaign Investment", f"${total_inv:,.0f}")
             
-        G = results.get('graph', nx.Graph())
-        cluster_summary = results.get('cluster_summary', pd.DataFrame())
-        
-        if G.nodes:
-            # Dropdown for cluster selection
-            cluster_labels = {int(r.ClusterId): f"Cluster {int(r.ClusterId)} ({int(r.N_builders)} builders)" for r in cluster_summary.itertuples()}
-            sel_cluster_id = st.selectbox("Select Ecosystem to Visualize", options=list(cluster_labels.keys()), format_func=lambda x: cluster_labels[x])
-            
-            # Add cluster info to graph nodes for visualization
-            partition = results['builder_master'].set_index('BuilderRegionKey')['ClusterId'].to_dict()
-            nx.set_node_attributes(G, partition, 'cluster')
-            
-            # Render Plotly (Replacing PyVis/AGraph)
-            fig_net = render_interactive_network_plotly(G, sel_cluster_id)
-            st.plotly_chart(fig_net, use_container_width=True)
         else:
-            st.warning("No network connections found in this period.")
-
-    # ----------------------------------------
-    # TAB 3: NETWORK HEALTH
-    # ----------------------------------------
-    with tab_health:
-        st.header("🏥 Network Health Monitor")
-        st.markdown("Diagnose broken pathways and identify zombie nodes.")
-        
-        if health_data.empty:
-            st.info("No health data available.")
-        else:
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Total Nodes", len(health_data))
-            c2.metric("Zombie Nodes", len(health_data[health_data['Role'].str.contains("Zombie")]))
-            c3.metric("Healthy Hubs", len(health_data[health_data['Role'].str.contains("Hub")]))
-            c4.metric("Avg Ratio (Give/Take)", f"{health_data['Ratio_Give_Take'].mean():.2f}")
-            
-            st.dataframe(
-                health_data.sort_values('Leads_Received', ascending=False)
-                .style.format({'Ratio_Give_Take': '{:.2f}'})
-                .background_gradient(subset=['Ratio_Give_Take'], cmap="coolwarm"),
-                use_container_width=True,
-                hide_index=True
-            )
-
-    # ----------------------------------------
-    # TAB 4: BUILDER DEEP DIVE
-    # ----------------------------------------
-    with tab_details:
-        st.header("Single Builder Analysis")
-        
-        # Select Builder
-        builders = sorted(shortfall_data['BuilderRegionKey'].unique())
-        sel_builder = st.selectbox("Select Builder", builders)
-        
-        if sel_builder:
-            row = shortfall_data[shortfall_data['BuilderRegionKey'] == sel_builder].iloc[0]
-            
-            # Safe conversion to int, handling NaNs
-            target_val = int(row['LeadTarget']) if pd.notna(row['LeadTarget']) else 0
-            proj_val = int(row['Projected_Total']) if pd.notna(row['Projected_Total']) else 0
-            gap_val = int(row['Net_Gap']) if pd.notna(row['Net_Gap']) else 0
-            risk_val = int(row['Risk_Score']) if pd.notna(row['Risk_Score']) else 0
-            
-            c1, c2, c3 = st.columns(3)
-            c1.metric("Lead Target", target_val)
-            c2.metric("Projected Total", proj_val, delta=gap_val)
-            c3.metric("Risk Score", risk_val)
-            
-            st.divider()
-            
-            # Strategies
-            strats = generate_investment_strategies(sel_builder, shortfall_data, leverage_data, events_selected)
-            
-            if not strats.empty:
-                st.subheader("Inbound Pathways")
-                st.dataframe(strats.style.format({'Effective_CPR': '${:,.0f}', 'Investment_Required': '${:,.0f}'}))
-            else:
-                st.info("No inbound referral history found.")
+            st.warning("Optimization yielded no results. Check builder connectivity.")
 
 if __name__ == "__main__":
     main()
