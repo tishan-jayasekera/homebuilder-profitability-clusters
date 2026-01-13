@@ -229,6 +229,23 @@ def generate_targeted_media_plan(
     plan_rows = []
     remaining_budget = budget_cap if budget_cap else float('inf')
     
+    # Handle missing builders in shortfall data
+    known_builders = set(shortfall_df['BuilderRegionKey'].tolist()) if not shortfall_df.empty else set()
+    
+    for builder in target_builders:
+        if builder not in known_builders:
+            plan_rows.append({
+                'Target_Builder': builder,
+                'Status': '⚪ No Data',
+                'Gap_Leads': 0,
+                'Risk_Score': 0,
+                'Recommended_Source': '—',
+                'Budget_Allocation': 0,
+                'Projected_Leads': 0,
+                'Effective_CPR': 0,
+                'Transfer_Rate': 0
+            })
+    
     # Filter to requested targets with shortfalls
     targets = shortfall_df[
         (shortfall_df['BuilderRegionKey'].isin(target_builders)) &
@@ -251,8 +268,7 @@ def generate_targeted_media_plan(
             'Budget_Allocation': 0,
             'Projected_Leads': 0,
             'Effective_CPR': 0,
-            'Transfer_Rate': 0,
-            'Action': 'No intervention needed'
+            'Transfer_Rate': 0
         })
     
     if targets.empty:
@@ -279,8 +295,7 @@ def generate_targeted_media_plan(
                 'Budget_Allocation': 0,
                 'Projected_Leads': 0,
                 'Effective_CPR': 0,
-                'Transfer_Rate': 0,
-                'Action': 'Find new referral partner'
+                'Transfer_Rate': 0
             })
             continue
         
@@ -297,8 +312,7 @@ def generate_targeted_media_plan(
                 'Budget_Allocation': 0,
                 'Projected_Leads': 0,
                 'Effective_CPR': 0,
-                'Transfer_Rate': 0,
-                'Action': 'Review existing sources'
+                'Transfer_Rate': 0
             })
             continue
         
@@ -328,8 +342,7 @@ def generate_targeted_media_plan(
                 'Budget_Allocation': allocation,
                 'Projected_Leads': leads_from_source,
                 'Effective_CPR': ecpr,
-                'Transfer_Rate': tr,
-                'Action': f'Scale spend on {source[:20]}'
+                'Transfer_Rate': tr
             })
             
             leads_needed -= leads_from_source
