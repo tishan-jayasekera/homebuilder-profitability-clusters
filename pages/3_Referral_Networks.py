@@ -501,13 +501,6 @@ def render_network_map(G, pos, builder_master_df, selected_builder=None, connect
                 width = 2.0 + (weight/10) # scale by weight
         
         if is_highlight:
-            # We add individual traces for highlighted edges to control color properly in one go? 
-            # No, scattergl line trace takes single color. We'll use a loop or grouping.
-            # Group by color for performance
-            edge_x_hi.extend([x0, x1, None])
-            edge_y_hi.extend([y0, y1, None])
-            # For simplicity in this render, we force a single highlight color or loop. 
-            # Let's loop for highlights to get exact colors (there won't be many).
             fig.add_trace(go.Scattergl(
                 x=[x0, x1, None], y=[y0, y1, None],
                 mode='lines',
@@ -882,7 +875,7 @@ def render_sidebar_cart(shortfall_df):
 # ==========================================
 # CAMPAIGN PLANNER (EXECUTION PLAN)
 # ==========================================
-def render_campaign_planner(targets, shortfall_df, leverage_df):
+def render_campaign_planner(targets, shortfall_df, leverage_df, builder_master):
     if not targets:
         st.info("👆 Add builders to the campaign cart (Sidebar) to unlock the planner.")
         return
@@ -893,6 +886,33 @@ def render_campaign_planner(targets, shortfall_df, leverage_df):
     # Run analysis
     analysis = analyze_campaign_network(targets, leverage_df, shortfall_df)
     sources = analysis['sources']
+    
+    # Inject "Self Spend" options into sources list
+    # For each target, check their own self-media efficiency
+    # If better than avg network CPR, add as a "source"
+    for t in targets:
+        b_data = builder_master[builder_master['BuilderRegionKey'] == t]
+        if not b_data.empty:
+            b_row = b_data.iloc[0]
+            # Calculate Self CPR (Effective)
+            if b_row['Referrals_in'] > 0 and b_row['MediaCost'] > 0:
+                raw_self = b_row['MediaCost'] / b_row['Referrals_in']
+                eff_self = raw_self / max(b_row['ROAS'], 1e-9)
+                
+                # Add to sources list as a "Self Direct" option
+                sources.append({
+                    'source': f"SELF ({t})",
+                    'total_refs_sent': 0, # Not relevant for self
+                    'refs_to_targets': 999, # Infinite capacity assumption for now
+                    'refs_to_others': 0,
+                    'target_rate': 1.0, # 100% hits target
+                    'leakage_rate': 0.0,
+                    'base_cpr': raw_self,
+                    'effective_cpr': eff_self
+                })
+    
+    # Re-sort sources including new Self options
+    sources = sorted(sources, key=lambda x: x['effective_cpr'])
     
     if not sources:
         st.warning("No historical sources found for these targets. Cannot optimize media.")
@@ -973,6 +993,11 @@ def render_campaign_planner(targets, shortfall_df, leverage_df):
             def generate_justification(row):
                 cpr = row['effective_cpr']
                 rate = row['target_rate']
+                src_name = row['source']
+                
+                # Check if it's a self-spend row
+                if "SELF" in src_name:
+                    return f"💎 **Direct Buy**: Most efficient path. Buying directly for {src_name.replace('SELF (', '').replace(')', '')} beats referral costs."
                 
                 # Efficiency Text
                 if cpr < 300: eff_desc = "Highly efficient"
@@ -1141,7 +1166,8 @@ def main():
     render_campaign_planner(
         st.session_state.campaign_targets, 
         shortfall_df, 
-        leverage_df
+        leverage_df,
+        builder_master # Pass builder_master for self-spend check
     )
 
 if __name__ == "__main__":
