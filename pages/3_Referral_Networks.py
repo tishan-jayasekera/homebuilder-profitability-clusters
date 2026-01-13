@@ -549,6 +549,8 @@ def render_network_map(G, pos, builder_master_df, selected_builder=None, connect
         border_col = 'white'
         border_width = 1
         
+        cid = cluster_map.get(node, 0)
+        
         if selected_builder:
             if node in highlight_nodes:
                 role = role_map.get(node, 'dim')
@@ -571,12 +573,11 @@ def render_network_map(G, pos, builder_master_df, selected_builder=None, connect
                 }.get(role, '')
                 txt = f"<b>{node}</b><br>{role_txt}<br>Volume: {int(deg)}"
             else:
-                c = ROLE_COLORS['dim']
+                c = CLUSTER_COLORS[(cid - 1) % len(CLUSTER_COLORS)] if cid > 0 else '#9ca3af'
                 s = base_size * 0.7
                 op = 0.2
                 txt = f"{node}"
         else:
-            cid = cluster_map.get(node, 0)
             c = CLUSTER_COLORS[(cid - 1) % len(CLUSTER_COLORS)] if cid > 0 else '#9ca3af'
             s = base_size
             op = 0.9
@@ -596,7 +597,7 @@ def render_network_map(G, pos, builder_master_df, selected_builder=None, connect
             size=node_sizes,
             color=node_colors,
             line=dict(color=[l['color'] for l in node_lines], width=[l['width'] for l in node_lines]),
-            opacity=1.0 if not selected_builder else [1.0 if n in highlight_nodes else 0.2 for n in G.nodes()]
+            opacity=1.0 if not selected_builder else [1.0 if n in highlight_nodes else 0.35 for n in G.nodes()]
         ),
         text=node_texts,
         hoverinfo='text',
@@ -712,6 +713,41 @@ def render_builder_panel(builder, connections, shortfall_df, leverage_df, builde
     profit = b_data['Profit'].iloc[0] if not b_data.empty else 0
     roas = b_data['ROAS'].iloc[0] if not b_data.empty else 0
 
+    # Cluster Analytics
+    cluster_analytics_html = ""
+    if cid != "?":
+        cluster_members = builders_df[builders_df['ClusterId'] == cid]
+        cluster_size = len(cluster_members)
+        cluster_profit = cluster_members['Profit'].sum()
+        cluster_referrals_in = cluster_members['Referrals_in'].sum() if 'Referrals_in' in cluster_members.columns else 0
+        
+        # Calculate Flows
+        # Internal vs External Inbound
+        # This requires edges data which we have in edges_df
+        # Filter edges where Dest is in cluster
+        cluster_nodes = set(cluster_members['BuilderRegionKey'])
+        cluster_inbound_edges = edges_df[edges_df['Dest_builder'].isin(cluster_nodes)]
+        
+        internal_flow = cluster_inbound_edges[cluster_inbound_edges['Origin_builder'].isin(cluster_nodes)]['Referrals'].sum()
+        external_flow = cluster_inbound_edges[~cluster_inbound_edges['Origin_builder'].isin(cluster_nodes)]['Referrals'].sum()
+        total_flow = internal_flow + external_flow
+        
+        internal_pct = (internal_flow / total_flow * 100) if total_flow > 0 else 0
+        
+        cluster_analytics_html = f"""
+        <div style="margin-top: 1rem; padding-top: 1rem; border-top: 1px solid #f3f4f6;">
+            <div class="eco-lever-heading" style="margin-top:0;">Cluster {cid} Analytics</div>
+            <div class="eco-metric-row" style="border-bottom: none; margin-bottom: 0;">
+                <div class="eco-metric" style="font-size: 0.8rem;">Size: <span>{cluster_size}</span></div>
+                <div class="eco-metric" style="font-size: 0.8rem;">Profit: <span>${cluster_profit:,.0f}</span></div>
+            </div>
+            <div class="eco-metric-row" style="border-bottom: none;">
+                <div class="eco-metric" style="font-size: 0.8rem;">Flow: <span>{internal_pct:.0f}% Internal</span></div>
+                <div class="eco-metric" style="font-size: 0.8rem;">Vol: <span>{total_flow:,.0f} Refs</span></div>
+            </div>
+        </div>
+        """
+
     card_html = f"""
     <div class="card">
         <div class="eco-header">
@@ -731,6 +767,7 @@ def render_builder_panel(builder, connections, shortfall_df, leverage_df, builde
         <div class="eco-bullets">
             <ul class="eco-list">{bullets}</ul>
         </div>
+        {cluster_analytics_html}
     </div>
     """
     st.markdown(card_html, unsafe_allow_html=True)
