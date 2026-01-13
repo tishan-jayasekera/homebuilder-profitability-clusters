@@ -19,6 +19,7 @@ from src.data_loader import load_events, export_to_excel
 from src.normalization import normalize_events
 from src.referral_clusters import run_referral_clustering
 from src.utils import fmt_currency
+from src.builder_pnl import build_builder_pnl
 from src.network_optimization import (
     calculate_shortfalls, analyze_network_leverage, 
     analyze_network_health, simulate_campaign_spend,
@@ -80,6 +81,25 @@ STYLES = """
     .badge-yellow { background-color: #fffbeb; color: #92400e; border: 1px solid #fde68a; }
     .badge-green { background-color: #f0fdf4; color: #166534; border: 1px solid #bbf7d0; }
     
+    /* Eco Styles (Ported) */
+    .eco-pill-row { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+    .eco-pill { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; padding: 3px 10px; border-radius: 999px; background: #F3F4F6; color: #4B5563; }
+    .eco-pill-dot { width: 6px; height: 6px; border-radius: 999px; background: currentColor; }
+    .eco-pill--primary { background: #DBEAFE; color: #1D4ED8; }
+    .eco-pill--positive { background: #DCFCE7; color: #15803D; }
+    .eco-pill--warning { background: #FEF3C7; color: #92400E; }
+    .eco-pill--negative { background: #FEE2E2; color: #B91C1C; }
+    
+    .eco-metric-row { display: flex; flex-wrap: wrap; gap: 16px; font-size: 13px; margin-bottom: 8px; padding-bottom: 8px; border-bottom: 1px solid #f3f4f6; }
+    .eco-metric { font-weight: 500; color: #6B7280; }
+    .eco-metric span { font-weight: 600; color: #111827; margin-left: 4px; }
+    
+    .eco-bullets { font-size: 13px; line-height: 1.5; color: #374151; }
+    .eco-bullets ul { margin: 4px 0; padding-left: 18px; }
+    .eco-bullets li { margin-bottom: 4px; }
+    .eco-lever-heading { font-weight: 600; margin-top: 8px; color: #111827; }
+    .eco-downstream { color: #6B7280; font-size: 12px; display: block; margin-top: 2px; }
+
     /* Section Headers */
     .step-header {
         font-size: 1.1rem;
@@ -184,6 +204,155 @@ def get_builder_connections(events_df, builder):
     return result
 
 # ==========================================
+# LOGIC: GUIDANCE ENGINE
+# ==========================================
+def compute_focus_guidance(builders, edges_sub, focus_builder):
+    """
+    Compute targeted media guidance:
+    - Direct paths (Leverage)
+    - Indirect paths (1-hop)
+    - Self media efficiency
+    """
+    if not focus_builder or focus_builder not in builders["BuilderRegionKey"].values:
+        return None, None, set(), set(), None, None, None, np.nan, np.nan
+
+    inbound = edges_sub.loc[
+        edges_sub["Dest_builder"] == focus_builder, "Referrals"
+    ].sum()
+
+    # Even if inbound is 0, we might want self stats
+    fb = builders.set_index("BuilderRegionKey").loc[focus_builder]
+
+    # Self path
+    if fb["Referrals_in"] > 0 and fb["MediaCost"] > 0:
+        raw_self = fb["MediaCost"] / fb["Referrals_in"]
+        eff_self = raw_self / max(fb["ROAS"], 1e-9)
+    else:
+        raw_self = np.nan
+        eff_self = np.nan
+
+    # Direct paths
+    direct = edges_sub[edges_sub["Dest_builder"] == focus_builder].copy()
+    if not direct.empty:
+        direct = direct.merge(
+            builders[["BuilderRegionKey", "ROAS", "MediaCost", "Profit"]],
+            left_on="Origin_builder",
+            right_on="BuilderRegionKey",
+            how="left"
+        )
+
+        direct["Inbound_share"] = direct["Referrals"] / inbound if inbound > 0 else 0
+        direct["Raw_MPR"] = direct["MediaCost"] / direct["Referrals"].replace(0, np.nan)
+        direct["Eff_MPR"] = direct["Raw_MPR"] / direct["ROAS"].replace(0, np.nan)
+
+        m = direct["Eff_MPR"].replace([np.inf, -np.inf], np.nan)
+        if m.notna().any():
+            mx, mn = m.max(), m.min()
+            direct["Leverage"] = 100 * (1 - (m - mn) / (mx - mn if mx != mn else 1))
+        else:
+            direct["Leverage"] = 0
+
+        direct = direct.sort_values("Eff_MPR")
+        direct_sources = set(direct["Origin_builder"].astype(str))
+    else:
+        direct = pd.DataFrame()
+        direct_sources = set()
+
+    # Indirect paths (1 hop)
+    mids = list(direct_sources)
+    second = pd.DataFrame()
+    second_sources = set()
+    
+    if mids:
+        second = edges_sub[edges_sub["Dest_builder"].isin(mids)].copy()
+
+    if not second.empty:
+        mid_ref_map = direct.set_index("Origin_builder")["Referrals"].to_dict()
+
+        second["Ref_mid_to_focus"] = second["Dest_builder"].map(mid_ref_map).fillna(0)
+        tot_mid = (
+            second.groupby("Dest_builder")["Referrals"]
+            .transform("sum")
+            .replace(0, np.nan)
+        )
+
+        second["Ref_to_focus_est"] = np.where(
+            tot_mid.isna(),
+            0,
+            (second["Referrals"] / tot_mid) * second["Ref_mid_to_focus"]
+        )
+
+        second = second.merge(
+            builders[["BuilderRegionKey", "ROAS", "MediaCost"]],
+            left_on="Origin_builder",
+            right_on="BuilderRegionKey",
+            how="left"
+        )
+
+        second["Raw_MPR_est"] = np.where(
+            second["Ref_to_focus_est"] <= 0,
+            np.nan,
+            second["MediaCost"] / second["Ref_to_focus_est"]
+        )
+
+        second["Eff_MPR"] = second["Raw_MPR_est"] / second["ROAS"].replace(0, np.nan)
+
+        second["PathLev_raw"] = (
+            second["Referrals"].fillna(0) *
+            second["Ref_mid_to_focus"].fillna(0) *
+            second["ROAS"].clip(lower=0).fillna(0)
+        )
+
+        mx = second["PathLev_raw"].max()
+        second["PathLev"] = (
+            (second["PathLev_raw"] / mx) * 100 if (mx and mx > 0) else 0
+        )
+
+        second = second.sort_values("Eff_MPR")
+        second_sources = set(second["Origin_builder"].astype(str))
+    else:
+        second = None
+        second_sources = set()
+
+    # Best path
+    cands = [("Self", eff_self, focus_builder)]
+
+    if len(direct) > 0:
+        r = direct.iloc[0]
+        cands.append(("Direct", r["Eff_MPR"], r["Origin_builder"]))
+
+    if second is not None and len(second) > 0:
+        r = second.iloc[0]
+        cands.append(("Indirect", r["Eff_MPR"], r["Origin_builder"]))
+
+    cands_valid = [c for c in cands if not pd.isna(c[1])]
+    best_choice = min(cands_valid, key=lambda x: x[1]) if cands_valid else None
+
+    # Downstream from focus
+    focus_out = edges_sub[edges_sub["Origin_builder"] == focus_builder].copy()
+    if not focus_out.empty:
+        tot = focus_out["Referrals"].sum()
+        focus_out["Out_share"] = np.where(
+            tot > 0,
+            focus_out["Referrals"] / tot,
+            0
+        )
+    else:
+        focus_out = None
+
+    return (
+        direct,
+        second,
+        direct_sources,
+        second_sources,
+        focus_out,
+        cands,
+        best_choice,
+        raw_self,
+        eff_self,
+    )
+
+# ==========================================
 # VISUALIZATION COMPONENTS
 # ==========================================
 def render_metric_card(label, value, sub="", color="#111827"):
@@ -199,20 +368,17 @@ def render_metric_card(label, value, sub="", color="#111827"):
 def render_network_map(G, pos, builder_master_df, selected_builder=None, connections=None):
     """
     High-end "Palantir-style" graph visualization.
-    - If global view: Shows clusters with distinct colors.
-    - If builder selected: Highlights ego-network (neighbors) and dims background.
     """
     fig = go.Figure()
     
     # --- PALETTE & STYLING ---
-    # Distinct colors for clusters (up to 12)
     CLUSTER_COLORS = [
         '#6366f1', '#ec4899', '#10b981', '#f59e0b', '#3b82f6', 
         '#8b5cf6', '#ef4444', '#14b8a6', '#f97316', '#06b6d4',
         '#84cc16', '#a855f7'
     ]
     
-    # Specific Role Colors (when builder selected)
+    # Specific Role Colors
     ROLE_COLORS = {
         'source': '#10b981',   # Emerald (Inbound)
         'target': '#f59e0b',   # Amber (Outbound)
@@ -245,11 +411,7 @@ def render_network_map(G, pos, builder_master_df, selected_builder=None, connect
             role_map[c['partner']] = 'mutual'
 
     # --- 1. EDGES ---
-    # We draw edges in two passes: Background (dimmed) and Foreground (highlighted)
-    
     edge_x_dim, edge_y_dim = [], []
-    edge_x_high, edge_y_high = [], []
-    edge_colors_high = []
     
     for u, v, data in G.edges(data=True):
         if u not in pos or v not in pos: continue
@@ -260,22 +422,13 @@ def render_network_map(G, pos, builder_master_df, selected_builder=None, connect
         color = ROLE_COLORS['dim']
         
         if selected_builder:
-            # Check if edge connects to selected builder
             if u == selected_builder or v == selected_builder:
                 is_highlight = True
-                # Determine flow direction color based on the neighbor's role
                 neighbor = v if u == selected_builder else u
                 role = role_map.get(neighbor, 'dim')
                 color = ROLE_COLORS.get(role, ROLE_COLORS['dim'])
         
         if is_highlight:
-            # Add None to break lines in single scatter trace
-            edge_x_high.extend([x0, x1, None])
-            edge_y_high.extend([y0, y1, None])
-            # For colored edges in a single trace, we need separate traces or a trick.
-            # To keep it simple but performant, we'll draw highlighted edges individually later
-            # or just use a uniform highlight color if strictly necessary. 
-            # Better approach for detailed coloring: draw individual lines for highlights.
             fig.add_trace(go.Scatter(
                 x=[x0, x1, None], y=[y0, y1, None],
                 mode='lines',
@@ -286,7 +439,7 @@ def render_network_map(G, pos, builder_master_df, selected_builder=None, connect
             edge_x_dim.extend([x0, x1, None])
             edge_y_dim.extend([y0, y1, None])
 
-    # Draw dimmed background edges as a single trace (efficient)
+    # Background edges
     fig.add_trace(go.Scatter(
         x=edge_x_dim, y=edge_y_dim,
         mode='lines',
@@ -300,7 +453,6 @@ def render_network_map(G, pos, builder_master_df, selected_builder=None, connect
     node_colors = []
     node_sizes = []
     node_texts = []
-    node_borders = []
     
     degrees = dict(G.degree(weight='weight'))
     max_deg = max(degrees.values()) if degrees else 1
@@ -311,20 +463,15 @@ def render_network_map(G, pos, builder_master_df, selected_builder=None, connect
         node_x.append(x)
         node_y.append(y)
         
-        # Sizing
         deg = degrees.get(node, 0)
         base_size = 8 + (deg / max_deg) * 15
         
-        # Coloring Logic
         if selected_builder:
             if node in highlight_nodes:
                 role = role_map.get(node, 'dim')
                 c = ROLE_COLORS.get(role, ROLE_COLORS['dim'])
                 s = base_size + 5 if node == selected_builder else base_size + 2
-                op = 1.0
-                border = 'white' if node == selected_builder else c
                 
-                # Descriptive text
                 role_txt = {
                     'selected': 'SELECTED',
                     'source': 'Source (Inbound)',
@@ -335,22 +482,16 @@ def render_network_map(G, pos, builder_master_df, selected_builder=None, connect
             else:
                 c = ROLE_COLORS['dim']
                 s = base_size * 0.8
-                op = 0.3
-                border = 'white'
                 txt = f"{node}"
         else:
-            # Global View: Color by Cluster
             cid = cluster_map.get(node, 0)
             c = CLUSTER_COLORS[(cid - 1) % len(CLUSTER_COLORS)] if cid > 0 else '#9ca3af'
             s = base_size
-            op = 0.9
-            border = 'white'
             txt = f"<b>{node}</b><br>Cluster {cid}<br>Volume: {int(deg)}"
 
         node_colors.append(c)
         node_sizes.append(s)
         node_texts.append(txt)
-        node_borders.append(border)
 
     fig.add_trace(go.Scatter(
         x=node_x, y=node_y,
@@ -366,29 +507,29 @@ def render_network_map(G, pos, builder_master_df, selected_builder=None, connect
         showlegend=False
     ))
     
-    # Layout
     fig.update_layout(
         margin=dict(l=0, r=0, t=0, b=0),
         height=500,
         plot_bgcolor='white',
         xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
         yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
-        hovermode='closest',
-        annotations=[
-            dict(
-                text="<b>Network Map</b>" if not selected_builder else f"<b>Ego Network: {selected_builder}</b>",
-                x=0.01, y=0.99, xref="paper", yref="paper",
-                showarrow=False, align="left", font=dict(size=14, color="#374151")
-            )
-        ]
+        hovermode='closest'
     )
     
     return fig
 
-def render_builder_panel(builder, connections, shortfall_df, leverage_df):
-    """Refined builder detail panel."""
-    
-    # 1. Header & Risk Status
+def render_builder_panel(builder, connections, shortfall_df, leverage_df, builders_df, edges_df):
+    """
+    Enhanced builder detail panel with Guidance Engine.
+    Uses 'compute_focus_guidance' logic.
+    """
+    # 1. Run Guidance Engine
+    (
+        direct, second, direct_srcs, second_srcs, focus_out,
+        cands, best_choice, raw_self, eff_self
+    ) = compute_focus_guidance(builders_df, edges_df, builder)
+
+    # 2. Risk Status
     row = shortfall_df[shortfall_df['BuilderRegionKey'] == builder]
     risk_score = 0
     shortfall = 0
@@ -397,7 +538,6 @@ def render_builder_panel(builder, connections, shortfall_df, leverage_df):
         risk_score = row['Risk_Score'].iloc[0]
         shortfall = row['Projected_Shortfall'].iloc[0]
     
-    # Risk Badge
     if risk_score > 50:
         badge = f'<span class="badge badge-red">Risk: {int(risk_score)}</span>'
         status_text = f"CRITICAL GAP: {int(shortfall):,} leads"
@@ -408,38 +548,75 @@ def render_builder_panel(builder, connections, shortfall_df, leverage_df):
         badge = f'<span class="badge badge-green">Safe</span>'
         status_text = "On Track"
 
-    st.markdown(f"""
+    # 3. Build HTML Summary Card
+    bullets = ""
+    
+    # Recommended path bullet
+    if best_choice:
+        lbl, eff, src = best_choice
+        eff_txt = "n/a" if pd.isna(eff) else f"~${eff:,.0f}/eff-ref"
+        path_text = f"Self direct" if lbl == "Self" else f"{lbl} via <b>{src}</b>"
+        bullets += f"<li><b>Recommended:</b> {path_text} <span style='color:#6B7280'>({eff_txt})</span></li>"
+
+    # Self media bullet
+    if not pd.isna(raw_self):
+        eff_self_txt = "n/a" if pd.isna(eff_self) else f"${eff_self:,.0f}"
+        bullets += f"<li class='eco-lever-heading'>Self Media Efficiency</li>"
+        bullets += f"<ul><li><b>{builder}</b><br>– CPR: ${raw_self:,.0f}<br>– Eff. Cost: {eff_self_txt}</li></ul>"
+
+    # Primary Levers (Top 3 Direct)
+    if direct is not None and not direct.empty:
+        bullets += "<li class='eco-lever-heading'>Top Media Levers (Direct)</li><ul>"
+        for _, r in direct.head(3).iterrows():
+            src = r["Origin_builder"]
+            eff = r["Eff_MPR"]
+            sh = r["Inbound_share"]
+            eff_txt = "n/a" if pd.isna(eff) else f"${eff:,.0f}"
+            bullets += f"<li><b>{src}</b><br>– Share: {sh:.0%}<br>– Eff. Cost: {eff_txt}</li>"
+        bullets += "</ul>"
+
+    # Determine Cluster & Stats
+    b_data = builders_df[builders_df['BuilderRegionKey'] == builder]
+    cid = b_data['ClusterId'].iloc[0] if not b_data.empty else "?"
+    profit = b_data['Profit'].iloc[0] if not b_data.empty else 0
+    roas = b_data['ROAS'].iloc[0] if not b_data.empty else 0
+
+    card_html = f"""
     <div class="card">
-        <div style="display:flex; justify-content:space-between; align-items:center;">
-            <h3 style="margin:0; font-size:1.1rem; color:#111827;">{builder}</h3>
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+            <h3 style="margin:0; font-size:1.2rem; color:#111827;">{builder}</h3>
             {badge}
         </div>
-        <div style="margin-top:0.5rem; font-size:0.9rem; color:#4b5563;">
-            {status_text}
+        <div class="eco-pill-row">
+            <span class="eco-pill eco-pill--primary"><span class="eco-pill-dot"></span>Cluster {cid}</span>
+            <span class="eco-pill"><span class="eco-pill-dot"></span>{status_text}</span>
+        </div>
+        <div class="eco-metric-row">
+            <div class="eco-metric">Profit: <span>${profit:,.0f}</span></div>
+            <div class="eco-metric">ROAS: <span>{roas:.2f}x</span></div>
+        </div>
+        <div class="eco-bullets">
+            <ul>{bullets}</ul>
         </div>
     </div>
-    """, unsafe_allow_html=True)
+    """
+    st.markdown(card_html, unsafe_allow_html=True)
     
-    # 2. Commercial Data Tabs
+    # 4. Detailed Flow Tables
     tab_in, tab_out, tab_partners = st.tabs(["📥 Supply (In)", "📤 Demand (Out)", "🤝 Partners"])
     
     with tab_in:
         if connections['inbound']:
             df = pd.DataFrame(connections['inbound'])
             df = df.rename(columns={'partner': 'Source', 'count': 'Vol', 'value': 'Spend'})
-            
-            # Show Efficiency if available
-            lev_subset = leverage_df[
-                (leverage_df['Dest_BuilderRegionKey'] == builder) & 
-                (leverage_df['MediaPayer_BuilderRegionKey'].isin(df['Source']))
-            ]
-            if not lev_subset.empty:
-                df = df.merge(lev_subset[['MediaPayer_BuilderRegionKey', 'eCPR']], 
-                              left_on='Source', right_on='MediaPayer_BuilderRegionKey', how='left')
-                df = df.drop(columns=['MediaPayer_BuilderRegionKey'])
+            # Merge efficiency if available in direct guidance
+            if direct is not None and not direct.empty:
+                df = df.merge(direct[['Origin_builder', 'Eff_MPR']], left_on='Source', right_on='Origin_builder', how='left')
+                df = df.drop(columns=['Origin_builder'])
+                df.rename(columns={'Eff_MPR': 'Eff. Cost'}, inplace=True)
             
             st.dataframe(
-                df.style.format({'Spend': '${:,.0f}', 'eCPR': '${:,.0f}'})
+                df.style.format({'Spend': '${:,.0f}', 'Eff. Cost': '${:,.0f}'})
                 .background_gradient(subset=['Vol'], cmap='Greens'),
                 hide_index=True, use_container_width=True, height=200
             )
@@ -618,7 +795,6 @@ def render_campaign_planner(targets, shortfall_df, leverage_df):
             def generate_justification(row):
                 cpr = row['effective_cpr']
                 rate = row['target_rate']
-                # Categorize efficiency
                 if cpr < 300: eff_desc = "Highly efficient"
                 elif cpr < 600: eff_desc = "Cost-effective"
                 else: eff_desc = "Strategic"
@@ -702,11 +878,28 @@ def main():
         period_days = 90
     
     with st.spinner("Mapping Ecosystem..."):
+        # 1. P&L for stats
+        pnl = build_builder_pnl(events_filtered, lens='recipient', freq='ALL')
+        
+        # 2. Shortfalls
         shortfall_df = calculate_shortfalls(events_filtered, period_days=period_days)
+        
+        # 3. Network & Clusters
         leverage_df = analyze_network_leverage(events_filtered)
         cluster_res = run_referral_clustering(events_filtered, target_max_clusters=12)
         G = cluster_res.get('graph', nx.Graph())
+        
+        # 4. Enriched Master Data
         builder_master = cluster_res.get('builder_master', pd.DataFrame())
+        if not builder_master.empty:
+            # Merge P&L metrics into builder_master for graph tooltips and logic
+            if 'BuilderRegionKey' in pnl.columns:
+                pnl_subset = pnl[['BuilderRegionKey', 'Profit', 'ROAS', 'MediaCost']].copy()
+                builder_master = builder_master.merge(pnl_subset, on='BuilderRegionKey', how='left')
+                builder_master[['Profit', 'ROAS', 'MediaCost']] = builder_master[['Profit', 'ROAS', 'MediaCost']].fillna(0)
+        
+        # 5. Edges for Guidance
+        edges = cluster_res.get('edges_clean', pd.DataFrame())
 
     # Sidebar Cart
     render_sidebar_cart(shortfall_df)
@@ -740,7 +933,14 @@ def main():
         
     with c_detail:
         if st.session_state.selected_builder:
-            render_builder_panel(st.session_state.selected_builder, conns, shortfall_df, leverage_df)
+            render_builder_panel(
+                st.session_state.selected_builder, 
+                conns, 
+                shortfall_df, 
+                leverage_df,
+                builder_master,
+                edges
+            )
         else:
             st.info("Select a builder to see specific flows and supply/demand data.")
             st.markdown(f"""
