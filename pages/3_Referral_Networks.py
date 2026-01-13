@@ -465,9 +465,25 @@ class NetworkOptimizer:
             if available_for_source <= 0:
                 continue
             
-            # Estimate leads needed
-            total_needed = sum(max(0, target_shortfalls[t] - target_leads[t]) for t in unfilled_targets)
-            cost_to_fill = total_needed * source_data['best_cpr']
+            # Estimate cost to fill remaining leads using each target's best path
+            best_paths = {}
+            remaining_leads = {}
+            for target in unfilled_targets:
+                paths_to_target = [p for t, p in source_data['target_paths'] if t == target]
+                if paths_to_target:
+                    best_paths[target] = min(paths_to_target, key=lambda p: p.effective_cpr)
+                    remaining = max(0.0, target_shortfalls[target] - target_leads[target])
+                    if remaining > 0:
+                        remaining_leads[target] = remaining
+
+            if not best_paths or not remaining_leads:
+                continue
+
+            cost_to_fill = sum(
+                remaining_leads[t] * best_paths[t].effective_cpr for t in remaining_leads
+            )
+            if cost_to_fill <= 0:
+                continue
             
             allocation = min(remaining_budget, available_for_source, cost_to_fill, budget * 0.25)
             
@@ -476,33 +492,42 @@ class NetworkOptimizer:
             
             # Calculate leads per target using each target's best path
             leads_per_target = {}
-            best_paths = {}
-            for target in unfilled_targets:
-                paths_to_target = [p for t, p in source_data['target_paths'] if t == target]
-                if paths_to_target:
-                    best_paths[target] = min(paths_to_target, key=lambda p: p.effective_cpr)
-            total_transfer = sum(p.transfer_rate for p in best_paths.values())
-            if total_transfer <= 0:
+            actual_spend = 0.0
+            total_cost_to_fill = sum(
+                remaining_leads[t] * best_paths[t].effective_cpr for t in remaining_leads
+            )
+            if total_cost_to_fill <= 0:
                 continue
             
             for target in unfilled_targets:
                 best_path = best_paths.get(target)
-                if not best_path:
+                remaining = remaining_leads.get(target, 0.0)
+                if not best_path or remaining <= 0:
                     continue
-                target_share = best_path.transfer_rate / total_transfer
+                target_cost_to_fill = remaining * best_path.effective_cpr
+                target_share = target_cost_to_fill / total_cost_to_fill
                 target_budget = allocation * min(target_share, 1.0)
-                leads_for_target = target_budget / best_path.effective_cpr
+                leads_for_target = min(remaining, target_budget / best_path.effective_cpr)
+                if leads_for_target <= 0:
+                    continue
+                spend_for_target = leads_for_target * best_path.effective_cpr
                 leads_per_target[target] = leads_for_target
                 target_leads[target] += leads_for_target
+                actual_spend += spend_for_target
+
+            if actual_spend <= 0:
+                continue
+            allocation = actual_spend
             
             is_direct = source in targets
+            blended_cpr = allocation / sum(leads_per_target.values()) if leads_per_target else source_data['best_cpr']
             
             allocations.append(AllocationResult(
                 source=source,
-                targets_served=unfilled_targets,
+                targets_served=list(leads_per_target.keys()),
                 budget=allocation,
                 projected_leads=leads_per_target,
-                effective_cpr=source_data['best_cpr'],
+                effective_cpr=blended_cpr,
                 is_direct=is_direct,
                 synergy_factor=source_data['synergy_factor']
             ))
@@ -674,21 +699,23 @@ def get_layout(nodes, edges):
 # ============================================================================
 # FLOW DIAGRAM HELPERS
 # ============================================================================
-def build_budget_flow_sankey(allocations, target_analyses, total_budget, unallocated):
-    nodes = ["Total Budget"]
-    node_index = {"Total Budget": 0}
-    links = []
-
-    def add_node(label):
-        if label not in node_index:
-            node_index[label] = len(nodes)
-            nodes.append(label)
-        return node_index[label]
+def build_budget_flow_dot(allocations, target_analyses, total_budget, unallocated):
+    lines = [
+        "digraph BudgetFlow {",
+        "rankdir=LR;",
+        "nodesep=0.35;",
+        "ranksep=0.5;",
+        "node [shape=box, style=filled, color=\"#e5e7eb\", fillcolor=\"#eff6ff\", fontname=\"Helvetica\"];",
+        "edge [color=\"#2563eb\", fontname=\"Helvetica\"];",
+        "total [label=\"Total Budget\\n$" + f"{total_budget:,.0f}" + "\"];",
+    ]
 
     for alloc in allocations:
-        source_label = f"Source: {alloc.source[:22]}"
-        source_idx = add_node(source_label)
-        links.append((node_index["Total Budget"], source_idx, alloc.budget, "Allocated"))
+        source_id = f"src_{abs(hash(alloc.source)) % 10**8}"
+        lines.append(
+            f"{source_id} [label=\"Source: {alloc.source[:22]}\\n$" + f"{alloc.budget:,.0f}" + "\"];"
+        )
+        lines.append(f"total -> {source_id} [label=\"$" + f"{alloc.budget:,.0f}" + "\"];")
 
         used_budget = 0.0
         for target, leads in alloc.projected_leads.items():
@@ -707,50 +734,42 @@ def build_budget_flow_sankey(allocations, target_analyses, total_budget, unalloc
             delivered_budget = target_budget * best_path.transfer_rate
             leakage_budget = target_budget - delivered_budget
 
-            target_label = f"Target: {target[:22]}"
-            target_idx = add_node(target_label)
-            links.append((source_idx, target_idx, delivered_budget, f"{best_path.transfer_rate:.0%} delivered"))
+            target_id = f"tgt_{abs(hash((alloc.source, target))) % 10**8}"
+            lines.append(
+                f"{target_id} [label=\"Target: {target[:22]}\\n$" + f"{delivered_budget:,.0f}" + "\"];"
+            )
+            lines.append(
+                f"{source_id} -> {target_id} [label=\"$" + f"{delivered_budget:,.0f}" + " (" + f"{best_path.transfer_rate:.0%}" + ")\"];"
+            )
 
             if leakage_budget > 0:
-                leakage_label = f"Leakage: {alloc.source[:10]}→{target[:10]}"
-                leakage_idx = add_node(leakage_label)
-                links.append((source_idx, leakage_idx, leakage_budget, f"{(1 - best_path.transfer_rate):.0%} leakage"))
+                leak_id = f"leak_{abs(hash((alloc.source, target, 'leak'))) % 10**8}"
+                lines.append(
+                    f"{leak_id} [label=\"Leakage: {alloc.source[:10]}->{target[:10]}\\n$" + f"{leakage_budget:,.0f}" + "\"];"
+                )
+                lines.append(
+                    f"{source_id} -> {leak_id} [label=\"$" + f"{leakage_budget:,.0f}" + " (" + f"{(1 - best_path.transfer_rate):.0%}" + ")\"];"
+                )
 
         unattributed = max(0.0, alloc.budget - used_budget)
         if unattributed > 0:
-            leakage_label = f"Leakage: {alloc.source[:10]} (unattributed)"
-            leakage_idx = add_node(leakage_label)
-            links.append((source_idx, leakage_idx, unattributed, "Unattributed"))
+            leak_id = f"leak_{abs(hash((alloc.source, 'unattributed'))) % 10**8}"
+            lines.append(
+                f"{leak_id} [label=\"Leakage: {alloc.source[:10]} (unattributed)\\n$" + f"{unattributed:,.0f}" + "\"];"
+            )
+            lines.append(
+                f"{source_id} -> {leak_id} [label=\"$" + f"{unattributed:,.0f}" + "\"];"
+            )
 
     if unallocated > 0:
-        unalloc_idx = add_node("Unallocated Budget")
-        links.append((node_index["Total Budget"], unalloc_idx, unallocated, "Unallocated"))
-
-    if not links:
-        return None
-
-    source = [s for s, _, _, _ in links]
-    target = [t for _, t, _, _ in links]
-    value = [v for _, _, v, _ in links]
-    labels = [l for _, _, _, l in links]
-
-    fig = go.Figure(data=[go.Sankey(
-        node=dict(
-            pad=12,
-            thickness=14,
-            label=nodes,
-            color="#dbeafe"
-        ),
-        link=dict(
-            source=source,
-            target=target,
-            value=value,
-            label=labels,
-            color="rgba(59, 130, 246, 0.35)"
+        unalloc_id = "unallocated"
+        lines.append(
+            f"{unalloc_id} [label=\"Unallocated\\n$" + f"{unallocated:,.0f}" + "\"];"
         )
-    )])
-    fig.update_layout(height=520, margin=dict(l=0, r=0, t=10, b=0))
-    return fig
+        lines.append(f"total -> {unalloc_id} [label=\"$" + f"{unallocated:,.0f}" + "\"];")
+
+    lines.append("}")
+    return "\n".join(lines)
 
 # ============================================================================
 # MAIN APPLICATION
@@ -1135,14 +1154,14 @@ def main():
         # Flow diagram
         st.markdown("---")
         st.markdown("**Detailed Flow Diagram**")
-        flow_fig = build_budget_flow_sankey(
+        flow_dot = build_budget_flow_dot(
             allocations=allocations,
             target_analyses=target_analyses,
             total_budget=summary['total_budget'],
             unallocated=summary['unallocated']
         )
-        if flow_fig:
-            st.plotly_chart(flow_fig, use_container_width=True, config={'displayModeBar': False})
+        if flow_dot:
+            st.graphviz_chart(flow_dot, use_container_width=True)
         else:
             st.caption("Not enough data to render the flow diagram.")
 
