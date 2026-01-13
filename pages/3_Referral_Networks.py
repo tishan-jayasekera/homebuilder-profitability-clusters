@@ -1,6 +1,6 @@
 """
 Referral Network Analysis
-With granular flow tracing: see exactly where every dollar goes.
+Algorithmic campaign optimization with path-based efficiency analysis.
 """
 import streamlit as st
 import pandas as pd
@@ -8,9 +8,8 @@ import numpy as np
 import networkx as nx
 import plotly.graph_objects as go
 import plotly.express as px
-from plotly.subplots import make_subplots
-from dataclasses import dataclass, field
-from typing import List, Dict, Optional
+from dataclasses import dataclass
+from typing import List, Dict, Optional, Tuple
 import sys
 from pathlib import Path
 
@@ -18,10 +17,11 @@ root = Path(__file__).parent.parent
 if str(root) not in sys.path:
     sys.path.insert(0, str(root))
 
-from src.data_loader import load_events
+from src.data_loader import load_events, export_to_excel
 from src.normalization import normalize_events
 from src.referral_clusters import run_referral_clustering
 from src.builder_pnl import build_builder_pnl
+from src.network_optimization import calculate_shortfalls, analyze_network_leverage
 
 st.set_page_config(page_title="Referral Network Analysis", page_icon="🔗", layout="wide")
 
@@ -36,281 +36,483 @@ html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
 
 .page-header { border-bottom: 2px solid #e5e7eb; padding-bottom: 1rem; margin-bottom: 1.5rem; }
 .page-title { font-size: 1.6rem; font-weight: 700; color: #111827; margin: 0; }
+.page-subtitle { color: #6b7280; font-size: 0.9rem; margin-top: 0.25rem; }
 
-.section-header { display: flex; align-items: center; gap: 0.6rem; margin: 1.5rem 0 1rem 0; }
+.section { margin-bottom: 2rem; }
+.section-header { display: flex; align-items: center; gap: 0.6rem; margin-bottom: 0.75rem; }
 .section-num { background: #111827; color: white; width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 0.75rem; font-weight: 600; }
 .section-title { font-size: 1rem; font-weight: 600; color: #111827; }
 
-.card { background: white; border: 1px solid #e5e7eb; border-radius: 10px; padding: 1.25rem; margin-bottom: 1rem; }
-.card-title { font-weight: 600; color: #111827; font-size: 0.95rem; margin-bottom: 0.75rem; }
+.kpi-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 0.75rem; margin-bottom: 1rem; }
+.kpi { background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 8px; padding: 0.875rem; }
+.kpi-label { font-size: 0.65rem; text-transform: uppercase; letter-spacing: 0.05em; color: #6b7280; margin-bottom: 0.2rem; }
+.kpi-value { font-size: 1.25rem; font-weight: 700; color: #111827; }
+.kpi-sub { font-size: 0.7rem; color: #9ca3af; }
 
-.metric-row { display: flex; gap: 1.5rem; margin-bottom: 1rem; }
-.metric-item { }
-.metric-label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; color: #6b7280; }
-.metric-value { font-size: 1.1rem; font-weight: 600; color: #111827; }
+.card { background: white; border: 1px solid #e5e7eb; border-radius: 10px; padding: 1rem; margin-bottom: 0.75rem; }
+.card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem; }
+.card-title { font-weight: 600; color: #111827; font-size: 0.95rem; }
 
-.flow-card { background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 8px; padding: 1rem; margin-bottom: 0.75rem; }
-.flow-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem; }
-.flow-source { font-weight: 600; color: #111827; }
-.flow-spend { font-size: 1.1rem; font-weight: 700; color: #111827; }
+.pill { display: inline-flex; align-items: center; padding: 0.2rem 0.5rem; border-radius: 10px; font-size: 0.65rem; font-weight: 600; }
+.pill-red { background: #fef2f2; color: #dc2626; }
+.pill-amber { background: #fffbeb; color: #d97706; }
+.pill-green { background: #f0fdf4; color: #16a34a; }
+.pill-blue { background: #eff6ff; color: #2563eb; }
+.pill-gray { background: #f3f4f6; color: #4b5563; }
 
-.flow-breakdown { margin-top: 0.5rem; }
-.flow-row { display: flex; align-items: center; padding: 0.4rem 0; border-bottom: 1px solid #e5e7eb; }
-.flow-row:last-child { border-bottom: none; }
-.flow-dest { flex: 1; font-size: 0.85rem; color: #374151; }
-.flow-amount { width: 80px; text-align: right; font-size: 0.85rem; font-weight: 500; }
-.flow-pct { width: 50px; text-align: right; font-size: 0.75rem; color: #6b7280; }
-.flow-bar-container { width: 100px; margin-left: 0.75rem; }
-.flow-bar { height: 6px; border-radius: 3px; }
-.flow-bar.target { background: #10b981; }
-.flow-bar.leakage { background: #f59e0b; }
+.insight { background: #fffbeb; border-left: 3px solid #f59e0b; padding: 0.75rem 1rem; margin: 0.75rem 0; border-radius: 0 6px 6px 0; }
+.insight-text { color: #92400e; font-size: 0.85rem; line-height: 1.4; }
 
-.target-tag { display: inline-block; background: #dcfce7; color: #166534; font-size: 0.7rem; font-weight: 600; padding: 0.15rem 0.4rem; border-radius: 4px; margin-left: 0.5rem; }
-.leakage-tag { display: inline-block; background: #fef3c7; color: #92400e; font-size: 0.7rem; font-weight: 600; padding: 0.15rem 0.4rem; border-radius: 4px; margin-left: 0.5rem; }
+.action-box { background: #eff6ff; border-left: 3px solid #3b82f6; padding: 0.75rem 1rem; margin: 0.75rem 0; border-radius: 0 6px 6px 0; }
+.action-text { color: #1e40af; font-size: 0.85rem; line-height: 1.4; }
 
-.summary-box { background: linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 100%); border: 1px solid #bae6fd; border-radius: 10px; padding: 1.25rem; margin: 1rem 0; }
-.summary-title { font-weight: 600; color: #0c4a6e; margin-bottom: 0.5rem; }
-.summary-text { color: #0369a1; font-size: 0.9rem; line-height: 1.5; }
+.path-row { display: flex; align-items: center; padding: 0.6rem 0; border-bottom: 1px solid #f3f4f6; gap: 0.75rem; }
+.path-row:last-child { border-bottom: none; }
+.path-type { width: 70px; flex-shrink: 0; }
+.path-route { flex: 1; font-size: 0.85rem; color: #374151; }
+.path-metric { text-align: right; min-width: 80px; }
+.path-metric-value { font-weight: 600; color: #111827; font-size: 0.9rem; }
+.path-metric-label { font-size: 0.65rem; color: #9ca3af; }
 
-.warning-box { background: #fffbeb; border: 1px solid #fde68a; border-left: 4px solid #f59e0b; border-radius: 0 8px 8px 0; padding: 1rem; margin: 1rem 0; }
-.warning-text { color: #92400e; font-size: 0.9rem; }
+.target-card { background: white; border: 1px solid #e5e7eb; border-radius: 10px; padding: 1rem; margin-bottom: 0.5rem; }
+.target-header { display: flex; justify-content: space-between; align-items: flex-start; }
+.target-name { font-weight: 600; color: #111827; font-size: 0.9rem; }
+.target-meta { font-size: 0.75rem; color: #6b7280; margin-top: 0.15rem; }
+.target-recommendation { margin-top: 0.75rem; padding-top: 0.75rem; border-top: 1px solid #f3f4f6; }
+.rec-label { font-size: 0.7rem; text-transform: uppercase; color: #6b7280; margin-bottom: 0.25rem; }
+.rec-value { font-size: 0.85rem; color: #111827; }
+.rec-detail { font-size: 0.75rem; color: #6b7280; margin-top: 0.15rem; }
 
-.success-box { background: #f0fdf4; border: 1px solid #bbf7d0; border-left: 4px solid #10b981; border-radius: 0 8px 8px 0; padding: 1rem; margin: 1rem 0; }
-.success-text { color: #166534; font-size: 0.9rem; }
+.alloc-row { display: grid; grid-template-columns: 1fr 100px 80px 80px 60px; gap: 0.5rem; padding: 0.6rem 0; border-bottom: 1px solid #f3f4f6; align-items: center; font-size: 0.85rem; }
+.alloc-header { font-size: 0.7rem; text-transform: uppercase; color: #6b7280; font-weight: 600; border-bottom: 2px solid #e5e7eb; }
+.alloc-source { color: #374151; }
+.alloc-value { text-align: right; color: #111827; font-weight: 500; }
 
-.efficiency-meter { margin: 1rem 0; }
-.efficiency-label { display: flex; justify-content: space-between; font-size: 0.8rem; color: #6b7280; margin-bottom: 0.25rem; }
-.efficiency-bar { height: 10px; background: #e5e7eb; border-radius: 5px; overflow: hidden; display: flex; }
-.efficiency-segment { height: 100%; }
-.efficiency-segment.target { background: #10b981; }
-.efficiency-segment.leakage { background: #f59e0b; }
-.efficiency-segment.unspent { background: #e5e7eb; }
+.synergy-badge { background: linear-gradient(135deg, #eff6ff, #f0fdf4); border: 1px solid #bfdbfe; border-radius: 6px; padding: 0.4rem 0.6rem; font-size: 0.75rem; color: #1e40af; display: inline-flex; align-items: center; gap: 0.3rem; }
+
+.metric-bar { height: 6px; background: #e5e7eb; border-radius: 3px; overflow: hidden; margin-top: 0.25rem; }
+.metric-bar-fill { height: 100%; border-radius: 3px; }
+.metric-bar-fill.green { background: #10b981; }
+.metric-bar-fill.blue { background: #3b82f6; }
+.metric-bar-fill.amber { background: #f59e0b; }
 </style>
 """, unsafe_allow_html=True)
 
 # ============================================================================
-# DATA STRUCTURES
+# DATA CLASSES FOR OPTIMIZATION
 # ============================================================================
 @dataclass
-class FlowDestination:
-    """Where referrals from a source go."""
+class MediaPath:
+    """Represents a path to reach a target builder."""
+    target: str
+    source: str  # Where to spend media
+    path_type: str  # 'direct', '1-hop', '2-hop'
+    hops: List[str]  # Full path: [source, ..., target]
+    volume: float  # Historical referrals through this path
+    source_media_cost: float  # Total media spent by source
+    source_total_refs: float  # Total refs source generates
+    effective_cpr: float  # Cost per referral to target via this path
+    transfer_rate: float  # % of source's refs that reach target
+    source_roas: float  # Source's ROAS (quality indicator)
+
+@dataclass 
+class TargetAnalysis:
+    """Complete analysis for a campaign target."""
     builder: str
-    refs: int
-    pct: float
-    is_target: bool
+    shortfall: float
+    risk_score: float
+    all_paths: List[MediaPath]
+    best_path: Optional[MediaPath]
+    direct_cpr: Optional[float]
+    network_cpr: Optional[float]
+    recommendation: str  # 'direct', 'network', 'hybrid', 'insufficient_data'
 
 @dataclass
-class SourceAnalysis:
-    """Complete analysis of a media source."""
+class AllocationResult:
+    """Result of budget allocation optimization."""
     source: str
-    total_spend: float
-    total_refs_out: int
-    cpr: float  # Cost per referral generated
-    destinations: List[FlowDestination]
-    refs_to_targets: int
-    refs_to_others: int
-    target_rate: float  # % that reach targets
-    leakage_rate: float  # % that go elsewhere
-
-@dataclass
-class AllocationPlan:
-    """A specific budget allocation to a source."""
-    source: str
+    targets_served: List[str]
     budget: float
-    projected_total_refs: float
-    projected_to_targets: Dict[str, float]  # target -> refs
-    projected_leakage: Dict[str, float]  # other -> refs
-    efficiency: float  # % reaching targets
-    effective_cpr: float  # Cost per ref to targets
+    projected_leads: Dict[str, float]  # leads per target
+    effective_cpr: float
+    is_direct: bool
+    synergy_factor: float  # >1 if serves multiple targets
 
 # ============================================================================
-# OPTIMIZER
+# OPTIMIZATION ENGINE
 # ============================================================================
-class FlowOptimizer:
+class NetworkOptimizer:
     """
-    Optimizer that traces exactly where every dollar flows.
+    Algorithmic optimizer that finds the most efficient media allocation
+    by comparing direct spend vs network leverage paths.
     """
     
-    def __init__(self, events: pd.DataFrame, builder_master: pd.DataFrame, edges: pd.DataFrame):
-        self.events = events
+    def __init__(self, events_df: pd.DataFrame, G: nx.Graph, builder_master: pd.DataFrame, 
+                 shortfalls: pd.DataFrame, leverage: pd.DataFrame):
+        self.events = events_df
+        self.G = G
         self.builder_master = builder_master
-        self.edges = edges
-        self._index_data()
+        self.shortfalls = shortfalls
+        self.leverage = leverage
+        
+        # Build lookup tables
+        self._build_lookups()
     
-    def _index_data(self):
-        """Build lookup indexes."""
-        # Builder spend
-        self.spend = {}
-        if not self.builder_master.empty:
-            for _, row in self.builder_master.iterrows():
+    def _build_lookups(self):
+        """Pre-compute lookup tables for efficiency."""
+        bm = self.builder_master
+        
+        # Media cost and ROAS by builder
+        self.media_cost = {}
+        self.roas = {}
+        self.total_refs_out = {}
+        
+        if not bm.empty:
+            for _, row in bm.iterrows():
                 b = row['BuilderRegionKey']
-                self.spend[b] = float(row.get('MediaCost', 0) or 0)
+                self.media_cost[b] = float(row.get('MediaCost', 0))
+                self.roas[b] = float(row.get('ROAS', 0))
+                self.total_refs_out[b] = float(row.get('Referrals_out', 0))
         
-        # Outbound flows: source -> [(dest, refs), ...]
-        self.outflows = {}
-        if not self.edges.empty:
-            for _, row in self.edges.iterrows():
-                src = row.get('Origin_builder')
-                dst = row.get('Dest_builder')
-                refs = int(row.get('Referrals', 0) or 0)
-                if src and dst and refs > 0:
-                    if src not in self.outflows:
-                        self.outflows[src] = []
-                    self.outflows[src].append((dst, refs))
+        # Referral flows from leverage data
+        self.flows = {}  # (source, dest) -> referrals
+        if not self.leverage.empty:
+            for _, row in self.leverage.iterrows():
+                src = row['MediaPayer_BuilderRegionKey']
+                dst = row['Dest_BuilderRegionKey']
+                refs = row.get('Referrals_to_Target', 0)
+                self.flows[(src, dst)] = refs
     
-    def analyze_source(self, source: str, targets: List[str]) -> Optional[SourceAnalysis]:
+    def find_paths_to_target(self, target: str, max_hops: int = 2) -> List[MediaPath]:
         """
-        Analyze a source: where do its referrals go?
+        Find all viable media paths to reach a target builder.
+        Returns paths sorted by effective CPR (best first).
         """
-        if source not in self.outflows:
-            return None
+        paths = []
         
-        flows = self.outflows[source]
-        total_refs = sum(refs for _, refs in flows)
+        # 1. DIRECT PATH: Spend directly on target
+        direct_cost = self.media_cost.get(target, 0)
+        direct_refs_in = self.builder_master[
+            self.builder_master['BuilderRegionKey'] == target
+        ]['Referrals_in'].iloc[0] if target in self.builder_master['BuilderRegionKey'].values else 0
         
-        if total_refs == 0:
-            return None
-        
-        spend = self.spend.get(source, 0)
-        cpr = spend / total_refs if total_refs > 0 else 0
-        
-        destinations = []
-        refs_to_targets = 0
-        refs_to_others = 0
-        
-        for dest, refs in sorted(flows, key=lambda x: -x[1]):
-            is_target = dest in targets
-            pct = refs / total_refs
+        if direct_cost > 0 and direct_refs_in > 0:
+            # Direct CPR = cost / refs received (simplified model)
+            target_roas = self.roas.get(target, 1.0)
+            direct_cpr = direct_cost / direct_refs_in
+            # Effective CPR adjusts for ROAS quality
+            eff_cpr = direct_cpr / max(target_roas, 0.1)
             
-            destinations.append(FlowDestination(
-                builder=dest,
-                refs=refs,
-                pct=pct,
-                is_target=is_target
+            paths.append(MediaPath(
+                target=target,
+                source=target,
+                path_type='direct',
+                hops=[target],
+                volume=direct_refs_in,
+                source_media_cost=direct_cost,
+                source_total_refs=direct_refs_in,
+                effective_cpr=eff_cpr,
+                transfer_rate=1.0,
+                source_roas=target_roas
             ))
+        
+        # 2. NETWORK PATHS: Find sources that refer to target
+        if target in self.G:
+            # 1-hop: direct referrers
+            for source in self.G.predecessors(target) if self.G.is_directed() else self.G.neighbors(target):
+                refs_to_target = self.flows.get((source, target), 0)
+                if refs_to_target == 0:
+                    # Try reverse lookup from edges
+                    edge_data = self.G.get_edge_data(source, target)
+                    if edge_data:
+                        refs_to_target = edge_data.get('weight', 0)
+                
+                if refs_to_target <= 0:
+                    continue
+                
+                source_cost = self.media_cost.get(source, 0)
+                source_total = self.total_refs_out.get(source, 0)
+                source_roas = self.roas.get(source, 1.0)
+                
+                if source_cost > 0 and source_total > 0:
+                    transfer_rate = refs_to_target / source_total
+                    base_cpr = source_cost / source_total
+                    # Effective CPR = base CPR / transfer_rate (cost to get 1 ref to target)
+                    eff_cpr = base_cpr / max(transfer_rate, 0.01)
+                    # Adjust for source quality
+                    eff_cpr = eff_cpr / max(source_roas, 0.1)
+                    
+                    paths.append(MediaPath(
+                        target=target,
+                        source=source,
+                        path_type='1-hop',
+                        hops=[source, target],
+                        volume=refs_to_target,
+                        source_media_cost=source_cost,
+                        source_total_refs=source_total,
+                        effective_cpr=eff_cpr,
+                        transfer_rate=transfer_rate,
+                        source_roas=source_roas
+                    ))
             
-            if is_target:
-                refs_to_targets += refs
+            # 2-hop: sources that refer to 1-hop sources
+            if max_hops >= 2:
+                one_hop_sources = [p.source for p in paths if p.path_type == '1-hop']
+                
+                for mid in one_hop_sources:
+                    mid_refs_to_target = self.flows.get((mid, target), 0)
+                    if mid_refs_to_target <= 0:
+                        continue
+                    
+                    for source in self.G.neighbors(mid) if not self.G.is_directed() else list(self.G.predecessors(mid)):
+                        if source == target or source == mid:
+                            continue
+                        
+                        refs_to_mid = self.flows.get((source, mid), 0)
+                        if refs_to_mid <= 0:
+                            edge_data = self.G.get_edge_data(source, mid)
+                            if edge_data:
+                                refs_to_mid = edge_data.get('weight', 0)
+                        
+                        if refs_to_mid <= 0:
+                            continue
+                        
+                        source_cost = self.media_cost.get(source, 0)
+                        source_total = self.total_refs_out.get(source, 0)
+                        source_roas = self.roas.get(source, 1.0)
+                        mid_total = self.total_refs_out.get(mid, 0)
+                        
+                        if source_cost > 0 and source_total > 0 and mid_total > 0:
+                            # Transfer through 2 hops
+                            rate_to_mid = refs_to_mid / source_total
+                            rate_mid_to_target = mid_refs_to_target / mid_total
+                            combined_rate = rate_to_mid * rate_mid_to_target
+                            
+                            if combined_rate > 0.001:  # Minimum viability threshold
+                                base_cpr = source_cost / source_total
+                                eff_cpr = base_cpr / combined_rate
+                                eff_cpr = eff_cpr / max(source_roas, 0.1)
+                                
+                                paths.append(MediaPath(
+                                    target=target,
+                                    source=source,
+                                    path_type='2-hop',
+                                    hops=[source, mid, target],
+                                    volume=refs_to_mid * rate_mid_to_target,
+                                    source_media_cost=source_cost,
+                                    source_total_refs=source_total,
+                                    effective_cpr=eff_cpr,
+                                    transfer_rate=combined_rate,
+                                    source_roas=source_roas
+                                ))
+        
+        # Sort by effective CPR (lowest = best)
+        paths.sort(key=lambda p: p.effective_cpr if p.effective_cpr > 0 else float('inf'))
+        
+        return paths
+    
+    def analyze_target(self, target: str) -> TargetAnalysis:
+        """Complete analysis for a single target."""
+        sf_row = self.shortfalls[self.shortfalls['BuilderRegionKey'] == target]
+        shortfall = float(sf_row['Projected_Shortfall'].iloc[0]) if not sf_row.empty else 0
+        risk = float(sf_row['Risk_Score'].iloc[0]) if not sf_row.empty else 0
+        
+        paths = self.find_paths_to_target(target)
+        
+        direct_paths = [p for p in paths if p.path_type == 'direct']
+        network_paths = [p for p in paths if p.path_type != 'direct']
+        
+        direct_cpr = direct_paths[0].effective_cpr if direct_paths else None
+        network_cpr = network_paths[0].effective_cpr if network_paths else None
+        
+        # Determine recommendation
+        if not paths:
+            recommendation = 'insufficient_data'
+            best_path = None
+        elif direct_cpr is not None and network_cpr is not None:
+            if direct_cpr <= network_cpr * 0.9:  # Direct is 10%+ better
+                recommendation = 'direct'
+                best_path = direct_paths[0]
+            elif network_cpr <= direct_cpr * 0.9:  # Network is 10%+ better
+                recommendation = 'network'
+                best_path = network_paths[0]
             else:
-                refs_to_others += refs
-        
-        return SourceAnalysis(
-            source=source,
-            total_spend=spend,
-            total_refs_out=total_refs,
-            cpr=cpr,
-            destinations=destinations,
-            refs_to_targets=refs_to_targets,
-            refs_to_others=refs_to_others,
-            target_rate=refs_to_targets / total_refs if total_refs > 0 else 0,
-            leakage_rate=refs_to_others / total_refs if total_refs > 0 else 0,
-        )
-    
-    def find_sources_for_targets(self, targets: List[str]) -> List[SourceAnalysis]:
-        """
-        Find all sources that can reach any of the targets.
-        Returns sources sorted by efficiency (target_rate / cpr).
-        """
-        sources = []
-        
-        for source in self.outflows.keys():
-            analysis = self.analyze_source(source, targets)
-            if analysis and analysis.refs_to_targets > 0:
-                sources.append(analysis)
-        
-        # Sort by: highest target rate, then lowest CPR
-        sources.sort(key=lambda s: (-s.target_rate, s.cpr))
-        
-        return sources
-    
-    def create_allocation(self, source_analysis: SourceAnalysis, budget: float, targets: List[str]) -> AllocationPlan:
-        """
-        Project what happens if we allocate $budget to this source.
-        """
-        # How many total refs will this budget generate?
-        if source_analysis.cpr > 0:
-            total_refs = budget / source_analysis.cpr
+                recommendation = 'hybrid'
+                best_path = paths[0]
+        elif direct_cpr is not None:
+            recommendation = 'direct'
+            best_path = direct_paths[0]
         else:
-            total_refs = 0
+            recommendation = 'network'
+            best_path = network_paths[0] if network_paths else None
         
-        # Distribute to destinations based on historical rates
-        to_targets = {}
-        to_leakage = {}
-        
-        for dest in source_analysis.destinations:
-            projected_refs = total_refs * dest.pct
-            
-            if dest.builder in targets:
-                to_targets[dest.builder] = projected_refs
-            else:
-                to_leakage[dest.builder] = projected_refs
-        
-        refs_to_targets = sum(to_targets.values())
-        efficiency = refs_to_targets / total_refs if total_refs > 0 else 0
-        eff_cpr = budget / refs_to_targets if refs_to_targets > 0 else float('inf')
-        
-        return AllocationPlan(
-            source=source_analysis.source,
-            budget=budget,
-            projected_total_refs=total_refs,
-            projected_to_targets=to_targets,
-            projected_leakage=to_leakage,
-            efficiency=efficiency,
-            effective_cpr=eff_cpr,
+        return TargetAnalysis(
+            builder=target,
+            shortfall=shortfall,
+            risk_score=risk,
+            all_paths=paths,
+            best_path=best_path,
+            direct_cpr=direct_cpr,
+            network_cpr=network_cpr,
+            recommendation=recommendation
         )
     
-    def optimize(self, targets: List[str], budget: float, max_sources: int = 5) -> List[AllocationPlan]:
+    def optimize_basket(self, targets: List[str], budget: float) -> Tuple[List[AllocationResult], Dict]:
         """
-        Optimize budget allocation across sources.
+        Optimize budget allocation across multiple targets.
         
-        Strategy:
-        1. Find all sources that reach targets
-        2. Rank by efficiency (target rate)
-        3. Allocate to most efficient sources first
-        4. Cap per-source at 40% of budget
+        Algorithm:
+        1. Analyze all targets and find all viable paths
+        2. Identify shared sources (synergies)
+        3. Greedy allocation prioritizing:
+           - Lowest effective CPR
+           - Synergy bonus for multi-target sources
+           - Diminishing returns per source
         """
         if not targets or budget <= 0:
-            return []
+            return [], {}
         
-        # Find and rank sources
-        sources = self.find_sources_for_targets(targets)
+        # Step 1: Analyze all targets
+        analyses = {t: self.analyze_target(t) for t in targets}
         
-        if not sources:
-            return []
+        # Step 2: Build source -> targets mapping
+        source_targets = {}  # source -> [(target, path, eff_cpr)]
         
+        for target, analysis in analyses.items():
+            for path in analysis.all_paths[:10]:  # Top 10 paths per target
+                source = path.source
+                if source not in source_targets:
+                    source_targets[source] = []
+                source_targets[source].append((target, path))
+        
+        # Step 3: Score sources with synergy bonus
+        source_scores = []
+        for source, target_paths in source_targets.items():
+            # Base score = best effective CPR
+            best_cpr = min(p.effective_cpr for _, p in target_paths)
+            
+            # Synergy: serving multiple targets is valuable
+            num_targets = len(set(t for t, _ in target_paths))
+            synergy_factor = 1 + (num_targets - 1) * 0.15  # 15% bonus per additional target
+            
+            # Adjusted score (lower = better)
+            adjusted_cpr = best_cpr / synergy_factor
+            
+            source_scores.append({
+                'source': source,
+                'targets': list(set(t for t, _ in target_paths)),
+                'target_paths': target_paths,
+                'best_cpr': best_cpr,
+                'synergy_factor': synergy_factor,
+                'adjusted_cpr': adjusted_cpr,
+                'num_targets': num_targets
+            })
+        
+        # Sort by adjusted CPR
+        source_scores.sort(key=lambda x: x['adjusted_cpr'])
+        
+        # Step 4: Allocate budget greedily
         allocations = []
-        remaining = budget
+        remaining_budget = budget
+        target_leads = {t: 0.0 for t in targets}
+        target_shortfalls = {t: analyses[t].shortfall for t in targets}
+        source_spend = {}  # Track spend per source for diminishing returns
         
-        for source in sources[:max_sources * 2]:  # Consider more than we'll use
-            if remaining < 500:  # Minimum allocation
+        for source_data in source_scores:
+            if remaining_budget <= 0:
                 break
             
-            if len(allocations) >= max_sources:
-                break
+            source = source_data['source']
             
-            # Cap allocation at 40% of total budget
-            max_alloc = budget * 0.4
-            alloc_amount = min(remaining, max_alloc)
+            # Check if this source helps unfilled targets
+            unfilled_targets = [t for t in source_data['targets'] 
+                               if target_leads[t] < target_shortfalls[t]]
             
-            # Create allocation plan
-            plan = self.create_allocation(source, alloc_amount, targets)
+            if not unfilled_targets:
+                continue
             
-            # Only include if efficiency > 10%
-            if plan.efficiency >= 0.1:
-                allocations.append(plan)
-                remaining -= alloc_amount
+            # Calculate allocation
+            # Cap at 40% of budget per source (diversification)
+            max_source_budget = budget * 0.4
+            prior_spend = source_spend.get(source, 0)
+            available_for_source = max_source_budget - prior_spend
+            
+            if available_for_source <= 0:
+                continue
+            
+            # Estimate leads needed
+            total_needed = sum(max(0, target_shortfalls[t] - target_leads[t]) for t in unfilled_targets)
+            cost_to_fill = total_needed * source_data['best_cpr']
+            
+            allocation = min(remaining_budget, available_for_source, cost_to_fill, budget * 0.25)
+            
+            if allocation < 100:  # Minimum allocation threshold
+                continue
+            
+            # Calculate leads per target
+            leads_generated = allocation / source_data['best_cpr']
+            leads_per_target = {}
+            
+            for target in unfilled_targets:
+                # Find best path to this target from this source
+                paths_to_target = [p for t, p in source_data['target_paths'] if t == target]
+                if paths_to_target:
+                    best_path = min(paths_to_target, key=lambda p: p.effective_cpr)
+                    # Leads proportional to transfer rate
+                    target_share = best_path.transfer_rate / sum(
+                        min(pp for t, pp in source_data['target_paths'] if t == tt).transfer_rate 
+                        for tt in unfilled_targets
+                        for _, pp in source_data['target_paths'] if _ == tt
+                    ) if len(unfilled_targets) > 1 else 1.0
+                    
+                    leads_for_target = leads_generated * min(target_share, 1.0)
+                    leads_per_target[target] = leads_for_target
+                    target_leads[target] += leads_for_target
+            
+            is_direct = source in targets
+            
+            allocations.append(AllocationResult(
+                source=source,
+                targets_served=unfilled_targets,
+                budget=allocation,
+                projected_leads=leads_per_target,
+                effective_cpr=source_data['best_cpr'],
+                is_direct=is_direct,
+                synergy_factor=source_data['synergy_factor']
+            ))
+            
+            remaining_budget -= allocation
+            source_spend[source] = source_spend.get(source, 0) + allocation
         
-        return allocations
+        # Summary stats
+        total_leads = sum(sum(a.projected_leads.values()) for a in allocations)
+        total_shortfall = sum(target_shortfalls.values())
+        total_spend = sum(a.budget for a in allocations)
+        
+        summary = {
+            'total_budget': budget,
+            'total_allocated': total_spend,
+            'unallocated': remaining_budget,
+            'total_leads': total_leads,
+            'total_shortfall': total_shortfall,
+            'coverage_pct': total_leads / total_shortfall if total_shortfall > 0 else 1.0,
+            'effective_cpr': total_spend / total_leads if total_leads > 0 else 0,
+            'num_sources': len(allocations),
+            'target_coverage': {t: target_leads[t] / target_shortfalls[t] if target_shortfalls[t] > 0 else 1.0 
+                               for t in targets}
+        }
+        
+        return allocations, summary
 
 # ============================================================================
 # SESSION STATE
 # ============================================================================
 if 'targets' not in st.session_state:
     st.session_state.targets = []
-if 'focus' not in st.session_state:
-    st.session_state.focus = None
-if 'allocations' not in st.session_state:
-    st.session_state.allocations = None
+if 'focus_builder' not in st.session_state:
+    st.session_state.focus_builder = None
+if 'optimization_result' not in st.session_state:
+    st.session_state.optimization_result = None
 
 # ============================================================================
 # DATA LOADING
@@ -323,79 +525,59 @@ def load_data():
     return normalize_events(events) if events is not None else None
 
 @st.cache_data(show_spinner=False)
-def process_data(_events, start_date, end_date):
+def process_network(_events, start_date, end_date):
     df = _events.copy()
-    df['lead_date'] = pd.to_datetime(df['lead_date'], errors='coerce')
     
-    mask = (df['lead_date'] >= pd.Timestamp(start_date)) & (df['lead_date'] <= pd.Timestamp(end_date))
-    df = df[mask]
+    if start_date and end_date:
+        mask = (df['lead_date'] >= pd.Timestamp(start_date)) & (df['lead_date'] <= pd.Timestamp(end_date))
+        df = df[mask]
+    
+    period_days = (pd.Timestamp(end_date) - pd.Timestamp(start_date)).days if start_date and end_date else 90
     
     pnl = build_builder_pnl(df, lens='recipient', freq='ALL')
+    shortfalls = calculate_shortfalls(df, period_days=period_days)
+    leverage = analyze_network_leverage(df)
     clusters = run_referral_clustering(df, target_max_clusters=12)
     
     builder_master = clusters.get('builder_master', pd.DataFrame())
-    edges = clusters.get('edges_clean', pd.DataFrame())
-    graph = clusters.get('graph', nx.Graph())
-    
-    if not builder_master.empty and not pnl.empty:
+    if not builder_master.empty and 'BuilderRegionKey' in pnl.columns:
         builder_master = builder_master.merge(
-            pnl[['BuilderRegionKey', 'Profit', 'ROAS', 'MediaCost', 'Revenue']],
+            pnl[['BuilderRegionKey', 'Profit', 'ROAS', 'MediaCost', 'Revenue', 'N_referrals']],
             on='BuilderRegionKey', how='left'
         ).fillna(0)
-    
-    # Monthly trend
-    df['month'] = df['lead_date'].dt.to_period('M').dt.start_time
-    refs = df[df['is_referral'] == True]
-    monthly = refs.groupby('month').size().reset_index(name='referrals')
     
     return {
         'events': df,
         'pnl': pnl,
+        'shortfalls': shortfalls,
+        'leverage': leverage,
         'builder_master': builder_master,
-        'edges': edges,
-        'graph': graph,
-        'monthly': monthly,
+        'edges': clusters.get('edges_clean', pd.DataFrame()),
+        'graph': clusters.get('graph', nx.Graph()),
+        'period_days': period_days,
     }
 
 # ============================================================================
-# VISUALIZATIONS
+# VISUALIZATION HELPERS
 # ============================================================================
-def render_trend(monthly):
-    if monthly.empty:
-        return None
-    
+def render_network_graph(G, builder_master, focus=None, targets=None):
+    pos = nx.spring_layout(G, seed=42, k=0.7)
     fig = go.Figure()
-    fig.add_trace(go.Scatter(
-        x=monthly['month'], y=monthly['referrals'],
-        mode='lines+markers', fill='tozeroy',
-        line=dict(color='#3b82f6', width=2),
-        fillcolor='rgba(59, 130, 246, 0.1)'
-    ))
-    fig.update_layout(
-        height=180, margin=dict(l=0, r=0, t=10, b=0),
-        paper_bgcolor='white', plot_bgcolor='white',
-        xaxis=dict(showgrid=False), yaxis=dict(showgrid=True, gridcolor='#f3f4f6'),
-        showlegend=False
-    )
-    return fig
-
-def render_network(G, builder_master, focus=None, targets=None):
-    pos = nx.spring_layout(G, seed=42, k=0.8)
-    targets = targets or []
     
+    targets = targets or []
     cluster_map = builder_master.set_index('BuilderRegionKey')['ClusterId'].to_dict() if not builder_master.empty else {}
     colors = px.colors.qualitative.Set2
     
-    fig = go.Figure()
-    
     # Edges
+    edge_x, edge_y = [], []
     for u, v in G.edges():
         if u in pos and v in pos:
-            fig.add_trace(go.Scatter(
-                x=[pos[u][0], pos[v][0]], y=[pos[u][1], pos[v][1]],
-                mode='lines', line=dict(width=0.5, color='#e5e7eb'),
-                hoverinfo='skip', showlegend=False
-            ))
+            x0, y0 = pos[u]
+            x1, y1 = pos[v]
+            edge_x.extend([x0, x1, None])
+            edge_y.extend([y0, y1, None])
+    
+    fig.add_trace(go.Scatter(x=edge_x, y=edge_y, mode='lines', line=dict(width=0.4, color='#d1d5db'), hoverinfo='skip', showlegend=False))
     
     # Nodes
     degrees = dict(G.degree(weight='weight'))
@@ -404,75 +586,59 @@ def render_network(G, builder_master, focus=None, targets=None):
     for node in G.nodes():
         if node not in pos:
             continue
-        
         x, y = pos[node]
         deg = degrees.get(node, 0)
         size = 8 + (deg / max_deg) * 20
         cid = cluster_map.get(node, 0)
         color = colors[cid % len(colors)]
         
-        line_color, line_width = 'white', 1
+        line_color, line_width = '#ffffff', 1
         if node == focus:
             line_color, line_width, size = '#3b82f6', 3, size + 8
         elif node in targets:
-            line_color, line_width = '#10b981', 2.5
-            size += 4
+            line_color, line_width, size = '#10b981', 2, size + 4
         
         fig.add_trace(go.Scatter(
             x=[x], y=[y], mode='markers',
             marker=dict(size=size, color=color, line=dict(color=line_color, width=line_width)),
-            text=f"{node}", hoverinfo='text', showlegend=False
+            text=f"<b>{node}</b><br>Cluster {cid}", hoverinfo='text', showlegend=False
         ))
     
     fig.update_layout(
-        height=350, margin=dict(l=0, r=0, t=0, b=0),
+        height=400, margin=dict(l=0, r=0, t=0, b=0),
         paper_bgcolor='white', plot_bgcolor='white',
-        xaxis=dict(visible=False), yaxis=dict(visible=False),
+        xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+        yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+        hovermode='closest'
     )
     return fig
 
-def render_flow_detail(source_analysis: SourceAnalysis, max_rows: int = 10):
-    """Render detailed flow breakdown for a source."""
-    
-    target_html = ""
-    leakage_html = ""
-    
-    targets_shown = 0
-    leakage_shown = 0
-    
-    for dest in source_analysis.destinations:
-        pct_width = dest.pct * 100
-        bar_class = "target" if dest.is_target else "leakage"
-        tag = '<span class="target-tag">TARGET</span>' if dest.is_target else ''
-        
-        row_html = f'''
-        <div class="flow-row">
-            <div class="flow-dest">{dest.builder[:30]}{tag}</div>
-            <div class="flow-amount">{dest.refs:,}</div>
-            <div class="flow-pct">{dest.pct:.0%}</div>
-            <div class="flow-bar-container">
-                <div class="flow-bar {bar_class}" style="width: {pct_width}%"></div>
-            </div>
-        </div>
-        '''
-        
-        if dest.is_target and targets_shown < max_rows:
-            target_html += row_html
-            targets_shown += 1
-        elif not dest.is_target and leakage_shown < max_rows:
-            leakage_html += row_html
-            leakage_shown += 1
-    
-    return target_html, leakage_html
+def get_risk_pill(risk_score):
+    if risk_score > 50:
+        return '<span class="pill pill-red">Critical</span>'
+    elif risk_score > 25:
+        return '<span class="pill pill-amber">At Risk</span>'
+    else:
+        return '<span class="pill pill-green">Healthy</span>'
+
+def get_rec_pill(recommendation):
+    pills = {
+        'direct': '<span class="pill pill-blue">Direct</span>',
+        'network': '<span class="pill pill-green">Network</span>',
+        'hybrid': '<span class="pill pill-amber">Hybrid</span>',
+        'insufficient_data': '<span class="pill pill-gray">No Data</span>'
+    }
+    return pills.get(recommendation, '<span class="pill pill-gray">Unknown</span>')
 
 # ============================================================================
-# MAIN
+# MAIN APPLICATION
 # ============================================================================
 def main():
     events = load_data()
     
     if events is None:
-        st.warning("⚠️ Upload Events data on the Home page to begin.")
+        st.warning("⚠️ Please upload Events data on the Home page.")
+        st.page_link("app.py", label="← Go to Home", icon="🏠")
         return
     
     # Sidebar
@@ -484,33 +650,32 @@ def main():
         
         st.markdown("---")
         st.markdown("### Campaign Targets")
-        
         if st.session_state.targets:
             for t in st.session_state.targets:
                 c1, c2 = st.columns([4, 1])
-                c1.write(t[:22])
+                c1.caption(t[:22])
                 if c2.button("×", key=f"rm_{t}"):
                     st.session_state.targets.remove(t)
-                    st.session_state.allocations = None
+                    st.session_state.optimization_result = None
                     st.rerun()
-            
-            if st.button("Clear All", use_container_width=True):
+            if st.button("Clear All"):
                 st.session_state.targets = []
-                st.session_state.allocations = None
+                st.session_state.optimization_result = None
                 st.rerun()
         else:
-            st.caption("No targets yet")
+            st.caption("No targets selected")
     
     # Process data
-    start_d, end_d = date_range if len(date_range) == 2 else (min_d, max_d)
-    with st.spinner("Analyzing network..."):
-        data = process_data(events, start_d, end_d)
+    start_d, end_d = (date_range[0], date_range[1]) if len(date_range) == 2 else (min_d, max_d)
+    with st.spinner("Analyzing..."):
+        data = process_network(events, start_d, end_d)
     
     G = data['graph']
     bm = data['builder_master']
-    edges = data['edges']
+    sf = data['shortfalls']
     
-    optimizer = FlowOptimizer(data['events'], bm, edges)
+    # Initialize optimizer
+    optimizer = NetworkOptimizer(data['events'], G, bm, sf, data['leverage'])
     
     # ========================================================================
     # HEADER
@@ -518,6 +683,7 @@ def main():
     st.markdown("""
     <div class="page-header">
         <h1 class="page-title">🔗 Referral Network Analysis</h1>
+        <p class="page-subtitle">Algorithmic path optimization for efficient media allocation</p>
     </div>
     """, unsafe_allow_html=True)
     
@@ -525,307 +691,321 @@ def main():
     # SECTION 1: NETWORK OVERVIEW
     # ========================================================================
     st.markdown("""
-    <div class="section-header">
-        <span class="section-num">1</span>
-        <span class="section-title">Network Overview</span>
+    <div class="section">
+        <div class="section-header">
+            <span class="section-num">1</span>
+            <span class="section-title">Network Overview</span>
+        </div>
     </div>
     """, unsafe_allow_html=True)
     
-    # KPIs
-    total_refs = len(data['events'][data['events']['is_referral'] == True])
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Builders", f"{len(G.nodes):,}")
-    c2.metric("Referrals", f"{total_refs:,}")
-    c3.metric("Total Profit", f"${bm['Profit'].sum():,.0f}" if 'Profit' in bm.columns else "N/A")
-    c4.metric("Period", f"{(end_d - start_d).days} days")
+    total_refs = data['edges']['Referrals'].sum() if not data['edges'].empty else 0
+    at_risk = len(sf[sf['Risk_Score'] > 25]) if not sf.empty else 0
     
-    # Trend
-    trend_fig = render_trend(data['monthly'])
-    if trend_fig:
-        st.plotly_chart(trend_fig, use_container_width=True, config={'displayModeBar': False})
+    st.markdown(f"""
+    <div class="kpi-row">
+        <div class="kpi"><div class="kpi-label">Builders</div><div class="kpi-value">{len(G.nodes)}</div></div>
+        <div class="kpi"><div class="kpi-label">Referrals</div><div class="kpi-value">{total_refs:,}</div></div>
+        <div class="kpi"><div class="kpi-label">At Risk</div><div class="kpi-value">{at_risk}</div></div>
+        <div class="kpi"><div class="kpi-label">Profit</div><div class="kpi-value">${bm['Profit'].sum()/1000:,.0f}K</div></div>
+    </div>
+    """, unsafe_allow_html=True)
     
-    # Network + Selection
-    col1, col2 = st.columns([1.5, 1])
+    col1, col2 = st.columns([2, 1])
     
     with col1:
         all_builders = sorted(G.nodes())
-        bc1, bc2 = st.columns([3, 1])
-        selected = bc1.selectbox("Select builder to analyze", [""] + all_builders, 
-                                  label_visibility="collapsed", placeholder="Search builder...")
-        if bc2.button("➕ Add Target", disabled=not selected, use_container_width=True):
+        c1, c2 = st.columns([3, 1])
+        selected = c1.selectbox("Select builder", [""] + all_builders, label_visibility="collapsed", placeholder="Search...")
+        if c2.button("➕ Add Target", disabled=not selected):
             if selected and selected not in st.session_state.targets:
                 st.session_state.targets.append(selected)
-                st.session_state.allocations = None
+                st.session_state.optimization_result = None
                 st.rerun()
         
         if selected:
-            st.session_state.focus = selected
+            st.session_state.focus_builder = selected
         
-        net_fig = render_network(G, bm, st.session_state.focus, st.session_state.targets)
-        st.plotly_chart(net_fig, use_container_width=True, config={'displayModeBar': False})
-        st.caption("🔵 Selected builder | 🟢 Campaign targets | Node size = referral volume")
+        fig = render_network_graph(G, bm, st.session_state.focus_builder, st.session_state.targets)
+        st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
     
     with col2:
-        # Source flow analysis
-        if st.session_state.focus:
-            st.markdown(f"**Flow Analysis: {st.session_state.focus[:25]}**")
+        # Builder analysis
+        if st.session_state.focus_builder:
+            analysis = optimizer.analyze_target(st.session_state.focus_builder)
             
-            # Analyze this builder as a SOURCE
-            targets_list = st.session_state.targets if st.session_state.targets else []
-            source_analysis = optimizer.analyze_source(st.session_state.focus, targets_list)
+            st.markdown(f"""
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">{analysis.builder[:25]}</span>
+                    {get_risk_pill(analysis.risk_score)}
+                </div>
+                <div style="font-size: 0.8rem; color: #6b7280; margin-bottom: 0.75rem;">
+                    Shortfall: <b>{analysis.shortfall:.0f}</b> leads
+                </div>
+            """, unsafe_allow_html=True)
             
-            if source_analysis and source_analysis.total_refs_out > 0:
+            # Path comparison
+            st.markdown("**Path Analysis**")
+            
+            if analysis.direct_cpr:
                 st.markdown(f"""
-                <div class="metric-row">
-                    <div class="metric-item">
-                        <div class="metric-label">Total Spend</div>
-                        <div class="metric-value">${source_analysis.total_spend:,.0f}</div>
-                    </div>
-                    <div class="metric-item">
-                        <div class="metric-label">Refs Out</div>
-                        <div class="metric-value">{source_analysis.total_refs_out:,}</div>
-                    </div>
-                    <div class="metric-item">
-                        <div class="metric-label">CPR</div>
-                        <div class="metric-value">${source_analysis.cpr:,.0f}</div>
+                <div class="path-row">
+                    <div class="path-type"><span class="pill pill-blue">Direct</span></div>
+                    <div class="path-route">Spend on self</div>
+                    <div class="path-metric">
+                        <div class="path-metric-value">${analysis.direct_cpr:,.0f}</div>
+                        <div class="path-metric-label">Eff. CPR</div>
                     </div>
                 </div>
                 """, unsafe_allow_html=True)
-                
-                if targets_list:
-                    st.markdown(f"""
-                    <div class="efficiency-meter">
-                        <div class="efficiency-label">
-                            <span>To Targets: {source_analysis.target_rate:.0%}</span>
-                            <span>Leakage: {source_analysis.leakage_rate:.0%}</span>
-                        </div>
-                        <div class="efficiency-bar">
-                            <div class="efficiency-segment target" style="width: {source_analysis.target_rate*100}%"></div>
-                            <div class="efficiency-segment leakage" style="width: {source_analysis.leakage_rate*100}%"></div>
-                        </div>
+            
+            for path in analysis.all_paths[:3]:
+                if path.path_type == 'direct':
+                    continue
+                route = " → ".join(path.hops)
+                st.markdown(f"""
+                <div class="path-row">
+                    <div class="path-type"><span class="pill pill-green">{path.path_type}</span></div>
+                    <div class="path-route" title="{route}">{path.source[:12]}→{path.target[:12]}</div>
+                    <div class="path-metric">
+                        <div class="path-metric-value">${path.effective_cpr:,.0f}</div>
+                        <div class="path-metric-label">{path.transfer_rate:.0%} rate</div>
                     </div>
-                    """, unsafe_allow_html=True)
+                </div>
+                """, unsafe_allow_html=True)
+            
+            # Recommendation
+            if analysis.best_path:
+                rec_text = {
+                    'direct': f"Spend directly on {analysis.builder[:15]} — most efficient path",
+                    'network': f"Leverage {analysis.best_path.source[:15]} — {(1 - analysis.best_path.effective_cpr/analysis.direct_cpr)*100:.0f}% cheaper" if analysis.direct_cpr else f"Use network via {analysis.best_path.source[:15]}",
+                    'hybrid': "Mix direct + network for optimal coverage",
+                    'insufficient_data': "Insufficient historical data"
+                }.get(analysis.recommendation, "")
                 
-                st.markdown("**Where referrals go:**")
-                
-                for dest in source_analysis.destinations[:8]:
-                    tag = "🎯" if dest.is_target else ""
-                    bar_color = "#10b981" if dest.is_target else "#f59e0b"
-                    st.markdown(f"""
-                    <div style="display: flex; align-items: center; padding: 0.3rem 0; font-size: 0.85rem;">
-                        <span style="flex: 1;">{tag} {dest.builder[:22]}</span>
-                        <span style="width: 50px; text-align: right; font-weight: 500;">{dest.refs}</span>
-                        <span style="width: 40px; text-align: right; color: #6b7280;">{dest.pct:.0%}</span>
-                        <div style="width: 60px; margin-left: 0.5rem; background: #e5e7eb; height: 4px; border-radius: 2px;">
-                            <div style="width: {dest.pct*100}%; background: {bar_color}; height: 100%; border-radius: 2px;"></div>
-                        </div>
+                st.markdown(f"""
+                <div style="margin-top: 0.75rem; padding-top: 0.75rem; border-top: 1px solid #e5e7eb;">
+                    <div style="font-size: 0.7rem; text-transform: uppercase; color: #6b7280; margin-bottom: 0.25rem;">Recommendation</div>
+                    <div style="display: flex; align-items: center; gap: 0.5rem;">
+                        {get_rec_pill(analysis.recommendation)}
+                        <span style="font-size: 0.8rem; color: #374151;">{rec_text}</span>
                     </div>
-                    """, unsafe_allow_html=True)
+                </div>
+                </div>
+                """, unsafe_allow_html=True)
             else:
-                st.info("This builder doesn't send referrals to others (or has no media spend data).")
+                st.markdown("</div>", unsafe_allow_html=True)
         else:
-            st.info("Select a builder to see where their referrals flow.")
+            st.markdown("""
+            <div class="card">
+                <p style="color: #6b7280; font-size: 0.85rem;">Select a builder to analyze optimal media paths.</p>
+            </div>
+            """, unsafe_allow_html=True)
     
     # ========================================================================
     # SECTION 2: CAMPAIGN OPTIMIZATION
     # ========================================================================
-    st.markdown("---")
     st.markdown("""
-    <div class="section-header">
-        <span class="section-num">2</span>
-        <span class="section-title">Campaign Optimization</span>
+    <div class="section">
+        <div class="section-header">
+            <span class="section-num">2</span>
+            <span class="section-title">Campaign Optimization</span>
+        </div>
     </div>
     """, unsafe_allow_html=True)
     
     targets = st.session_state.targets
     
     if not targets:
-        st.info("👆 Add builders to your campaign targets to enable optimization. "
-                "The optimizer will find the most efficient sources and show you exactly where every dollar flows.")
+        st.markdown("""
+        <div class="insight">
+            <div class="insight-text">
+                <b>How it works:</b> Add builders to your campaign targets above. The optimizer will find the most efficient allocation considering both direct spend and network leverage paths, including synergies when a single source can serve multiple targets.
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
         return
     
-    # Show targets
-    st.markdown(f"**Campaign Targets** ({len(targets)})")
-    target_cols = st.columns(min(len(targets), 4))
-    for i, t in enumerate(targets):
-        with target_cols[i % 4]:
-            st.markdown(f'<div class="card" style="padding: 0.75rem;"><b>{t[:22]}</b></div>', unsafe_allow_html=True)
+    # Analyze all targets
+    target_analyses = {t: optimizer.analyze_target(t) for t in targets}
+    total_shortfall = sum(a.shortfall for a in target_analyses.values())
     
-    # Budget input
-    st.markdown("---")
-    bc1, bc2 = st.columns([2, 1])
-    budget = bc1.number_input("Campaign Budget ($)", min_value=1000, value=25000, step=5000)
+    # Target cards
+    st.markdown("**Target Analysis**")
     
-    if bc2.button("🎯 Find Best Sources", type="primary", use_container_width=True):
-        allocations = optimizer.optimize(targets, budget)
-        st.session_state.allocations = allocations
-    
-    # ========================================================================
-    # SECTION 3: DETAILED FLOW ANALYSIS
-    # ========================================================================
-    if st.session_state.allocations:
-        allocations = st.session_state.allocations
-        
-        st.markdown("---")
-        st.markdown("""
-        <div class="section-header">
-            <span class="section-num">3</span>
-            <span class="section-title">Allocation Plan with Flow Detail</span>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        if not allocations:
-            st.warning("No efficient sources found for these targets. Try adding different targets or increasing budget.")
-            return
-        
-        # Summary
-        total_budget = sum(a.budget for a in allocations)
-        total_to_targets = sum(sum(a.projected_to_targets.values()) for a in allocations)
-        total_leakage = sum(sum(a.projected_leakage.values()) for a in allocations)
-        total_refs = total_to_targets + total_leakage
-        overall_efficiency = total_to_targets / total_refs if total_refs > 0 else 0
-        blended_cpr = total_budget / total_to_targets if total_to_targets > 0 else 0
-        
-        # Summary metrics
-        sc1, sc2, sc3, sc4 = st.columns(4)
-        sc1.metric("Total Allocated", f"${total_budget:,.0f}")
-        sc2.metric("Projected to Targets", f"{total_to_targets:,.0f} refs")
-        sc3.metric("Efficiency", f"{overall_efficiency:.0%}")
-        sc4.metric("Effective CPR", f"${blended_cpr:,.0f}")
-        
-        # Efficiency visualization
-        st.markdown(f"""
-        <div class="efficiency-meter">
-            <div class="efficiency-label">
-                <span>💰 Budget: ${total_budget:,.0f}</span>
-                <span>🎯 To Targets: {total_to_targets:.0f} ({overall_efficiency:.0%})</span>
-                <span>⚠️ Leakage: {total_leakage:.0f} ({1-overall_efficiency:.0%})</span>
-            </div>
-            <div class="efficiency-bar">
-                <div class="efficiency-segment target" style="width: {overall_efficiency*100}%"></div>
-                <div class="efficiency-segment leakage" style="width: {(1-overall_efficiency)*100}%"></div>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        if overall_efficiency >= 0.6:
-            st.markdown('<div class="success-box"><b>✓ Good efficiency.</b> Majority of spend reaches your targets.</div>', unsafe_allow_html=True)
-        elif overall_efficiency >= 0.3:
-            st.markdown('<div class="warning-box"><b>⚡ Moderate leakage.</b> Consider if the leakage destinations are valuable.</div>', unsafe_allow_html=True)
-        else:
-            st.markdown('<div class="warning-box"><b>⚠️ High leakage.</b> Most spend goes to non-target builders. Review if this is acceptable.</div>', unsafe_allow_html=True)
-        
-        # Detailed breakdown per source
-        st.markdown("### Source-by-Source Breakdown")
-        st.markdown("*See exactly where every dollar flows for each recommended source.*")
-        
-        for alloc in allocations:
-            source_analysis = optimizer.analyze_source(alloc.source, targets)
-            
-            with st.expander(f"**{alloc.source}** — ${alloc.budget:,.0f} allocation", expanded=True):
-                # Source header metrics
-                mc1, mc2, mc3, mc4 = st.columns(4)
-                mc1.metric("Budget", f"${alloc.budget:,.0f}")
-                mc2.metric("Total Refs", f"{alloc.projected_total_refs:.0f}")
-                mc3.metric("To Targets", f"{sum(alloc.projected_to_targets.values()):.0f}")
-                mc4.metric("Efficiency", f"{alloc.efficiency:.0%}")
-                
-                # Flow breakdown
-                col_t, col_l = st.columns(2)
-                
-                with col_t:
-                    st.markdown("**🎯 Flow to Targets**")
-                    if alloc.projected_to_targets:
-                        for dest, refs in sorted(alloc.projected_to_targets.items(), key=lambda x: -x[1]):
-                            cost = refs * alloc.effective_cpr if alloc.efficiency > 0 else 0
-                            st.markdown(f"""
-                            <div style="display: flex; justify-content: space-between; padding: 0.4rem 0; border-bottom: 1px solid #e5e7eb; font-size: 0.85rem;">
-                                <span style="color: #166534;">→ {dest[:25]}</span>
-                                <span><b>{refs:.0f}</b> refs (${cost:.0f})</span>
-                            </div>
-                            """, unsafe_allow_html=True)
-                    else:
-                        st.caption("No flow to targets")
-                
-                with col_l:
-                    st.markdown("**⚠️ Leakage (to non-targets)**")
-                    if alloc.projected_leakage:
-                        # Show top 5 leakage destinations
-                        sorted_leakage = sorted(alloc.projected_leakage.items(), key=lambda x: -x[1])[:5]
-                        for dest, refs in sorted_leakage:
-                            cost = refs * (alloc.budget / alloc.projected_total_refs) if alloc.projected_total_refs > 0 else 0
-                            st.markdown(f"""
-                            <div style="display: flex; justify-content: space-between; padding: 0.4rem 0; border-bottom: 1px solid #e5e7eb; font-size: 0.85rem;">
-                                <span style="color: #92400e;">→ {dest[:25]}</span>
-                                <span><b>{refs:.0f}</b> refs (${cost:.0f})</span>
-                            </div>
-                            """, unsafe_allow_html=True)
-                        
-                        if len(alloc.projected_leakage) > 5:
-                            others = sum(v for k, v in list(alloc.projected_leakage.items())[5:])
-                            st.caption(f"+ {len(alloc.projected_leakage) - 5} other destinations ({others:.0f} refs)")
-                    else:
-                        st.caption("No leakage — 100% efficient!")
-        
-        # Per-target summary
-        st.markdown("---")
-        st.markdown("### Coverage by Target")
-        
-        target_totals = {t: 0.0 for t in targets}
-        for alloc in allocations:
-            for t, refs in alloc.projected_to_targets.items():
-                if t in target_totals:
-                    target_totals[t] += refs
-        
-        for t in targets:
-            refs = target_totals[t]
-            # Simple estimate of what they need (could be improved with actual shortfall data)
-            has_refs = refs > 0
-            
+    cols = st.columns(min(len(targets), 3))
+    for i, (target, analysis) in enumerate(target_analyses.items()):
+        with cols[i % 3]:
+            best_cpr = analysis.best_path.effective_cpr if analysis.best_path else 0
             st.markdown(f"""
-            <div style="display: flex; align-items: center; padding: 0.6rem 0; border-bottom: 1px solid #e5e7eb;">
-                <div style="flex: 1; font-size: 0.9rem;">{t}</div>
-                <div style="width: 120px; text-align: right;">
-                    <span style="font-weight: 600; color: {'#166534' if has_refs else '#dc2626'};">{refs:.0f}</span>
-                    <span style="color: #6b7280;"> refs</span>
-                </div>
-                <div style="width: 80px; margin-left: 1rem;">
-                    <div style="background: #e5e7eb; height: 6px; border-radius: 3px;">
-                        <div style="background: {'#10b981' if has_refs else '#ef4444'}; width: {min(refs/10*100, 100)}%; height: 100%; border-radius: 3px;"></div>
+            <div class="target-card">
+                <div class="target-header">
+                    <div>
+                        <div class="target-name">{target[:22]}</div>
+                        <div class="target-meta">Shortfall: {analysis.shortfall:.0f} leads</div>
                     </div>
+                    {get_risk_pill(analysis.risk_score)}
+                </div>
+                <div class="target-recommendation">
+                    <div class="rec-label">Best Path</div>
+                    <div class="rec-value">{get_rec_pill(analysis.recommendation)} ${best_cpr:,.0f}/lead</div>
+                    <div class="rec-detail">{len(analysis.all_paths)} paths available</div>
                 </div>
             </div>
             """, unsafe_allow_html=True)
+    
+    st.markdown("---")
+    
+    # Budget optimization
+    col1, col2 = st.columns([2, 1])
+    with col1:
+        budget = st.number_input("Campaign Budget ($)", min_value=1000, value=50000, step=5000)
+    with col2:
+        st.write("")
+        if st.button("🎯 Optimize Allocation", type="primary", use_container_width=True):
+            allocations, summary = optimizer.optimize_basket(targets, budget)
+            st.session_state.optimization_result = {'allocations': allocations, 'summary': summary}
+    
+    # ========================================================================
+    # SECTION 3: OPTIMIZATION RESULTS
+    # ========================================================================
+    if st.session_state.optimization_result:
+        result = st.session_state.optimization_result
+        allocations = result['allocations']
+        summary = result['summary']
         
-        # Export
-        st.markdown("---")
-        export_data = []
-        for alloc in allocations:
-            for dest, refs in alloc.projected_to_targets.items():
+        st.markdown("""
+        <div class="section">
+            <div class="section-header">
+                <span class="section-num">3</span>
+                <span class="section-title">Optimization Results</span>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        # Summary KPIs
+        st.markdown(f"""
+        <div class="kpi-row">
+            <div class="kpi">
+                <div class="kpi-label">Projected Leads</div>
+                <div class="kpi-value">{summary['total_leads']:,.0f}</div>
+            </div>
+            <div class="kpi">
+                <div class="kpi-label">Coverage</div>
+                <div class="kpi-value">{summary['coverage_pct']:.0%}</div>
+                <div class="metric-bar"><div class="metric-bar-fill {'green' if summary['coverage_pct'] >= 0.8 else 'amber' if summary['coverage_pct'] >= 0.5 else 'blue'}" style="width: {min(summary['coverage_pct']*100, 100)}%"></div></div>
+            </div>
+            <div class="kpi">
+                <div class="kpi-label">Blended CPR</div>
+                <div class="kpi-value">${summary['effective_cpr']:,.0f}</div>
+            </div>
+            <div class="kpi">
+                <div class="kpi-label">Sources Used</div>
+                <div class="kpi-value">{summary['num_sources']}</div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        # Coverage insight
+        if summary['coverage_pct'] >= 0.8:
+            st.markdown("""
+            <div class="action-box">
+                <div class="action-text"><b>✓ Strong coverage.</b> This allocation can address most of the shortfall efficiently.</div>
+            </div>
+            """, unsafe_allow_html=True)
+        elif summary['coverage_pct'] >= 0.5:
+            st.markdown("""
+            <div class="insight">
+                <div class="insight-text"><b>Partial coverage.</b> Consider increasing budget or prioritizing highest-risk targets.</div>
+            </div>
+            """, unsafe_allow_html=True)
+        else:
+            st.markdown("""
+            <div class="insight">
+                <div class="insight-text"><b>⚠️ Limited coverage.</b> Budget is insufficient. Focus on fewer targets or increase budget.</div>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        # Allocation details
+        st.markdown("**Recommended Allocation**")
+        
+        if allocations:
+            # Header
+            st.markdown("""
+            <div class="alloc-row alloc-header">
+                <div>Source</div>
+                <div style="text-align: right;">Budget</div>
+                <div style="text-align: right;">Leads</div>
+                <div style="text-align: right;">CPR</div>
+                <div style="text-align: center;">Type</div>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            for alloc in allocations:
+                total_leads = sum(alloc.projected_leads.values())
+                type_pill = '<span class="pill pill-blue">Direct</span>' if alloc.is_direct else '<span class="pill pill-green">Network</span>'
+                
+                synergy_badge = ""
+                if alloc.synergy_factor > 1.01:
+                    synergy_badge = f'<span class="synergy-badge">⚡ {len(alloc.targets_served)} targets</span>'
+                
+                st.markdown(f"""
+                <div class="alloc-row">
+                    <div class="alloc-source">
+                        {alloc.source[:25]}
+                        {synergy_badge}
+                    </div>
+                    <div class="alloc-value">${alloc.budget:,.0f}</div>
+                    <div class="alloc-value">{total_leads:,.0f}</div>
+                    <div class="alloc-value">${alloc.effective_cpr:,.0f}</div>
+                    <div style="text-align: center;">{type_pill}</div>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            # Per-target breakdown
+            st.markdown("---")
+            st.markdown("**Coverage by Target**")
+            
+            for target in targets:
+                coverage = summary['target_coverage'].get(target, 0)
+                shortfall = target_analyses[target].shortfall
+                leads = shortfall * coverage
+                
+                bar_color = 'green' if coverage >= 0.8 else 'amber' if coverage >= 0.5 else 'blue'
+                
+                st.markdown(f"""
+                <div style="display: flex; align-items: center; padding: 0.5rem 0; gap: 1rem;">
+                    <div style="flex: 1; font-size: 0.85rem; color: #374151;">{target[:30]}</div>
+                    <div style="width: 100px; text-align: right; font-size: 0.85rem;">
+                        <span style="font-weight: 600;">{leads:,.0f}</span>
+                        <span style="color: #9ca3af;">/ {shortfall:,.0f}</span>
+                    </div>
+                    <div style="width: 120px;">
+                        <div style="display: flex; justify-content: space-between; font-size: 0.75rem; color: #6b7280;">
+                            <span>{coverage:.0%}</span>
+                        </div>
+                        <div class="metric-bar"><div class="metric-bar-fill {bar_color}" style="width: {min(coverage*100, 100)}%"></div></div>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            # Export
+            st.markdown("---")
+            export_data = []
+            for alloc in allocations:
                 export_data.append({
                     'Source': alloc.source,
-                    'Destination': dest,
-                    'Type': 'Target',
-                    'Budget Share': alloc.budget * (refs / alloc.projected_total_refs) if alloc.projected_total_refs > 0 else 0,
-                    'Projected Refs': refs,
+                    'Budget': alloc.budget,
+                    'Projected Leads': sum(alloc.projected_leads.values()),
+                    'Effective CPR': alloc.effective_cpr,
+                    'Type': 'Direct' if alloc.is_direct else 'Network',
+                    'Targets Served': ', '.join(alloc.targets_served),
+                    'Synergy Factor': alloc.synergy_factor
                 })
-            for dest, refs in list(alloc.projected_leakage.items())[:10]:
-                export_data.append({
-                    'Source': alloc.source,
-                    'Destination': dest,
-                    'Type': 'Leakage',
-                    'Budget Share': alloc.budget * (refs / alloc.projected_total_refs) if alloc.projected_total_refs > 0 else 0,
-                    'Projected Refs': refs,
-                })
-        
-        if export_data:
-            export_df = pd.DataFrame(export_data)
-            st.download_button(
-                "📥 Download Full Flow Analysis",
-                export_df.to_csv(index=False),
-                "flow_analysis.csv",
-                "text/csv"
-            )
+            
+            csv = pd.DataFrame(export_data).to_csv(index=False)
+            st.download_button("📥 Download Allocation Plan", csv, "allocation_plan.csv", "text/csv")
 
 
 if __name__ == "__main__":
