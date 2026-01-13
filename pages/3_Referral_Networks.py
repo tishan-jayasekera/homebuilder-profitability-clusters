@@ -1,944 +1,1011 @@
 """
-Network Intelligence Engine — V2 (Operational + Traceable)
-Commercial focus:
-- Who is under/over-served (forecast-aware)
-- Which network sources can close gaps at lowest effective CPR
-- Portfolio media plan that reconciles overserve vs underserve, fully auditable
+Referral Network Analysis
+Algorithmic campaign optimization with path-based efficiency analysis.
 """
-
-from __future__ import annotations
-
-import sys
-from pathlib import Path
-from typing import Dict, List, Optional, Tuple
-
-import numpy as np
-import pandas as pd
 import streamlit as st
+import pandas as pd
+import numpy as np
 import networkx as nx
 import plotly.graph_objects as go
+import plotly.express as px
+from dataclasses import dataclass
+from typing import List, Dict, Optional, Tuple
+import sys
+from pathlib import Path
 
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Repo imports
-# ──────────────────────────────────────────────────────────────────────────────
 root = Path(__file__).parent.parent
 if str(root) not in sys.path:
     sys.path.insert(0, str(root))
 
-from src.data_loader import load_events  # keep existing
+from src.data_loader import load_events, export_to_excel
 from src.normalization import normalize_events
 from src.referral_clusters import run_referral_clustering
 from src.builder_pnl import build_builder_pnl
+from src.network_optimization import calculate_shortfalls, analyze_network_leverage
 
-# Optimiser: prefer src, fallback to root module
-try:
-    from src.network_optimization import (
-        OptimConfig,
-        calculate_shortfalls,
-        analyze_network_leverage,
-        generate_investment_strategies,
-        optimise_portfolio_media_plan,
-    )
-except Exception:
-    from network_optimization import (
-        OptimConfig,
-        calculate_shortfalls,
-        analyze_network_leverage,
-        generate_investment_strategies,
-        optimise_portfolio_media_plan,
-    )
+st.set_page_config(page_title="Referral Network Analysis", page_icon="🔗", layout="wide")
 
-# Formatting helper
-try:
-    from src.utils import fmt_currency
-except Exception:
-    def fmt_currency(x):
-        try:
-            return f"${float(x):,.0f}"
-        except Exception:
-            return "—"
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Page config
-# ──────────────────────────────────────────────────────────────────────────────
-st.set_page_config(page_title="Network Intelligence", page_icon="🔗", layout="wide")
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Styling
-# ──────────────────────────────────────────────────────────────────────────────
-CSS = """
+# ============================================================================
+# STYLES
+# ============================================================================
+st.markdown("""
 <style>
-/* Layout polish */
-.block-container { padding-top: 1.2rem; padding-bottom: 2.5rem; }
-h1, h2, h3 { letter-spacing: -0.02em; }
-hr { margin: 1.1rem 0; }
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
+#MainMenu, footer, .stDeployButton { display: none; }
 
-/* Cards */
-.ni-card{
-  background: #ffffff;
-  border: 1px solid #e5e7eb;
-  border-radius: 16px;
-  padding: 16px 16px 14px 16px;
-  box-shadow: 0 8px 20px -14px rgba(0,0,0,0.25);
-}
-.ni-card:hover{ border-color:#d1d5db; }
+.page-header { border-bottom: 2px solid #e5e7eb; padding-bottom: 1rem; margin-bottom: 1.5rem; }
+.page-title { font-size: 1.6rem; font-weight: 700; color: #111827; margin: 0; }
+.page-subtitle { color: #6b7280; font-size: 0.9rem; margin-top: 0.25rem; }
 
-.ni-kpi-label{
-  font-size: 0.74rem;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  font-weight: 700;
-  color: #6b7280;
-}
-.ni-kpi-value{
-  font-size: 1.55rem;
-  font-weight: 800;
-  color: #111827;
-  line-height: 1.05;
-  margin-top: 2px;
-}
-.ni-kpi-sub{
-  font-size: 0.86rem;
-  color: #6b7280;
-  margin-top: 4px;
-}
+.section { margin-bottom: 2rem; }
+.section-header { display: flex; align-items: center; gap: 0.6rem; margin-bottom: 0.75rem; }
+.section-num { background: #111827; color: white; width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 0.75rem; font-weight: 600; }
+.section-title { font-size: 1rem; font-weight: 600; color: #111827; }
 
-/* Badges */
-.ni-badge{
-  display:inline-flex; align-items:center;
-  padding: 4px 10px; border-radius: 999px;
-  font-size: 0.78rem; font-weight: 800;
-  border:1px solid transparent;
-}
-.ni-red{ background:#fef2f2; color:#991b1b; border-color:#fecaca; }
-.ni-amber{ background:#fffbeb; color:#92400e; border-color:#fde68a; }
-.ni-green{ background:#f0fdf4; color:#166534; border-color:#bbf7d0; }
-.ni-blue{ background:#eff6ff; color:#1e40af; border-color:#dbeafe; }
+.kpi-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 0.75rem; margin-bottom: 1rem; }
+.kpi { background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 8px; padding: 0.875rem; }
+.kpi-label { font-size: 0.65rem; text-transform: uppercase; letter-spacing: 0.05em; color: #6b7280; margin-bottom: 0.2rem; }
+.kpi-value { font-size: 1.25rem; font-weight: 700; color: #111827; }
+.kpi-sub { font-size: 0.7rem; color: #9ca3af; }
 
-/* Section headers */
-.ni-section{
-  display:flex; align-items:center; justify-content:space-between;
-  margin: 0.4rem 0 0.8rem 0;
-}
-.ni-section-title{
-  font-size:1.15rem; font-weight:900; color:#111827;
-}
-.ni-section-sub{ font-size:0.92rem; color:#6b7280; }
+.card { background: white; border: 1px solid #e5e7eb; border-radius: 10px; padding: 1rem; margin-bottom: 0.75rem; }
+.card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem; }
+.card-title { font-weight: 600; color: #111827; font-size: 0.95rem; }
 
-/* Table helpers */
-.small-note { font-size: 0.88rem; color: #6b7280; }
+.pill { display: inline-flex; align-items: center; padding: 0.2rem 0.5rem; border-radius: 10px; font-size: 0.65rem; font-weight: 600; }
+.pill-red { background: #fef2f2; color: #dc2626; }
+.pill-amber { background: #fffbeb; color: #d97706; }
+.pill-green { background: #f0fdf4; color: #16a34a; }
+.pill-blue { background: #eff6ff; color: #2563eb; }
+.pill-gray { background: #f3f4f6; color: #4b5563; }
+
+.insight { background: #fffbeb; border-left: 3px solid #f59e0b; padding: 0.75rem 1rem; margin: 0.75rem 0; border-radius: 0 6px 6px 0; }
+.insight-text { color: #92400e; font-size: 0.85rem; line-height: 1.4; }
+
+.action-box { background: #eff6ff; border-left: 3px solid #3b82f6; padding: 0.75rem 1rem; margin: 0.75rem 0; border-radius: 0 6px 6px 0; }
+.action-text { color: #1e40af; font-size: 0.85rem; line-height: 1.4; }
+
+.path-row { display: flex; align-items: center; padding: 0.6rem 0; border-bottom: 1px solid #f3f4f6; gap: 0.75rem; }
+.path-row:last-child { border-bottom: none; }
+.path-type { width: 70px; flex-shrink: 0; }
+.path-route { flex: 1; font-size: 0.85rem; color: #374151; }
+.path-metric { text-align: right; min-width: 80px; }
+.path-metric-value { font-weight: 600; color: #111827; font-size: 0.9rem; }
+.path-metric-label { font-size: 0.65rem; color: #9ca3af; }
+
+.target-card { background: white; border: 1px solid #e5e7eb; border-radius: 10px; padding: 1rem; margin-bottom: 0.5rem; }
+.target-header { display: flex; justify-content: space-between; align-items: flex-start; }
+.target-name { font-weight: 600; color: #111827; font-size: 0.9rem; }
+.target-meta { font-size: 0.75rem; color: #6b7280; margin-top: 0.15rem; }
+.target-recommendation { margin-top: 0.75rem; padding-top: 0.75rem; border-top: 1px solid #f3f4f6; }
+.rec-label { font-size: 0.7rem; text-transform: uppercase; color: #6b7280; margin-bottom: 0.25rem; }
+.rec-value { font-size: 0.85rem; color: #111827; }
+.rec-detail { font-size: 0.75rem; color: #6b7280; margin-top: 0.15rem; }
+
+.alloc-row { display: grid; grid-template-columns: 1fr 100px 80px 80px 60px; gap: 0.5rem; padding: 0.6rem 0; border-bottom: 1px solid #f3f4f6; align-items: center; font-size: 0.85rem; }
+.alloc-header { font-size: 0.7rem; text-transform: uppercase; color: #6b7280; font-weight: 600; border-bottom: 2px solid #e5e7eb; }
+.alloc-source { color: #374151; }
+.alloc-value { text-align: right; color: #111827; font-weight: 500; }
+
+.synergy-badge { background: linear-gradient(135deg, #eff6ff, #f0fdf4); border: 1px solid #bfdbfe; border-radius: 6px; padding: 0.4rem 0.6rem; font-size: 0.75rem; color: #1e40af; display: inline-flex; align-items: center; gap: 0.3rem; }
+
+.metric-bar { height: 6px; background: #e5e7eb; border-radius: 3px; overflow: hidden; margin-top: 0.25rem; }
+.metric-bar-fill { height: 100%; border-radius: 3px; }
+.metric-bar-fill.green { background: #10b981; }
+.metric-bar-fill.blue { background: #3b82f6; }
+.metric-bar-fill.amber { background: #f59e0b; }
 </style>
-"""
-st.markdown(CSS, unsafe_allow_html=True)
+""", unsafe_allow_html=True)
 
+# ============================================================================
+# DATA CLASSES FOR OPTIMIZATION
+# ============================================================================
+@dataclass
+class MediaPath:
+    """Represents a path to reach a target builder."""
+    target: str
+    source: str  # Where to spend media
+    path_type: str  # 'direct', '1-hop', '2-hop'
+    hops: List[str]  # Full path: [source, ..., target]
+    volume: float  # Historical referrals through this path
+    source_media_cost: float  # Total media spent by source
+    source_total_refs: float  # Total refs source generates
+    effective_cpr: float  # Cost per referral to target via this path
+    transfer_rate: float  # % of source's refs that reach target
+    source_roas: float  # Source's ROAS (quality indicator)
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Session state
-# ──────────────────────────────────────────────────────────────────────────────
-if "campaign_targets" not in st.session_state:
-    st.session_state.campaign_targets = []
-if "selected_builder" not in st.session_state:
-    st.session_state.selected_builder = None
-if "plan_result" not in st.session_state:
-    st.session_state.plan_result = None
+@dataclass 
+class TargetAnalysis:
+    """Complete analysis for a campaign target."""
+    builder: str
+    shortfall: float
+    risk_score: float
+    all_paths: List[MediaPath]
+    best_path: Optional[MediaPath]
+    direct_cpr: Optional[float]
+    network_cpr: Optional[float]
+    recommendation: str  # 'direct', 'network', 'hybrid', 'insufficient_data'
 
+@dataclass
+class AllocationResult:
+    """Result of budget allocation optimization."""
+    source: str
+    targets_served: List[str]
+    budget: float
+    projected_leads: Dict[str, float]  # leads per target
+    effective_cpr: float
+    is_direct: bool
+    synergy_factor: float  # >1 if serves multiple targets
 
-def _add_target(b: str):
-    if b and b not in st.session_state.campaign_targets:
-        st.session_state.campaign_targets.append(b)
-
-
-def _remove_target(b: str):
-    if b in st.session_state.campaign_targets:
-        st.session_state.campaign_targets.remove(b)
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Data loading
-# ──────────────────────────────────────────────────────────────────────────────
-@st.cache_data(show_spinner=False)
-def load_and_process_from_upload(upload_key: str) -> Optional[pd.DataFrame]:
-    """Upload key ensures cache busts when file changes."""
-    if "events_file" not in st.session_state:
-        return None
-    events = load_events(st.session_state["events_file"])
-    if events is None or len(events) == 0:
-        return None
-    return normalize_events(events)
-
-
-def _first_col(df: pd.DataFrame, candidates: List[str]) -> Optional[str]:
-    for c in candidates:
-        if c in df.columns:
-            return c
-    return None
-
-
-def _required_cols_check(events: pd.DataFrame) -> Tuple[bool, List[str]]:
-    """Minimal viable columns for full engine; we’ll still run partial if missing."""
-    missing = []
-    if _first_col(events, ["lead_date", "RefDate", "ref_date", "LeadDate", "date"]) is None:
-        missing.append("lead_date (or RefDate/ref_date)")
-    if _first_col(events, ["is_referral", "IsReferral", "isReferral"]) is None:
-        missing.append("is_referral")
-    if _first_col(events, ["Dest_BuilderRegionKey", "Dest_builder", "DestBuilderRegionKey", "Dest"]) is None:
-        missing.append("Dest_BuilderRegionKey")
-    if _first_col(events, ["MediaPayer_BuilderRegionKey", "Origin_builder", "Source_BuilderRegionKey", "Source"]) is None:
-        missing.append("MediaPayer_BuilderRegionKey")
-    return (len(missing) == 0), missing
-
-
-def _filter_by_date(events: pd.DataFrame, start: Optional[pd.Timestamp], end: Optional[pd.Timestamp]) -> pd.DataFrame:
-    date_col = _first_col(events, ["lead_date", "RefDate", "ref_date", "LeadDate", "date"])
-    if not date_col or start is None or end is None:
-        return events
-    df = events.copy()
-    df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
-    return df[(df[date_col].notna()) & (df[date_col] >= start) & (df[date_col] <= end)].copy()
-
-
-def _get_all_builders(events: pd.DataFrame) -> List[str]:
-    b = set()
-    for col in ["Dest_BuilderRegionKey", "MediaPayer_BuilderRegionKey", "Origin_builder", "Dest_builder"]:
-        if col in events.columns:
-            b.update(events[col].dropna().astype(str).unique())
-    return sorted(b)
-
-
-def _get_builder_connections(events: pd.DataFrame, builder: str) -> Dict[str, List[Dict]]:
-    """Direct connections (inbound/outbound/mutual), robust to column names."""
-    if not builder:
-        return {"inbound": [], "outbound": [], "two_way": []}
-
-    is_ref = _first_col(events, ["is_referral", "IsReferral", "isReferral"])
-    src = _first_col(events, ["MediaPayer_BuilderRegionKey", "Origin_builder", "Source_BuilderRegionKey", "Source"])
-    dst = _first_col(events, ["Dest_BuilderRegionKey", "Dest_builder", "DestBuilderRegionKey", "Dest"])
-    spend = _first_col(events, ["MediaCost_referral_event", "MediaCost", "media_cost", "Spend", "Cost"])
-    leadid = _first_col(events, ["LeadId", "lead_id", "id"])
-
-    df = events.copy()
-    if is_ref is not None:
-        if df[is_ref].dtype == object:
-            df[is_ref] = df[is_ref].astype(str).str.lower().isin(["true", "1", "yes", "y"])
-        df = df[df[is_ref] == True].copy()
-
-    if df.empty or src is None or dst is None:
-        return {"inbound": [], "outbound": [], "two_way": []}
-
-    # inbound: src -> builder
-    inbound = df[df[dst].astype(str) == str(builder)].copy()
-    if leadid and leadid in inbound.columns:
-        agg_in = inbound.groupby(src).agg(
-            refs_in=(leadid, "count"),
-            spend_in=(spend, "sum") if spend else (leadid, "count"),
-        ).reset_index()
-    else:
-        agg_in = inbound.groupby(src).size().reset_index(name="refs_in")
-        agg_in["spend_in"] = np.nan
-
-    agg_in = agg_in.rename(columns={src: "partner"})
-
-    # outbound: builder -> dst
-    outbound = df[df[src].astype(str) == str(builder)].copy()
-    if leadid and leadid in outbound.columns:
-        agg_out = outbound.groupby(dst).agg(refs_out=(leadid, "count")).reset_index()
-    else:
-        agg_out = outbound.groupby(dst).size().reset_index(name="refs_out")
-    agg_out = agg_out.rename(columns={dst: "partner"})
-
-    merged = pd.merge(agg_in, agg_out, on="partner", how="outer").fillna(0)
-    two = merged[(merged["refs_in"] > 0) & (merged["refs_out"] > 0)].copy()
-    ino = merged[(merged["refs_in"] > 0) & (merged["refs_out"] == 0)].copy()
-    outo = merged[(merged["refs_in"] == 0) & (merged["refs_out"] > 0)].copy()
-
-    return {
-        "two_way": two.sort_values(["refs_in", "refs_out"], ascending=False).to_dict("records"),
-        "inbound": ino.sort_values("refs_in", ascending=False).to_dict("records"),
-        "outbound": outo.sort_values("refs_out", ascending=False).to_dict("records"),
-    }
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Viz helpers
-# ──────────────────────────────────────────────────────────────────────────────
-def kpi_card(label: str, value: str, sub: str = ""):
-    st.markdown(
-        f"""
-        <div class="ni-card">
-          <div class="ni-kpi-label">{label}</div>
-          <div class="ni-kpi-value">{value}</div>
-          <div class="ni-kpi-sub">{sub}</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-def badge_for_service(flag: str) -> str:
-    if flag == "UNDER":
-        return '<span class="ni-badge ni-red">UNDER</span>'
-    if flag == "OVER":
-        return '<span class="ni-badge ni-amber">OVER</span>'
-    return '<span class="ni-badge ni-green">ON TRACK</span>'
-
-
-def render_network_map(G: nx.Graph, pos: Dict, selected: Optional[str] = None, connections: Optional[Dict] = None) -> go.Figure:
-    fig = go.Figure()
-
-    highlight = set()
-    role = {}
-    if selected and connections:
-        highlight.add(selected)
-        role[selected] = "selected"
-        for r in connections.get("inbound", []):
-            highlight.add(r["partner"]); role[r["partner"]] = "in"
-        for r in connections.get("outbound", []):
-            highlight.add(r["partner"]); role[r["partner"]] = "out"
-        for r in connections.get("two_way", []):
-            highlight.add(r["partner"]); role[r["partner"]] = "mutual"
-
-    ROLE_COL = {
-        "selected": "#ef4444",
-        "in": "#10b981",
-        "out": "#f59e0b",
-        "mutual": "#3b82f6",
-        "dim": "#e5e7eb",
-    }
-
-    # Background edges (single trace)
-    ex, ey = [], []
-    for u, v, data in G.edges(data=True):
-        if u not in pos or v not in pos:
-            continue
-        x0, y0 = pos[u]; x1, y1 = pos[v]
-        ex += [x0, x1, None]
-        ey += [y0, y1, None]
-    fig.add_trace(go.Scattergl(
-        x=ex, y=ey, mode="lines",
-        line=dict(color="#e5e7eb", width=0.6),
-        opacity=0.35 if selected else 0.55,
-        hoverinfo="skip", showlegend=False
-    ))
-
-    # Highlight edges around selected
-    if selected:
-        for u, v, data in G.edges(data=True):
-            if u not in pos or v not in pos:
-                continue
-            if u != selected and v != selected:
-                continue
-            other = v if u == selected else u
-            col = ROLE_COL.get(role.get(other, "dim"), "#9ca3af")
-            w = 1.8 + 0.15 * float(data.get("weight", 1))
-            x0, y0 = pos[u]; x1, y1 = pos[v]
-            fig.add_trace(go.Scattergl(
-                x=[x0, x1], y=[y0, y1], mode="lines",
-                line=dict(color=col, width=w),
-                opacity=0.95, hoverinfo="skip", showlegend=False
+# ============================================================================
+# OPTIMIZATION ENGINE
+# ============================================================================
+class NetworkOptimizer:
+    """
+    Algorithmic optimizer that finds the most efficient media allocation
+    by comparing direct spend vs network leverage paths.
+    """
+    
+    def __init__(self, events_df: pd.DataFrame, G: nx.Graph, builder_master: pd.DataFrame, 
+                 shortfalls: pd.DataFrame, leverage: pd.DataFrame):
+        self.events = events_df
+        self.G = G
+        self.builder_master = builder_master
+        self.shortfalls = shortfalls
+        self.leverage = leverage
+        
+        # Build lookup tables
+        self._build_lookups()
+    
+    def _build_lookups(self):
+        """Pre-compute lookup tables for efficiency."""
+        bm = self.builder_master
+        
+        # Media cost and ROAS by builder
+        self.media_cost = {}
+        self.roas = {}
+        self.total_refs_out = {}
+        
+        if not bm.empty:
+            for _, row in bm.iterrows():
+                b = row['BuilderRegionKey']
+                self.media_cost[b] = float(row.get('MediaCost', 0))
+                self.roas[b] = float(row.get('ROAS', 0))
+                self.total_refs_out[b] = float(row.get('Referrals_out', 0))
+        
+        # Referral flows from leverage data
+        self.flows = {}  # (source, dest) -> referrals
+        if not self.leverage.empty:
+            for _, row in self.leverage.iterrows():
+                src = row['MediaPayer_BuilderRegionKey']
+                dst = row['Dest_BuilderRegionKey']
+                refs = row.get('Referrals_to_Target', 0)
+                self.flows[(src, dst)] = refs
+    
+    def find_paths_to_target(self, target: str, max_hops: int = 2) -> List[MediaPath]:
+        """
+        Find all viable media paths to reach a target builder.
+        Returns paths sorted by effective CPR (best first).
+        """
+        paths = []
+        
+        # 1. DIRECT PATH: Spend directly on target
+        direct_cost = self.media_cost.get(target, 0)
+        direct_refs_in = self.builder_master[
+            self.builder_master['BuilderRegionKey'] == target
+        ]['Referrals_in'].iloc[0] if target in self.builder_master['BuilderRegionKey'].values else 0
+        
+        if direct_cost > 0 and direct_refs_in > 0:
+            # Direct CPR = cost / refs received (simplified model)
+            target_roas = self.roas.get(target, 1.0)
+            direct_cpr = direct_cost / direct_refs_in
+            # Effective CPR adjusts for ROAS quality
+            eff_cpr = direct_cpr / max(target_roas, 0.1)
+            
+            paths.append(MediaPath(
+                target=target,
+                source=target,
+                path_type='direct',
+                hops=[target],
+                volume=direct_refs_in,
+                source_media_cost=direct_cost,
+                source_total_refs=direct_refs_in,
+                effective_cpr=eff_cpr,
+                transfer_rate=1.0,
+                source_roas=target_roas
             ))
-
-    # Nodes
-    node_x, node_y, node_color, node_size, node_text, node_op = [], [], [], [], [], []
-    deg = dict(G.degree(weight="weight"))
-    mx = max(deg.values()) if deg else 1.0
-
-    for n in G.nodes():
-        if n not in pos:
-            continue
-        x, y = pos[n]
-        node_x.append(x); node_y.append(y)
-
-        base = 10 + 22 * (deg.get(n, 0) / mx)
-        if selected:
-            if n == selected:
-                c = ROLE_COL["selected"]; s = base + 12; op = 1.0
-                t = f"<b>{n}</b><br>FOCUS<br>Weighted degree: {deg.get(n,0):.0f}"
-            elif n in highlight:
-                r = role.get(n, "dim")
-                c = ROLE_COL.get(r, "#9ca3af"); s = base + 5; op = 0.95
-                lab = {"in":"Inbound source","out":"Outbound dest","mutual":"Mutual partner"}.get(r,"")
-                t = f"<b>{n}</b><br>{lab}<br>Weighted degree: {deg.get(n,0):.0f}"
+        
+        # 2. NETWORK PATHS: Find sources that refer to target
+        if target in self.G:
+            # 1-hop: direct referrers
+            for source in self.G.predecessors(target) if self.G.is_directed() else self.G.neighbors(target):
+                refs_to_target = self.flows.get((source, target), 0)
+                if refs_to_target == 0:
+                    # Try reverse lookup from edges
+                    edge_data = self.G.get_edge_data(source, target)
+                    if edge_data:
+                        refs_to_target = edge_data.get('weight', 0)
+                
+                if refs_to_target <= 0:
+                    continue
+                
+                source_cost = self.media_cost.get(source, 0)
+                source_total = self.total_refs_out.get(source, 0)
+                source_roas = self.roas.get(source, 1.0)
+                
+                if source_cost > 0 and source_total > 0:
+                    transfer_rate = refs_to_target / source_total
+                    base_cpr = source_cost / source_total
+                    # Effective CPR = base CPR / transfer_rate (cost to get 1 ref to target)
+                    eff_cpr = base_cpr / max(transfer_rate, 0.01)
+                    # Adjust for source quality
+                    eff_cpr = eff_cpr / max(source_roas, 0.1)
+                    
+                    paths.append(MediaPath(
+                        target=target,
+                        source=source,
+                        path_type='1-hop',
+                        hops=[source, target],
+                        volume=refs_to_target,
+                        source_media_cost=source_cost,
+                        source_total_refs=source_total,
+                        effective_cpr=eff_cpr,
+                        transfer_rate=transfer_rate,
+                        source_roas=source_roas
+                    ))
+            
+            # 2-hop: sources that refer to 1-hop sources
+            if max_hops >= 2:
+                one_hop_sources = [p.source for p in paths if p.path_type == '1-hop']
+                
+                for mid in one_hop_sources:
+                    mid_refs_to_target = self.flows.get((mid, target), 0)
+                    if mid_refs_to_target <= 0:
+                        continue
+                    
+                    for source in self.G.neighbors(mid) if not self.G.is_directed() else list(self.G.predecessors(mid)):
+                        if source == target or source == mid:
+                            continue
+                        
+                        refs_to_mid = self.flows.get((source, mid), 0)
+                        if refs_to_mid <= 0:
+                            edge_data = self.G.get_edge_data(source, mid)
+                            if edge_data:
+                                refs_to_mid = edge_data.get('weight', 0)
+                        
+                        if refs_to_mid <= 0:
+                            continue
+                        
+                        source_cost = self.media_cost.get(source, 0)
+                        source_total = self.total_refs_out.get(source, 0)
+                        source_roas = self.roas.get(source, 1.0)
+                        mid_total = self.total_refs_out.get(mid, 0)
+                        
+                        if source_cost > 0 and source_total > 0 and mid_total > 0:
+                            # Transfer through 2 hops
+                            rate_to_mid = refs_to_mid / source_total
+                            rate_mid_to_target = mid_refs_to_target / mid_total
+                            combined_rate = rate_to_mid * rate_mid_to_target
+                            
+                            if combined_rate > 0.001:  # Minimum viability threshold
+                                base_cpr = source_cost / source_total
+                                eff_cpr = base_cpr / combined_rate
+                                eff_cpr = eff_cpr / max(source_roas, 0.1)
+                                
+                                paths.append(MediaPath(
+                                    target=target,
+                                    source=source,
+                                    path_type='2-hop',
+                                    hops=[source, mid, target],
+                                    volume=refs_to_mid * rate_mid_to_target,
+                                    source_media_cost=source_cost,
+                                    source_total_refs=source_total,
+                                    effective_cpr=eff_cpr,
+                                    transfer_rate=combined_rate,
+                                    source_roas=source_roas
+                                ))
+        
+        # Sort by effective CPR (lowest = best)
+        paths.sort(key=lambda p: p.effective_cpr if p.effective_cpr > 0 else float('inf'))
+        
+        return paths
+    
+    def analyze_target(self, target: str) -> TargetAnalysis:
+        """Complete analysis for a single target."""
+        sf_row = self.shortfalls[self.shortfalls['BuilderRegionKey'] == target]
+        shortfall = float(sf_row['Projected_Shortfall'].iloc[0]) if not sf_row.empty else 0
+        risk = float(sf_row['Risk_Score'].iloc[0]) if not sf_row.empty else 0
+        
+        paths = self.find_paths_to_target(target)
+        
+        direct_paths = [p for p in paths if p.path_type == 'direct']
+        network_paths = [p for p in paths if p.path_type != 'direct']
+        
+        direct_cpr = direct_paths[0].effective_cpr if direct_paths else None
+        network_cpr = network_paths[0].effective_cpr if network_paths else None
+        
+        # Determine recommendation
+        if not paths:
+            recommendation = 'insufficient_data'
+            best_path = None
+        elif direct_cpr is not None and network_cpr is not None:
+            if direct_cpr <= network_cpr * 0.9:  # Direct is 10%+ better
+                recommendation = 'direct'
+                best_path = direct_paths[0]
+            elif network_cpr <= direct_cpr * 0.9:  # Network is 10%+ better
+                recommendation = 'network'
+                best_path = network_paths[0]
             else:
-                c = "#9ca3af"; s = base * 0.65; op = 0.20
-                t = f"{n}"
+                recommendation = 'hybrid'
+                best_path = paths[0]
+        elif direct_cpr is not None:
+            recommendation = 'direct'
+            best_path = direct_paths[0]
         else:
-            c = "#3b82f6"; s = base; op = 0.90
-            t = f"<b>{n}</b><br>Weighted degree: {deg.get(n,0):.0f}"
+            recommendation = 'network'
+            best_path = network_paths[0] if network_paths else None
+        
+        return TargetAnalysis(
+            builder=target,
+            shortfall=shortfall,
+            risk_score=risk,
+            all_paths=paths,
+            best_path=best_path,
+            direct_cpr=direct_cpr,
+            network_cpr=network_cpr,
+            recommendation=recommendation
+        )
+    
+    def optimize_basket(self, targets: List[str], budget: float) -> Tuple[List[AllocationResult], Dict]:
+        """
+        Optimize budget allocation across multiple targets.
+        
+        Algorithm:
+        1. Analyze all targets and find all viable paths
+        2. Identify shared sources (synergies)
+        3. Greedy allocation prioritizing:
+           - Lowest effective CPR
+           - Synergy bonus for multi-target sources
+           - Diminishing returns per source
+        """
+        if not targets or budget <= 0:
+            return [], {}
+        
+        # Step 1: Analyze all targets
+        analyses = {t: self.analyze_target(t) for t in targets}
+        
+        # Step 2: Build source -> targets mapping
+        source_targets = {}  # source -> [(target, path, eff_cpr)]
+        
+        for target, analysis in analyses.items():
+            for path in analysis.all_paths[:10]:  # Top 10 paths per target
+                source = path.source
+                if source not in source_targets:
+                    source_targets[source] = []
+                source_targets[source].append((target, path))
+        
+        # Step 3: Score sources with synergy bonus
+        source_scores = []
+        for source, target_paths in source_targets.items():
+            # Base score = best effective CPR
+            best_cpr = min(p.effective_cpr for _, p in target_paths)
+            
+            # Synergy: serving multiple targets is valuable
+            num_targets = len(set(t for t, _ in target_paths))
+            synergy_factor = 1 + (num_targets - 1) * 0.15  # 15% bonus per additional target
+            
+            # Adjusted score (lower = better)
+            adjusted_cpr = best_cpr / synergy_factor
+            
+            source_scores.append({
+                'source': source,
+                'targets': list(set(t for t, _ in target_paths)),
+                'target_paths': target_paths,
+                'best_cpr': best_cpr,
+                'synergy_factor': synergy_factor,
+                'adjusted_cpr': adjusted_cpr,
+                'num_targets': num_targets
+            })
+        
+        # Sort by adjusted CPR
+        source_scores.sort(key=lambda x: x['adjusted_cpr'])
+        
+        # Step 4: Allocate budget greedily
+        allocations = []
+        remaining_budget = budget
+        target_leads = {t: 0.0 for t in targets}
+        target_shortfalls = {t: analyses[t].shortfall for t in targets}
+        source_spend = {}  # Track spend per source for diminishing returns
+        
+        for source_data in source_scores:
+            if remaining_budget <= 0:
+                break
+            
+            source = source_data['source']
+            
+            # Check if this source helps unfilled targets
+            unfilled_targets = [t for t in source_data['targets'] 
+                               if target_leads[t] < target_shortfalls[t]]
+            
+            if not unfilled_targets:
+                continue
+            
+            # Calculate allocation
+            # Cap at 40% of budget per source (diversification)
+            max_source_budget = budget * 0.4
+            prior_spend = source_spend.get(source, 0)
+            available_for_source = max_source_budget - prior_spend
+            
+            if available_for_source <= 0:
+                continue
+            
+            # Estimate leads needed
+            total_needed = sum(max(0, target_shortfalls[t] - target_leads[t]) for t in unfilled_targets)
+            cost_to_fill = total_needed * source_data['best_cpr']
+            
+            allocation = min(remaining_budget, available_for_source, cost_to_fill, budget * 0.25)
+            
+            if allocation < 100:  # Minimum allocation threshold
+                continue
+            
+            # Calculate leads per target
+            leads_generated = allocation / source_data['best_cpr']
+            leads_per_target = {}
+            
+            for target in unfilled_targets:
+                # Find best path to this target from this source
+                paths_to_target = [p for t, p in source_data['target_paths'] if t == target]
+                if paths_to_target:
+                    best_path = min(paths_to_target, key=lambda p: p.effective_cpr)
+                    # Leads proportional to transfer rate
+                    target_share = best_path.transfer_rate / sum(
+                        min(pp for t, pp in source_data['target_paths'] if t == tt).transfer_rate 
+                        for tt in unfilled_targets
+                        for _, pp in source_data['target_paths'] if _ == tt
+                    ) if len(unfilled_targets) > 1 else 1.0
+                    
+                    leads_for_target = leads_generated * min(target_share, 1.0)
+                    leads_per_target[target] = leads_for_target
+                    target_leads[target] += leads_for_target
+            
+            is_direct = source in targets
+            
+            allocations.append(AllocationResult(
+                source=source,
+                targets_served=unfilled_targets,
+                budget=allocation,
+                projected_leads=leads_per_target,
+                effective_cpr=source_data['best_cpr'],
+                is_direct=is_direct,
+                synergy_factor=source_data['synergy_factor']
+            ))
+            
+            remaining_budget -= allocation
+            source_spend[source] = source_spend.get(source, 0) + allocation
+        
+        # Summary stats
+        total_leads = sum(sum(a.projected_leads.values()) for a in allocations)
+        total_shortfall = sum(target_shortfalls.values())
+        total_spend = sum(a.budget for a in allocations)
+        
+        summary = {
+            'total_budget': budget,
+            'total_allocated': total_spend,
+            'unallocated': remaining_budget,
+            'total_leads': total_leads,
+            'total_shortfall': total_shortfall,
+            'coverage_pct': total_leads / total_shortfall if total_shortfall > 0 else 1.0,
+            'effective_cpr': total_spend / total_leads if total_leads > 0 else 0,
+            'num_sources': len(allocations),
+            'target_coverage': {t: target_leads[t] / target_shortfalls[t] if target_shortfalls[t] > 0 else 1.0 
+                               for t in targets}
+        }
+        
+        return allocations, summary
 
-        node_color.append(c); node_size.append(s); node_text.append(t); node_op.append(op)
+# ============================================================================
+# SESSION STATE
+# ============================================================================
+if 'targets' not in st.session_state:
+    st.session_state.targets = []
+if 'focus_builder' not in st.session_state:
+    st.session_state.focus_builder = None
+if 'optimization_result' not in st.session_state:
+    st.session_state.optimization_result = None
 
-    fig.add_trace(go.Scattergl(
-        x=node_x, y=node_y, mode="markers",
-        marker=dict(size=node_size, color=node_color, opacity=node_op, line=dict(color="white", width=1.2)),
-        text=node_text, hoverinfo="text", showlegend=False
-    ))
+# ============================================================================
+# DATA LOADING
+# ============================================================================
+@st.cache_data(show_spinner=False)
+def load_data():
+    if 'events_file' not in st.session_state:
+        return None
+    events = load_events(st.session_state['events_file'])
+    return normalize_events(events) if events is not None else None
 
+@st.cache_data(show_spinner=False)
+def process_network(_events, start_date, end_date):
+    df = _events.copy()
+    
+    if start_date and end_date:
+        mask = (df['lead_date'] >= pd.Timestamp(start_date)) & (df['lead_date'] <= pd.Timestamp(end_date))
+        df = df[mask]
+    
+    period_days = (pd.Timestamp(end_date) - pd.Timestamp(start_date)).days if start_date and end_date else 90
+    
+    pnl = build_builder_pnl(df, lens='recipient', freq='ALL')
+    shortfalls = calculate_shortfalls(df, period_days=period_days)
+    leverage = analyze_network_leverage(df)
+    clusters = run_referral_clustering(df, target_max_clusters=12)
+    
+    builder_master = clusters.get('builder_master', pd.DataFrame())
+    if not builder_master.empty and 'BuilderRegionKey' in pnl.columns:
+        builder_master = builder_master.merge(
+            pnl[['BuilderRegionKey', 'Profit', 'ROAS', 'MediaCost', 'Revenue', 'N_referrals']],
+            on='BuilderRegionKey', how='left'
+        ).fillna(0)
+    
+    return {
+        'events': df,
+        'pnl': pnl,
+        'shortfalls': shortfalls,
+        'leverage': leverage,
+        'builder_master': builder_master,
+        'edges': clusters.get('edges_clean', pd.DataFrame()),
+        'graph': clusters.get('graph', nx.Graph()),
+        'period_days': period_days,
+    }
+
+# ============================================================================
+# VISUALIZATION HELPERS
+# ============================================================================
+def render_network_graph(G, builder_master, focus=None, targets=None):
+    pos = nx.spring_layout(G, seed=42, k=0.7)
+    fig = go.Figure()
+    
+    targets = targets or []
+    cluster_map = builder_master.set_index('BuilderRegionKey')['ClusterId'].to_dict() if not builder_master.empty else {}
+    colors = px.colors.qualitative.Set2
+    
+    # Edges
+    edge_x, edge_y = [], []
+    for u, v in G.edges():
+        if u in pos and v in pos:
+            x0, y0 = pos[u]
+            x1, y1 = pos[v]
+            edge_x.extend([x0, x1, None])
+            edge_y.extend([y0, y1, None])
+    
+    fig.add_trace(go.Scatter(x=edge_x, y=edge_y, mode='lines', line=dict(width=0.4, color='#d1d5db'), hoverinfo='skip', showlegend=False))
+    
+    # Nodes
+    degrees = dict(G.degree(weight='weight'))
+    max_deg = max(degrees.values()) if degrees else 1
+    
+    for node in G.nodes():
+        if node not in pos:
+            continue
+        x, y = pos[node]
+        deg = degrees.get(node, 0)
+        size = 8 + (deg / max_deg) * 20
+        cid = cluster_map.get(node, 0)
+        color = colors[cid % len(colors)]
+        
+        line_color, line_width = '#ffffff', 1
+        if node == focus:
+            line_color, line_width, size = '#3b82f6', 3, size + 8
+        elif node in targets:
+            line_color, line_width, size = '#10b981', 2, size + 4
+        
+        fig.add_trace(go.Scatter(
+            x=[x], y=[y], mode='markers',
+            marker=dict(size=size, color=color, line=dict(color=line_color, width=line_width)),
+            text=f"<b>{node}</b><br>Cluster {cid}", hoverinfo='text', showlegend=False
+        ))
+    
     fig.update_layout(
-        margin=dict(l=0, r=0, t=0, b=0),
-        height=620,
-        paper_bgcolor="white",
-        plot_bgcolor="white",
+        height=400, margin=dict(l=0, r=0, t=0, b=0),
+        paper_bgcolor='white', plot_bgcolor='white',
         xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
         yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
-        hovermode="closest",
-        dragmode="pan",
+        hovermode='closest'
     )
     return fig
 
+def get_risk_pill(risk_score):
+    if risk_score > 50:
+        return '<span class="pill pill-red">Critical</span>'
+    elif risk_score > 25:
+        return '<span class="pill pill-amber">At Risk</span>'
+    else:
+        return '<span class="pill pill-green">Healthy</span>'
 
-def sankey_from_plan_edges(plan_edges: pd.DataFrame, targets_set: set, min_leads: float = 2.0) -> Optional[go.Figure]:
-    if plan_edges is None or plan_edges.empty:
-        return None
+def get_rec_pill(recommendation):
+    pills = {
+        'direct': '<span class="pill pill-blue">Direct</span>',
+        'network': '<span class="pill pill-green">Network</span>',
+        'hybrid': '<span class="pill pill-amber">Hybrid</span>',
+        'insufficient_data': '<span class="pill pill-gray">No Data</span>'
+    }
+    return pills.get(recommendation, '<span class="pill pill-gray">Unknown</span>')
 
-    df = plan_edges.copy()
-    df = df[df["Expected_Leads"] >= float(min_leads)].copy()
-    if df.empty:
-        return None
-
-    # Keep only sources that actually hit targets OR show all with highlight
-    df["IsTarget"] = df["Dest"].astype(str).isin({str(x) for x in targets_set})
-
-    # Nodes
-    sources = df["Source"].astype(str).unique().tolist()
-    targets = df["Dest"].astype(str).unique().tolist()
-
-    labels = sources + targets
-    idx = {k: i for i, k in enumerate(labels)}
-
-    s_idx = df["Source"].astype(str).map(idx).tolist()
-    t_idx = df["Dest"].astype(str).map(idx).tolist()
-    vals = df["Expected_Leads"].astype(float).tolist()
-
-    # Color targets lightly
-    node_colors = []
-    for lab in labels:
-        if lab in sources:
-            node_colors.append("#3b82f6")
-        elif lab in targets_set:
-            node_colors.append("#10b981")
-        else:
-            node_colors.append("#9ca3af")
-
-    fig = go.Figure(data=[go.Sankey(
-        node=dict(
-            pad=14, thickness=18,
-            line=dict(color="rgba(0,0,0,0.15)", width=0.8),
-            label=labels, color=node_colors
-        ),
-        link=dict(
-            source=s_idx, target=t_idx, value=vals,
-            color="rgba(148,163,184,0.35)",
-            hovertemplate="Leads: %{value:.1f}<extra></extra>"
-        )
-    )])
-    fig.update_layout(height=420, margin=dict(l=10, r=10, t=10, b=10))
-    return fig
-
-
-def export_audit_pack_xlsx(
-    out_path: str,
-    sheets: Dict[str, pd.DataFrame],
-) -> bytes:
-    """Return XLSX bytes for st.download_button."""
-    import io
-    buf = io.BytesIO()
-    with pd.ExcelWriter(buf, engine="openpyxl") as w:
-        for name, df in sheets.items():
-            if df is None:
-                continue
-            if not isinstance(df, pd.DataFrame):
-                continue
-            df.to_excel(w, sheet_name=str(name)[:31], index=False)
-    buf.seek(0)
-    return buf.read()
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Main
-# ──────────────────────────────────────────────────────────────────────────────
+# ============================================================================
+# MAIN APPLICATION
+# ============================================================================
 def main():
-    st.markdown(
-        """
-        <div class="ni-section">
-          <div>
-            <div class="ni-section-title">🔗 Network Intelligence OS</div>
-            <div class="ni-section-sub">Forecast-aware shortfalls → network leverage → lowest-eCPR media plan (audited)</div>
-          </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    events = load_and_process_from_upload("events_file")
+    events = load_data()
+    
     if events is None:
-        st.warning("⚠️ Please upload Events on the Home page first.")
+        st.warning("⚠️ Please upload Events data on the Home page.")
+        st.page_link("app.py", label="← Go to Home", icon="🏠")
         return
-
-    ok, missing = _required_cols_check(events)
-    if not ok:
-        st.error("Your events file is missing required columns for the full engine:")
-        st.write(missing)
-        st.info("You can still browse clusters, but optimisation may be partial.")
-        st.divider()
-
-    # ──────────────────────────────────────────────────────────────────────────
-    # Sidebar controls (period + engine params)
-    # ──────────────────────────────────────────────────────────────────────────
+    
+    # Sidebar
     with st.sidebar:
-        st.markdown("## ⚙️ Controls")
-
-        date_col = _first_col(events, ["lead_date", "RefDate", "ref_date", "LeadDate", "date"])
-        if date_col:
-            tmp = events.copy()
-            tmp[date_col] = pd.to_datetime(tmp[date_col], errors="coerce")
-            ds = tmp[date_col].dropna()
-        else:
-            ds = pd.Series([], dtype="datetime64[ns]")
-
-        if not ds.empty:
-            min_d, max_d = ds.min().date(), ds.max().date()
-            dr = st.date_input("Analysis Period", value=(min_d, max_d))
-            if dr and len(dr) == 2:
-                start_date, end_date = pd.Timestamp(dr[0]), pd.Timestamp(dr[1])
-            else:
-                start_date, end_date = None, None
-        else:
-            st.caption("No date column found; using all rows.")
-            start_date, end_date = None, None
-
-        st.markdown("### 🧠 Engine")
-        cfg = OptimConfig(
-            pace_lookback_days=st.slider("Pace lookback (days)", 7, 60, 14, 1),
-            transfer_lookback_days=st.slider("Transfer lookback (days)", 30, 365, 90, 5),
-            overserve_tolerance=st.slider("Overserve tolerance", 0.0, 0.5, 0.10, 0.01),
-            prior_strength=st.slider("Transfer smoothing (prior strength)", 5.0, 100.0, 25.0, 5.0),
-            min_transfer_events=st.slider("Min transfer events", 1, 25, 5, 1),
-            urgency_days_scale=st.slider("Urgency days scale", 7.0, 60.0, 21.0, 1.0),
-            pace_gap_alpha=st.slider("Pace gap weight", 0.5, 3.0, 1.25, 0.05),
-            max_step_spend=st.number_input("Max spend step", min_value=1_000, value=25_000, step=1_000),
-            min_step_spend=st.number_input("Min spend step", min_value=100, value=500, step=100),
-        )
-
-        st.markdown("### 🧩 Clustering")
-        max_clusters = st.slider("Max clusters", 3, 25, 12, 1)
-        resolution = st.slider("Resolution", 0.5, 2.5, 1.5, 0.1)
-
-        st.markdown("### 💸 Media plan")
-        new_money = st.number_input("New money ($)", min_value=0, value=0, step=5_000)
-        max_mult = st.slider("Max spend multiplier (vs baseline)", 0.5, 3.0, 1.0, 0.05)
-        overserve_penalty = st.slider("Overserve penalty", 0.0, 1.0, 0.25, 0.05)
-
-        st.divider()
-        st.markdown("### 🛒 Campaign Cart")
-        if st.session_state.campaign_targets:
-            for t in list(st.session_state.campaign_targets):
-                c1, c2 = st.columns([0.82, 0.18])
-                with c1:
-                    st.write(f"• {t}")
-                with c2:
-                    if st.button("✕", key=f"rm_{t}"):
-                        _remove_target(t)
-                        st.rerun()
-            if st.button("Clear cart", use_container_width=True):
-                st.session_state.campaign_targets = []
-                st.rerun()
-        else:
-            st.caption("Add builders from Demand / Search.")
-
-    # ──────────────────────────────────────────────────────────────────────────
-    # Filtered events (period) + build model tables
-    # ──────────────────────────────────────────────────────────────────────────
-    events_f = _filter_by_date(events, start_date, end_date)
-    asof = pd.Timestamp(end_date).normalize() if end_date is not None else pd.Timestamp.today().normalize()
-
-    with st.spinner("Building network intelligence…"):
-        # 1) Demand (forecast-aware)
-        demand = calculate_shortfalls(events_f, asof=asof, cfg=cfg)
-
-        # 2) Leverage (smoothed transfers + base CPR)
-        leverage = analyze_network_leverage(events_f, asof=asof, cfg=cfg)
-
-        # 3) Clusters + Graph
-        clus = run_referral_clustering(events_f, resolution=resolution, target_max_clusters=max_clusters)
-        G = clus.get("graph", nx.Graph())
-        edges_clean = clus.get("edges_clean", pd.DataFrame())
-        builder_master = clus.get("builder_master", pd.DataFrame())
-        cluster_summary = clus.get("cluster_summary", pd.DataFrame())
-
-        # 4) P&L enrich (optional)
-        pnl = build_builder_pnl(events_f, lens="recipient", freq="ALL")
-        if isinstance(pnl, pd.DataFrame) and not pnl.empty and "BuilderRegionKey" in pnl.columns and not builder_master.empty:
-            keep = [c for c in ["BuilderRegionKey", "Profit", "ROAS", "MediaCost", "Referrals_in"] if c in pnl.columns]
-            pnl_sub = pnl[keep].copy()
-            builder_master = builder_master.merge(pnl_sub, on="BuilderRegionKey", how="left")
-            for c in ["Profit", "ROAS", "MediaCost"]:
-                if c in builder_master.columns:
-                    builder_master[c] = builder_master[c].fillna(0.0)
-
-    # ──────────────────────────────────────────────────────────────────────────
-    # Tabs (exec → demand → network → plan → export)
-    # ──────────────────────────────────────────────────────────────────────────
-    tab_exec, tab_demand, tab_network, tab_plan, tab_export = st.tabs(
-        ["📌 Executive", "⚡ Demand", "🕸️ Network", "💸 Media Plan", "📦 Export"]
-    )
-
-    # ──────────────────────────────────────────────────────────────────────────
-    # EXEC TAB
-    # ──────────────────────────────────────────────────────────────────────────
-    with tab_exec:
-        st.markdown('<div class="ni-section"><div class="ni-section-title">Executive Snapshot</div><div class="ni-section-sub">What matters right now</div></div>', unsafe_allow_html=True)
-
-        if demand is None or demand.empty:
-            st.warning("No demand table generated.")
-        else:
-            under = demand[demand["ServiceFlag"] == "UNDER"].copy()
-            over = demand[demand["ServiceFlag"] == "OVER"].copy()
-
-            total_shortfall = under["Shortfall"].sum() if not under.empty else 0.0
-            med_days = float(np.nanmedian(under["Days_Remaining_Fill"])) if not under.empty else np.nan
-
-            # quick spend estimate: sum(best ecpr per under builder) * shortfall
-            est = 0.0
-            if leverage is not None and not leverage.empty and not under.empty:
-                for b, sf in under.set_index("BuilderRegionKey")["Shortfall"].to_dict().items():
-                    cand = leverage[leverage["Dest_BuilderRegionKey"].astype(str) == str(b)].copy()
-                    cand = cand[cand.get("Pass_Min_Events", True) == True]
-                    if cand.empty:
-                        continue
-                    best_ecpr = float(cand["eCPR"].replace([np.inf, -np.inf], np.nan).dropna().min()) if cand["eCPR"].notna().any() else np.nan
-                    if np.isfinite(best_ecpr):
-                        est += float(sf) * best_ecpr
-
-            c1, c2, c3, c4 = st.columns(4)
-            with c1: kpi_card("Builders under-served", f"{len(under):,}", "Forecast shortfall > 0")
-            with c2: kpi_card("Total shortfall", f"{total_shortfall:,.0f}", "Leads required to hit target")
-            with c3: kpi_card("Median days remaining", "—" if not np.isfinite(med_days) else f"{int(med_days):,}", "Campaign urgency signal")
-            with c4: kpi_card("Rough close-cost", "—" if est <= 0 else fmt_currency(est), "Using best historical eCPR per target")
-
-            st.markdown("#### 🔥 Top at-risk builders")
-            hot = demand.copy()
-            hot["ServiceBadge"] = hot["ServiceFlag"].apply(badge_for_service)
-            cols = ["BuilderRegionKey", "ServiceBadge", "LeadTarget", "Actual_Referrals", "Pace_Leads_per_Day", "Days_Remaining", "Projected_Finish", "Shortfall", "Surplus", "DemandScore"]
-            cols = [c for c in cols if c in hot.columns]
-            hot_view = hot.loc[:, cols].head(30).copy()
-
-            st.dataframe(
-                hot_view,
-                use_container_width=True,
-                hide_index=True,
-                column_config={
-                    "ServiceBadge": st.column_config.TextColumn("Service", width="small"),
-                    "Pace_Leads_per_Day": st.column_config.NumberColumn("Pace/day", format="%.2f"),
-                    "DemandScore": st.column_config.NumberColumn("DemandScore", format="%.1f"),
-                },
-            )
-            st.caption("DemandScore = Shortfall × Urgency × Pace gap. Use it to prioritise where the next dollar goes.")
-
-    # ──────────────────────────────────────────────────────────────────────────
-    # DEMAND TAB
-    # ──────────────────────────────────────────────────────────────────────────
-    with tab_demand:
-        st.markdown('<div class="ni-section"><div class="ni-section-title">Demand & Coverage</div><div class="ni-section-sub">Forecast-aware: pace + days remaining</div></div>', unsafe_allow_html=True)
-
-        if demand is None or demand.empty:
-            st.warning("No demand table available.")
-        else:
-            under = demand[demand["ServiceFlag"] == "UNDER"].copy()
-            over = demand[demand["ServiceFlag"] == "OVER"].copy()
-
-            d1, d2, d3 = st.columns([1.2, 1.0, 0.8])
-            with d1:
-                default_pick = under["BuilderRegionKey"].iloc[0] if not under.empty else demand["BuilderRegionKey"].iloc[0]
-                focus = st.selectbox("Focus builder", options=demand["BuilderRegionKey"].astype(str).tolist(), index=int(demand.index[demand["BuilderRegionKey"] == default_pick][0]) if default_pick in demand["BuilderRegionKey"].values else 0)
-            with d2:
-                if st.button("➕ Add focus to cart", use_container_width=True):
-                    _add_target(str(focus)); st.rerun()
-            with d3:
-                topn = st.number_input("Auto-target Top N UNDER", min_value=0, value=0, step=5, help="Set >0 to auto-populate cart from the demand table (Top N by DemandScore).")
-                if topn and topn > 0:
-                    picks = under["BuilderRegionKey"].astype(str).head(int(topn)).tolist()
-                    for p in picks:
-                        _add_target(p)
-                    st.success(f"Added {len(picks)} builders to cart.")
+        st.markdown("### Filters")
+        dates = pd.to_datetime(events['lead_date'], errors='coerce').dropna()
+        min_d, max_d = dates.min().date(), dates.max().date()
+        date_range = st.date_input("Date Range", value=(min_d, max_d))
+        
+        st.markdown("---")
+        st.markdown("### Campaign Targets")
+        if st.session_state.targets:
+            for t in st.session_state.targets:
+                c1, c2 = st.columns([4, 1])
+                c1.caption(t[:22])
+                if c2.button("×", key=f"rm_{t}"):
+                    st.session_state.targets.remove(t)
+                    st.session_state.optimization_result = None
                     st.rerun()
-
-            # Focus row summary
-            fr = demand[demand["BuilderRegionKey"].astype(str) == str(focus)].head(1)
-            if not fr.empty:
-                r = fr.iloc[0]
-                m1, m2, m3, m4, m5 = st.columns(5)
-                m1.metric("Service", r.get("ServiceFlag", "—"))
-                m2.metric("Target", f"{r.get('LeadTarget', 0):,.0f}")
-                m3.metric("Actual", f"{r.get('Actual_Referrals', 0):,.0f}")
-                m4.metric("Shortfall", f"{r.get('Shortfall', 0):,.0f}")
-                m5.metric("Days remaining", "—" if pd.isna(r.get("Days_Remaining", np.nan)) else f"{int(r.get('Days_Remaining')):,}")
-
-            st.divider()
-
-            st.markdown("#### 🎯 Best sources to close the focus gap (lowest eCPR)")
-            if leverage is None or leverage.empty:
-                st.info("No leverage table (transfers) available.")
-            else:
-                strat = generate_investment_strategies(str(focus), demand, leverage)
-                if strat is None or strat.empty:
-                    st.info("No usable historical paths to this builder (or shortfall is 0).")
-                else:
-                    st.dataframe(
-                        strat.head(20),
-                        use_container_width=True,
-                        hide_index=True,
-                        column_config={
-                            "Transfer_Rate": st.column_config.NumberColumn("Transfer", format="%.2%"),
-                            "Base_CPR": st.column_config.NumberColumn("Base CPR", format="$%.0f"),
-                            "Effective_CPR": st.column_config.NumberColumn("eCPR", format="$%.0f"),
-                            "Investment_Required": st.column_config.NumberColumn("Investment", format="$%.0f"),
-                            "Confidence": st.column_config.NumberColumn("Confidence", format="%.2f"),
-                        },
-                    )
-                    st.caption("eCPR = CPR_base / smoothed transfer rate. Confidence rises with more source volume.")
-
-    # ──────────────────────────────────────────────────────────────────────────
-    # NETWORK TAB
-    # ──────────────────────────────────────────────────────────────────────────
-    with tab_network:
-        st.markdown('<div class="ni-section"><div class="ni-section-title">Network Map & Builder Drilldown</div><div class="ni-section-sub">Explore clusters, partnerships, and flow concentration</div></div>', unsafe_allow_html=True)
-
-        all_builders = _get_all_builders(events_f)
-        cA, cB = st.columns([1.3, 0.7])
-        with cA:
-            selected = st.selectbox("Search builder", options=[""] + all_builders, index=0)
-        with cB:
-            if st.button("➕ Add to cart", use_container_width=True, disabled=(not selected)):
-                _add_target(str(selected))
+            if st.button("Clear All"):
+                st.session_state.targets = []
+                st.session_state.optimization_result = None
                 st.rerun()
-
+        else:
+            st.caption("No targets selected")
+    
+    # Process data
+    start_d, end_d = (date_range[0], date_range[1]) if len(date_range) == 2 else (min_d, max_d)
+    with st.spinner("Analyzing..."):
+        data = process_network(events, start_d, end_d)
+    
+    G = data['graph']
+    bm = data['builder_master']
+    sf = data['shortfalls']
+    
+    # Initialize optimizer
+    optimizer = NetworkOptimizer(data['events'], G, bm, sf, data['leverage'])
+    
+    # ========================================================================
+    # HEADER
+    # ========================================================================
+    st.markdown("""
+    <div class="page-header">
+        <h1 class="page-title">🔗 Referral Network Analysis</h1>
+        <p class="page-subtitle">Algorithmic path optimization for efficient media allocation</p>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # ========================================================================
+    # SECTION 1: NETWORK OVERVIEW
+    # ========================================================================
+    st.markdown("""
+    <div class="section">
+        <div class="section-header">
+            <span class="section-num">1</span>
+            <span class="section-title">Network Overview</span>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    total_refs = data['edges']['Referrals'].sum() if not data['edges'].empty else 0
+    at_risk = len(sf[sf['Risk_Score'] > 25]) if not sf.empty else 0
+    
+    st.markdown(f"""
+    <div class="kpi-row">
+        <div class="kpi"><div class="kpi-label">Builders</div><div class="kpi-value">{len(G.nodes)}</div></div>
+        <div class="kpi"><div class="kpi-label">Referrals</div><div class="kpi-value">{total_refs:,}</div></div>
+        <div class="kpi"><div class="kpi-label">At Risk</div><div class="kpi-value">{at_risk}</div></div>
+        <div class="kpi"><div class="kpi-label">Profit</div><div class="kpi-value">${bm['Profit'].sum()/1000:,.0f}K</div></div>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        all_builders = sorted(G.nodes())
+        c1, c2 = st.columns([3, 1])
+        selected = c1.selectbox("Select builder", [""] + all_builders, label_visibility="collapsed", placeholder="Search...")
+        if c2.button("➕ Add Target", disabled=not selected):
+            if selected and selected not in st.session_state.targets:
+                st.session_state.targets.append(selected)
+                st.session_state.optimization_result = None
+                st.rerun()
+        
         if selected:
-            st.session_state.selected_builder = str(selected)
-
-        c1, c2 = st.columns([1.65, 0.95])
-
-        with c1:
-            if len(G.nodes) == 0:
-                st.info("No graph to render for this period.")
+            st.session_state.focus_builder = selected
+        
+        fig = render_network_graph(G, bm, st.session_state.focus_builder, st.session_state.targets)
+        st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+    
+    with col2:
+        # Builder analysis
+        if st.session_state.focus_builder:
+            analysis = optimizer.analyze_target(st.session_state.focus_builder)
+            
+            st.markdown(f"""
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">{analysis.builder[:25]}</span>
+                    {get_risk_pill(analysis.risk_score)}
+                </div>
+                <div style="font-size: 0.8rem; color: #6b7280; margin-bottom: 0.75rem;">
+                    Shortfall: <b>{analysis.shortfall:.0f}</b> leads
+                </div>
+            """, unsafe_allow_html=True)
+            
+            # Path comparison
+            st.markdown("**Path Analysis**")
+            
+            if analysis.direct_cpr:
+                st.markdown(f"""
+                <div class="path-row">
+                    <div class="path-type"><span class="pill pill-blue">Direct</span></div>
+                    <div class="path-route">Spend on self</div>
+                    <div class="path-metric">
+                        <div class="path-metric-value">${analysis.direct_cpr:,.0f}</div>
+                        <div class="path-metric-label">Eff. CPR</div>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            for path in analysis.all_paths[:3]:
+                if path.path_type == 'direct':
+                    continue
+                route = " → ".join(path.hops)
+                st.markdown(f"""
+                <div class="path-row">
+                    <div class="path-type"><span class="pill pill-green">{path.path_type}</span></div>
+                    <div class="path-route" title="{route}">{path.source[:12]}→{path.target[:12]}</div>
+                    <div class="path-metric">
+                        <div class="path-metric-value">${path.effective_cpr:,.0f}</div>
+                        <div class="path-metric-label">{path.transfer_rate:.0%} rate</div>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            # Recommendation
+            if analysis.best_path:
+                rec_text = {
+                    'direct': f"Spend directly on {analysis.builder[:15]} — most efficient path",
+                    'network': f"Leverage {analysis.best_path.source[:15]} — {(1 - analysis.best_path.effective_cpr/analysis.direct_cpr)*100:.0f}% cheaper" if analysis.direct_cpr else f"Use network via {analysis.best_path.source[:15]}",
+                    'hybrid': "Mix direct + network for optimal coverage",
+                    'insufficient_data': "Insufficient historical data"
+                }.get(analysis.recommendation, "")
+                
+                st.markdown(f"""
+                <div style="margin-top: 0.75rem; padding-top: 0.75rem; border-top: 1px solid #e5e7eb;">
+                    <div style="font-size: 0.7rem; text-transform: uppercase; color: #6b7280; margin-bottom: 0.25rem;">Recommendation</div>
+                    <div style="display: flex; align-items: center; gap: 0.5rem;">
+                        {get_rec_pill(analysis.recommendation)}
+                        <span style="font-size: 0.8rem; color: #374151;">{rec_text}</span>
+                    </div>
+                </div>
+                </div>
+                """, unsafe_allow_html=True)
             else:
-                pos = nx.spring_layout(G, seed=42, k=0.65, iterations=50, weight="weight")
-                conns = _get_builder_connections(events_f, st.session_state.selected_builder) if st.session_state.selected_builder else None
-                fig = render_network_map(G, pos, st.session_state.selected_builder, conns)
-                st.plotly_chart(fig, use_container_width=True)
-
-        with c2:
-            b = st.session_state.selected_builder
-            if not b:
-                st.info("Select a builder to see the drilldown.")
-            else:
-                st.markdown("#### Builder panel")
-                # Demand summary
-                if demand is not None and not demand.empty:
-                    row = demand[demand["BuilderRegionKey"].astype(str) == str(b)].head(1)
-                    if not row.empty:
-                        rr = row.iloc[0]
-                        st.markdown(f"**Service:** {rr.get('ServiceFlag','—')}  \n"
-                                    f"**Shortfall:** {rr.get('Shortfall',0):,.0f}  \n"
-                                    f"**Pace/day:** {rr.get('Pace_Leads_per_Day',0):.2f}  \n"
-                                    f"**Days remaining:** {rr.get('Days_Remaining','—')}")
-                # Connections
-                conns = _get_builder_connections(events_f, b)
-                t_in, t_out, t_mut = st.tabs(["📥 Inbound", "📤 Outbound", "🤝 Mutual"])
-                with t_in:
-                    df = pd.DataFrame(conns.get("inbound", []))
-                    if df.empty:
-                        st.caption("No inbound sources.")
-                    else:
-                        st.dataframe(df.rename(columns={"partner":"Source","refs_in":"Refs","spend_in":"Spend"}), use_container_width=True, hide_index=True)
-                with t_out:
-                    df = pd.DataFrame(conns.get("outbound", []))
-                    if df.empty:
-                        st.caption("No outbound destinations.")
-                    else:
-                        st.dataframe(df.rename(columns={"partner":"Dest","refs_out":"Refs"}), use_container_width=True, hide_index=True)
-                with t_mut:
-                    df = pd.DataFrame(conns.get("two_way", []))
-                    if df.empty:
-                        st.caption("No mutual partners.")
-                    else:
-                        st.dataframe(df.rename(columns={"partner":"Partner","refs_in":"In","refs_out":"Out"}), use_container_width=True, hide_index=True)
-
-    # ──────────────────────────────────────────────────────────────────────────
-    # MEDIA PLAN TAB
-    # ──────────────────────────────────────────────────────────────────────────
-    with tab_plan:
-        st.markdown('<div class="ni-section"><div class="ni-section-title">Portfolio Media Plan</div><div class="ni-section-sub">Close forecast shortfalls at lowest cost (network-aware)</div></div>', unsafe_allow_html=True)
-
-        if demand is None or demand.empty:
-            st.warning("No demand table available.")
-        elif leverage is None or leverage.empty:
-            st.warning("No leverage table available.")
+                st.markdown("</div>", unsafe_allow_html=True)
         else:
-            # Target set selection
-            under = demand[demand["ServiceFlag"] == "UNDER"].copy()
-            mode = st.radio("Target set", ["Cart", "All UNDER builders"], horizontal=True)
-
-            if mode == "Cart":
-                targets = [str(x) for x in st.session_state.campaign_targets]
-            else:
-                targets = under["BuilderRegionKey"].astype(str).tolist()
-
-            if not targets:
-                st.info("Add builders to cart (or choose All UNDER builders).")
-            else:
-                # Slice demand to include all builders, but focus deficits weights on targets
-                demand_seen = demand.copy()
-                # Build weights: boost target builders in DemandScore, keep others for overserve penalties
-                demand_seen["IsTarget"] = demand_seen["BuilderRegionKey"].astype(str).isin(set(targets))
-                demand_seen.loc[~demand_seen["IsTarget"], "DemandScore"] = 0.0
-
-                c1, c2, c3, c4 = st.columns(4)
-                with c1:
-                    kpi_card("Targets", f"{len(targets):,}", "Builders in optimisation set")
-                with c2:
-                    kpi_card("Total shortfall", f"{under[under['BuilderRegionKey'].astype(str).isin(set(targets))]['Shortfall'].sum():,.0f}", "Forecast shortfalls only")
-                with c3:
-                    kpi_card("New money", fmt_currency(new_money), "Added to baseline budgets")
-                with c4:
-                    kpi_card("Max spend mult", f"{max_mult:.2f}×", "Budget guardrail")
-
-                if st.button("⚡ Generate portfolio plan", type="primary", use_container_width=True):
-                    res = optimise_portfolio_media_plan(
-                        demand_seen,
-                        leverage,
-                        cfg=cfg,
-                        max_spend_multiplier=float(max_mult),
-                        new_money=float(new_money),
-                        overserve_penalty=float(overserve_penalty),
-                    )
-                    st.session_state.plan_result = res
-
-                res = st.session_state.plan_result
-                if res is None:
-                    st.info("Generate a plan to see allocations and reconciliation.")
-                else:
-                    if "error" in res:
-                        st.error("Plan engine error:")
-                        st.dataframe(res["error"], use_container_width=True, hide_index=True)
-                    else:
-                        plan_by_source = res.get("plan_by_source", pd.DataFrame())
-                        plan_edges = res.get("plan_edges", pd.DataFrame())
-                        post = res.get("post_state", pd.DataFrame())
-                        log = res.get("allocation_log", pd.DataFrame())
-                        budgets = res.get("source_budgets", pd.DataFrame())
-
-                        # Summary
-                        tgt_set = set(targets)
-                        pre_tgt = demand[demand["BuilderRegionKey"].astype(str).isin(tgt_set)].copy()
-                        post_tgt = post[post["BuilderRegionKey"].astype(str).isin(tgt_set)].copy()
-
-                        pre_sf = float(pre_tgt["Shortfall"].sum()) if not pre_tgt.empty else 0.0
-                        post_sf = float(post_tgt["Shortfall_Post"].sum()) if not post_tgt.empty else 0.0
-                        covered = max(0.0, pre_sf - post_sf)
-                        spend = float(plan_by_source["Spend"].sum()) if (plan_by_source is not None and not plan_by_source.empty) else 0.0
-                        eff_cpr = (spend / covered) if covered > 0 else np.nan
-                        overserve_added = float(post["Overserve_Post"].sum()) if post is not None and not post.empty else 0.0
-
-                        s1, s2, s3, s4 = st.columns(4)
-                        with s1: kpi_card("Spend", fmt_currency(spend), "Total planned spend")
-                        with s2: kpi_card("Shortfall covered", f"{covered:,.0f}", f"Pre {pre_sf:,.0f} → Post {post_sf:,.0f}")
-                        with s3: kpi_card("Effective CPR", "—" if not np.isfinite(eff_cpr) else fmt_currency(eff_cpr), "Spend / covered shortfall")
-                        with s4: kpi_card("Overserve (post)", f"{overserve_added:,.0f}", "Penalty-managed spillover")
-
-                        st.divider()
-
-                        # Sankey
-                        st.markdown("#### Flow map (Expected leads)")
-                        fig_s = sankey_from_plan_edges(plan_edges, tgt_set, min_leads=2.0)
-                        if fig_s:
-                            st.plotly_chart(fig_s, use_container_width=True)
-                        else:
-                            st.caption("No meaningful flows to chart (try reducing min transfer events or increasing budget).")
-
-                        # Tables
-                        st.markdown("#### Buy list (by source)")
-                        if plan_by_source is None or plan_by_source.empty:
-                            st.info("No sources were selected (budget or leverage constraints).")
-                        else:
-                            st.dataframe(
-                                plan_by_source,
-                                use_container_width=True,
-                                hide_index=True,
-                                column_config={
-                                    "Spend": st.column_config.NumberColumn("Spend", format="$%.0f"),
-                                    "CPR_base": st.column_config.NumberColumn("Base CPR", format="$%.0f"),
-                                    "Leads_Generated": st.column_config.NumberColumn("Leads", format="%.1f"),
-                                    "Budget": st.column_config.NumberColumn("Budget cap", format="$%.0f"),
-                                },
-                            )
-
-                        st.markdown("#### Attribution (source → dest)")
-                        if plan_edges is None or plan_edges.empty:
-                            st.caption("No edge attribution table.")
-                        else:
-                            # highlight targets first
-                            pe = plan_edges.copy()
-                            pe["IsTarget"] = pe["Dest"].astype(str).isin(tgt_set)
-                            pe = pe.sort_values(["IsTarget", "Expected_Leads"], ascending=[False, False])
-                            st.dataframe(
-                                pe.head(250),
-                                use_container_width=True,
-                                hide_index=True,
-                                column_config={
-                                    "Expected_Leads": st.column_config.NumberColumn("Expected leads", format="%.1f"),
-                                    "Spend_on_Source": st.column_config.NumberColumn("Spend", format="$%.0f"),
-                                    "Effective_CPR_to_Dest": st.column_config.NumberColumn("eCPR(dest)", format="$%.0f"),
-                                },
-                            )
-
-                        st.markdown("#### Reconciliation (pre → post)")
-                        if post is not None and not post.empty:
-                            post_view = post.copy()
-                            post_view["IsTarget"] = post_view["BuilderRegionKey"].astype(str).isin(tgt_set)
-                            post_view = post_view.sort_values(["IsTarget", "Shortfall_Post", "Overserve_Post"], ascending=[False, False, False])
-                            keep = [
-                                "BuilderRegionKey","IsTarget","ServiceFlag","LeadTarget","Projected_Finish","Expected_Leads_Added",
-                                "Projected_Finish_Post","Shortfall","Shortfall_Post","Overserve_Post","DemandScore"
-                            ]
-                            keep = [c for c in keep if c in post_view.columns]
-                            st.dataframe(post_view[keep].head(300), use_container_width=True, hide_index=True)
-
-                        with st.expander("Allocation log (debug/trace)", expanded=False):
-                            st.dataframe(log, use_container_width=True, hide_index=True)
-
-    # ──────────────────────────────────────────────────────────────────────────
-    # EXPORT TAB
-    # ──────────────────────────────────────────────────────────────────────────
-    with tab_export:
-        st.markdown('<div class="ni-section"><div class="ni-section-title">Audit Pack</div><div class="ni-section-sub">Download every table behind the plan</div></div>', unsafe_allow_html=True)
-
-        res = st.session_state.plan_result
-        if res is None or ("error" in (res or {})):
-            st.info("Generate a plan first (Media Plan tab) to export a complete audit pack.")
+            st.markdown("""
+            <div class="card">
+                <p style="color: #6b7280; font-size: 0.85rem;">Select a builder to analyze optimal media paths.</p>
+            </div>
+            """, unsafe_allow_html=True)
+    
+    # ========================================================================
+    # SECTION 2: CAMPAIGN OPTIMIZATION
+    # ========================================================================
+    st.markdown("""
+    <div class="section">
+        <div class="section-header">
+            <span class="section-num">2</span>
+            <span class="section-title">Campaign Optimization</span>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    targets = st.session_state.targets
+    
+    if not targets:
+        st.markdown("""
+        <div class="insight">
+            <div class="insight-text">
+                <b>How it works:</b> Add builders to your campaign targets above. The optimizer will find the most efficient allocation considering both direct spend and network leverage paths, including synergies when a single source can serve multiple targets.
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+        return
+    
+    # Analyze all targets
+    target_analyses = {t: optimizer.analyze_target(t) for t in targets}
+    total_shortfall = sum(a.shortfall for a in target_analyses.values())
+    
+    # Target cards
+    st.markdown("**Target Analysis**")
+    
+    cols = st.columns(min(len(targets), 3))
+    for i, (target, analysis) in enumerate(target_analyses.items()):
+        with cols[i % 3]:
+            best_cpr = analysis.best_path.effective_cpr if analysis.best_path else 0
+            st.markdown(f"""
+            <div class="target-card">
+                <div class="target-header">
+                    <div>
+                        <div class="target-name">{target[:22]}</div>
+                        <div class="target-meta">Shortfall: {analysis.shortfall:.0f} leads</div>
+                    </div>
+                    {get_risk_pill(analysis.risk_score)}
+                </div>
+                <div class="target-recommendation">
+                    <div class="rec-label">Best Path</div>
+                    <div class="rec-value">{get_rec_pill(analysis.recommendation)} ${best_cpr:,.0f}/lead</div>
+                    <div class="rec-detail">{len(analysis.all_paths)} paths available</div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+    
+    st.markdown("---")
+    
+    # Budget optimization
+    col1, col2 = st.columns([2, 1])
+    with col1:
+        budget = st.number_input("Campaign Budget ($)", min_value=1000, value=50000, step=5000)
+    with col2:
+        st.write("")
+        if st.button("🎯 Optimize Allocation", type="primary", use_container_width=True):
+            allocations, summary = optimizer.optimize_basket(targets, budget)
+            st.session_state.optimization_result = {'allocations': allocations, 'summary': summary}
+    
+    # ========================================================================
+    # SECTION 3: OPTIMIZATION RESULTS
+    # ========================================================================
+    if st.session_state.optimization_result:
+        result = st.session_state.optimization_result
+        allocations = result['allocations']
+        summary = result['summary']
+        
+        st.markdown("""
+        <div class="section">
+            <div class="section-header">
+                <span class="section-num">3</span>
+                <span class="section-title">Optimization Results</span>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        # Summary KPIs
+        st.markdown(f"""
+        <div class="kpi-row">
+            <div class="kpi">
+                <div class="kpi-label">Projected Leads</div>
+                <div class="kpi-value">{summary['total_leads']:,.0f}</div>
+            </div>
+            <div class="kpi">
+                <div class="kpi-label">Coverage</div>
+                <div class="kpi-value">{summary['coverage_pct']:.0%}</div>
+                <div class="metric-bar"><div class="metric-bar-fill {'green' if summary['coverage_pct'] >= 0.8 else 'amber' if summary['coverage_pct'] >= 0.5 else 'blue'}" style="width: {min(summary['coverage_pct']*100, 100)}%"></div></div>
+            </div>
+            <div class="kpi">
+                <div class="kpi-label">Blended CPR</div>
+                <div class="kpi-value">${summary['effective_cpr']:,.0f}</div>
+            </div>
+            <div class="kpi">
+                <div class="kpi-label">Sources Used</div>
+                <div class="kpi-value">{summary['num_sources']}</div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        # Coverage insight
+        if summary['coverage_pct'] >= 0.8:
+            st.markdown("""
+            <div class="action-box">
+                <div class="action-text"><b>✓ Strong coverage.</b> This allocation can address most of the shortfall efficiently.</div>
+            </div>
+            """, unsafe_allow_html=True)
+        elif summary['coverage_pct'] >= 0.5:
+            st.markdown("""
+            <div class="insight">
+                <div class="insight-text"><b>Partial coverage.</b> Consider increasing budget or prioritizing highest-risk targets.</div>
+            </div>
+            """, unsafe_allow_html=True)
         else:
-            sheets = {
-                "Demand": res.get("demand_table", pd.DataFrame()),
-                "Leverage": leverage if leverage is not None else pd.DataFrame(),
-                "SourceBudgets": res.get("source_budgets", pd.DataFrame()),
-                "PlanBySource": res.get("plan_by_source", pd.DataFrame()),
-                "PlanEdges": res.get("plan_edges", pd.DataFrame()),
-                "PostState": res.get("post_state", pd.DataFrame()),
-                "AllocationLog": res.get("allocation_log", pd.DataFrame()),
-                "ClusterSummary": cluster_summary if isinstance(cluster_summary, pd.DataFrame) else pd.DataFrame(),
-                "EdgesClean": edges_clean if isinstance(edges_clean, pd.DataFrame) else pd.DataFrame(),
-            }
-            xbytes = export_audit_pack_xlsx("network_audit_pack.xlsx", sheets)
-            st.download_button(
-                "📥 Download Network Audit Pack (XLSX)",
-                data=xbytes,
-                file_name=f"network_audit_pack_{pd.Timestamp.today().strftime('%Y%m%d')}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True,
-            )
-            st.caption("Includes: demand model, smoothed transfers, budgets, allocations, attribution, and reconciliation.")
+            st.markdown("""
+            <div class="insight">
+                <div class="insight-text"><b>⚠️ Limited coverage.</b> Budget is insufficient. Focus on fewer targets or increase budget.</div>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        # Allocation details
+        st.markdown("**Recommended Allocation**")
+        
+        if allocations:
+            # Header
+            st.markdown("""
+            <div class="alloc-row alloc-header">
+                <div>Source</div>
+                <div style="text-align: right;">Budget</div>
+                <div style="text-align: right;">Leads</div>
+                <div style="text-align: right;">CPR</div>
+                <div style="text-align: center;">Type</div>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            for alloc in allocations:
+                total_leads = sum(alloc.projected_leads.values())
+                type_pill = '<span class="pill pill-blue">Direct</span>' if alloc.is_direct else '<span class="pill pill-green">Network</span>'
+                
+                synergy_badge = ""
+                if alloc.synergy_factor > 1.01:
+                    synergy_badge = f'<span class="synergy-badge">⚡ {len(alloc.targets_served)} targets</span>'
+                
+                st.markdown(f"""
+                <div class="alloc-row">
+                    <div class="alloc-source">
+                        {alloc.source[:25]}
+                        {synergy_badge}
+                    </div>
+                    <div class="alloc-value">${alloc.budget:,.0f}</div>
+                    <div class="alloc-value">{total_leads:,.0f}</div>
+                    <div class="alloc-value">${alloc.effective_cpr:,.0f}</div>
+                    <div style="text-align: center;">{type_pill}</div>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            # Per-target breakdown
+            st.markdown("---")
+            st.markdown("**Coverage by Target**")
+            
+            for target in targets:
+                coverage = summary['target_coverage'].get(target, 0)
+                shortfall = target_analyses[target].shortfall
+                leads = shortfall * coverage
+                
+                bar_color = 'green' if coverage >= 0.8 else 'amber' if coverage >= 0.5 else 'blue'
+                
+                st.markdown(f"""
+                <div style="display: flex; align-items: center; padding: 0.5rem 0; gap: 1rem;">
+                    <div style="flex: 1; font-size: 0.85rem; color: #374151;">{target[:30]}</div>
+                    <div style="width: 100px; text-align: right; font-size: 0.85rem;">
+                        <span style="font-weight: 600;">{leads:,.0f}</span>
+                        <span style="color: #9ca3af;">/ {shortfall:,.0f}</span>
+                    </div>
+                    <div style="width: 120px;">
+                        <div style="display: flex; justify-content: space-between; font-size: 0.75rem; color: #6b7280;">
+                            <span>{coverage:.0%}</span>
+                        </div>
+                        <div class="metric-bar"><div class="metric-bar-fill {bar_color}" style="width: {min(coverage*100, 100)}%"></div></div>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            # Export
+            st.markdown("---")
+            export_data = []
+            for alloc in allocations:
+                export_data.append({
+                    'Source': alloc.source,
+                    'Budget': alloc.budget,
+                    'Projected Leads': sum(alloc.projected_leads.values()),
+                    'Effective CPR': alloc.effective_cpr,
+                    'Type': 'Direct' if alloc.is_direct else 'Network',
+                    'Targets Served': ', '.join(alloc.targets_served),
+                    'Synergy Factor': alloc.synergy_factor
+                })
+            
+            csv = pd.DataFrame(export_data).to_csv(index=False)
+            st.download_button("📥 Download Allocation Plan", csv, "allocation_plan.csv", "text/csv")
 
 
 if __name__ == "__main__":
