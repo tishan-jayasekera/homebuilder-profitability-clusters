@@ -26,7 +26,7 @@ from src.network_optimization import (
 # Streamlit config
 # =============================================================================
 
-st.set_page_config(page_title="Referral Network Explorer vNext", page_icon="🔗", layout="wide")
+st.set_page_config(page_title="Referral Network Explorer", page_icon="🔗", layout="wide")
 
 
 # =============================================================================
@@ -77,7 +77,7 @@ def to_excel_bytes(tables: dict[str, pd.DataFrame]) -> bytes:
                 continue
             if not isinstance(df, pd.DataFrame):
                 continue
-            safe = name[:31]  # Excel sheet name limit
+            safe = name[:31]
             df.to_excel(writer, sheet_name=safe, index=False)
     buf.seek(0)
     return buf.read()
@@ -115,13 +115,11 @@ def build_graph(edges: pd.DataFrame) -> nx.DiGraph:
 
 
 def compute_communities(G: nx.DiGraph):
-    # communities on undirected projection for stability
     UG = G.to_undirected()
     if UG.number_of_nodes() == 0:
         return {}, pd.DataFrame()
 
     try:
-        # networkx >= 2.8 often has louvain_communities
         from networkx.algorithms.community import louvain_communities
         comms = louvain_communities(UG, seed=42)
     except Exception:
@@ -150,10 +148,8 @@ def plot_network(G: nx.DiGraph, node_meta: pd.DataFrame, highlight: dict[str, st
         st.info("No network edges to display.")
         return
 
-    # spring layout
     pos = nx.spring_layout(G.to_undirected(), weight="weight", seed=42, k=1.2, iterations=70)
 
-    # edges
     edge_traces = []
     for u, v, data in G.edges(data=True):
         x0, y0 = pos[u]
@@ -169,7 +165,6 @@ def plot_network(G: nx.DiGraph, node_meta: pd.DataFrame, highlight: dict[str, st
             )
         )
 
-    # nodes
     node_x, node_y, text, size, symbol = [], [], [], [], []
     default_size = 10
 
@@ -220,7 +215,6 @@ def sankey_for_strategy(focus_builder: str, strategy_row: pd.Series):
     inv = float(strategy_row["Investment_Required"])
     ecpr = float(strategy_row["Effective_CPR"])
 
-    # derive implied leads delivered to focus
     delivered = inv / ecpr if (np.isfinite(ecpr) and ecpr > 0) else 0.0
     total_leads = delivered / transfer if (np.isfinite(transfer) and transfer > 0) else delivered
     spill = max(0.0, total_leads - delivered)
@@ -243,19 +237,38 @@ def sankey_for_strategy(focus_builder: str, strategy_row: pd.Series):
 
 
 # =============================================================================
+# Data Loading (uses session state from Home page)
+# =============================================================================
+
+def load_events_data():
+    """Load events data from session state (uploaded on Home page)."""
+    if 'events_file' not in st.session_state:
+        return None
+    
+    try:
+        st.session_state['events_file'].seek(0)  # Reset file pointer
+        df = pd.read_excel(st.session_state['events_file'])
+        return df
+    except Exception as e:
+        st.error(f"Error reading events file: {e}")
+        return None
+
+
+# =============================================================================
 # App
 # =============================================================================
 
-st.title("🔗 Referral Network Explorer vNext")
+st.title("🔗 Referral Network Explorer")
 st.caption("Operational optimiser: identifies urgent lead gaps (pace + runway), uses network leverage to build a low-CPR media plan, and outputs a full audit trail.")
 
-uploaded = st.file_uploader("Upload events CSV", type=["csv"])
+# Load data from session state
+events = load_events_data()
 
-if not uploaded:
-    st.info("Upload your events CSV to begin.")
+if events is None:
+    st.warning("⚠️ Please upload events data on the Home page first.")
+    st.page_link("app.py", label="← Go to Home", icon="🏠")
     st.stop()
 
-events = pd.read_csv(uploaded)
 events.columns = [c.strip() for c in events.columns]
 
 det = detect_cols(events)
@@ -294,7 +307,6 @@ with st.sidebar:
     st.divider()
     st.header("📅 Analysis as-of")
 
-    # compute available months if date exists
     asof = pd.Timestamp.today().normalize()
     if date_col != "(None)":
         events[date_col] = pd.to_datetime(events[date_col], errors="coerce")
@@ -336,20 +348,17 @@ cfg = OptimConfig(
     max_step_spend=float(max_step),
 )
 
-# normalise selected cols
 _is_ref = None if is_ref_col == "(None)" else is_ref_col
 _date = None if date_col == "(None)" else date_col
 _spend = None if spend_col == "(None)" else spend_col
 _target = None if target_col == "(None)" else target_col
 _end = None if end_col == "(None)" else end_col
 
-# sanity
 missing = [c for c in [source_col, dest_col] if c not in events.columns]
 if missing:
     st.error(f"Missing required columns: {missing}")
     st.stop()
 
-# compute demand + leverage (full audit)
 with st.spinner("Building demand model (pace + runway) ..."):
     demand = calculate_shortfalls(
         events,
@@ -374,14 +383,11 @@ with st.spinner("Building network leverage (smoothed transfer rates + eCPR) ..."
         spend_col=_spend,
     )
 
-# edges + graph for explorer (use leverage lookback window implicitly via analyze_network_leverage logic)
 edges = build_edges(events, source_col, dest_col, _is_ref)
 G = build_graph(edges)
 
-# communities
 node_to_cluster, cluster_summary = compute_communities(G)
 
-# Attach cluster to demand
 if not demand.empty:
     demand["ClusterId"] = demand["BuilderRegionKey"].map(lambda x: node_to_cluster.get(str(x), np.nan))
 
@@ -429,7 +435,7 @@ with left:
         )
 
 with right:
-    st.subheader("What’s driving urgency?")
+    st.subheader("What's driving urgency?")
     st.caption("DemandScore weights forecast shortfall by (i) deadline proximity and (ii) required pace vs current pace.")
     if not top_def.empty:
         b = top_def.iloc[0]["BuilderRegionKey"]
@@ -594,11 +600,9 @@ if cluster_summary is not None and not cluster_summary.empty:
 else:
     sel_cluster = "(All)"
 
-# highlight deficit builders
 highlight = {str(b): "UNDER" for b in demand[demand["Shortfall"] > 0]["BuilderRegionKey"].astype(str).tolist()} if not demand.empty else {}
 
 if sel_cluster != "(All)":
-    # filter nodes
     keep = set([n for n, cid in node_to_cluster.items() if cid == int(sel_cluster)])
     subG = G.subgraph(keep).copy()
     sub_demand = demand[demand["ClusterId"] == int(sel_cluster)].copy() if not demand.empty else pd.DataFrame()
