@@ -930,24 +930,23 @@ def render_campaign_planner(targets, shortfall_df, leverage_df, builder_master):
     )
     
     # Estimate budget required to fully cover shortfall
-    # Simple logic: assume we use the best available CPRs
     needed = total_shortfall
     est_budget = 0
-    for src in sources:
-        if needed <= 0: break
-        
-        # Assume source can provide up to 50 leads or 20% of its volume, whichever is safer
-        # For 'Self', assume capacity is flexible
-        if "SELF" in src['source']:
-            capacity = needed # unlimited for self
-        else:
-            capacity = max(src['total_refs_sent'] * 0.5, 20) # heuristic cap
+    if needed > 0:
+        for src in sources:
+            if needed <= 0: break
             
-        take = min(needed, capacity)
-        cost = take * src['effective_cpr']
-        est_budget += cost
-        needed -= take
-    
+            # Assume source capacity (simple heuristic for estimate)
+            if "SELF" in src['source']:
+                capacity = needed
+            else:
+                capacity = max(src['total_refs_sent'] * 0.5, 20)
+                
+            take = min(needed, capacity)
+            cost = take * src['effective_cpr']
+            est_budget += cost
+            needed -= take
+            
     if est_budget == 0 and total_shortfall > 0:
         est_budget = 50000 # Fallback default
         
@@ -1008,8 +1007,6 @@ def render_campaign_planner(targets, shortfall_df, leverage_df, builder_master):
 
         # SANKEY DIAGRAM
         st.markdown("#### Media Flow")
-        # Budget -> Sources -> [Targets, Leakage]
-        # Nodes: 0=Budget, 1..N=Sources, N+1=Targets, N+2=Leakage
         
         allocs = sim['allocations']
         # Filter tiny allocations for cleaner chart
@@ -1023,32 +1020,29 @@ def render_campaign_planner(targets, shortfall_df, leverage_df, builder_master):
             targets_idx = len(allocs) + 1
             leakage_idx = len(allocs) + 2
             
-            sources = []
+            sources_sankey = []
             targets_sankey = []
             values = []
             
-            # Budget -> Source links
             for i, a in enumerate(allocs):
                 source_idx = i + 1
-                sources.append(budget_idx)
+                
+                # Budget -> Source
+                sources_sankey.append(budget_idx)
                 targets_sankey.append(source_idx)
-                values.append(a['budget']) # Flow is money
+                values.append(a['budget'])
                 
-                # Source -> Targets (convert leads back to equivalent money flow or just use leads? Usually clearer to stick to one unit. Let's use LEADS for the second step, but Sankey requires consistent units for flow continuity.
-                # Actually, budget flows into source, source produces LEADS. This is a unit change. 
-                # Better to show BUDGET flow: Budget -> Source -> [Effective Spend, Wasted Spend]
-                # Effective Spend = Cost of leads that hit target. Wasted = Cost of leakage.
-                
+                # Source -> Target / Leakage (in monetary value terms)
                 eff_spend = a['leads_to_targets'] * a['effective_cpr']
                 leak_spend = a['budget'] - eff_spend
                 
                 if eff_spend > 0:
-                    sources.append(source_idx)
+                    sources_sankey.append(source_idx)
                     targets_sankey.append(targets_idx)
                     values.append(eff_spend)
                 
                 if leak_spend > 0:
-                    sources.append(source_idx)
+                    sources_sankey.append(source_idx)
                     targets_sankey.append(leakage_idx)
                     values.append(leak_spend)
 
@@ -1058,7 +1052,7 @@ def render_campaign_planner(targets, shortfall_df, leverage_df, builder_master):
                     label=labels, color=colors
                 ),
                 link=dict(
-                    source=sources, target=targets_sankey, value=values,
+                    source=sources_sankey, target=targets_sankey, value=values,
                     color='rgba(200, 200, 200, 0.3)'
                 )
             )])
@@ -1087,12 +1081,12 @@ def render_campaign_planner(targets, shortfall_df, leverage_df, builder_master):
                 elif cpr < 600: eff_desc = "Cost-effective"
                 else: eff_desc = "Strategic"
                 
-                # Target identification
-                # Simple logic: say "Serves targets" or be specific if we tracked which targets specifically
-                # For now, generic text is safer than guessing which specific target in the set it hits most without granular data
-                target_text = "campaign targets"
+                # Explicit targets
+                target_text = ", ".join(targets[:3])
+                if len(targets) > 3:
+                    target_text += f" +{len(targets)-3} others"
                 
-                return f"{eff_desc} source (${int(cpr)}/lead). Delivers volume to {target_text} with {int(rate*100)}% precision."
+                return f"{eff_desc} source (${int(cpr)}/lead). Serves: {target_text} ({int(rate*100)}% precision)."
 
             alloc_df['Justification'] = alloc_df.apply(generate_justification, axis=1)
 
@@ -1106,7 +1100,7 @@ def render_campaign_planner(targets, shortfall_df, leverage_df, builder_master):
             
             # Recommendation Text
             top_source = df_disp.iloc[0]
-            st.info(f"💡 Strategy: Allocate ${int(top_source['Budget']):,} to {top_source['Source Builder']} as your primary driver. They offer the best efficiency at ${int(top_source['CPR'])}/lead.")
+            st.info(f"Strategy: Allocate ${int(top_source['Budget']):,} to {top_source['Source Builder']} as your primary driver. They offer the best efficiency at ${int(top_source['CPR'])}/lead.")
 
             # Data Editor with Progress Bars
             st.dataframe(
