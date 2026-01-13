@@ -21,7 +21,7 @@ from src.utils import fmt_currency
 from src.network_optimization import (
     calculate_shortfalls, analyze_network_leverage, generate_targeted_media_plan,
     analyze_network_health, get_builder_referral_history, get_cluster_summary,
-    calculate_campaign_summary
+    calculate_campaign_summary, analyze_campaign_network, simulate_campaign_spend
 )
 
 st.set_page_config(page_title="Network Intelligence", page_icon="🔗", layout="wide")
@@ -409,6 +409,250 @@ def render_sidebar_cart(shortfall_df):
         st.session_state.campaign_targets = []
         st.rerun()
 
+
+# ==========================================
+# CAMPAIGN PLANNER FUNCTIONS
+# ==========================================
+def render_campaign_network(targets, sources, flows, G, pos):
+    """Render campaign-specific network showing targets, sources, and leverage flows."""
+    fig = go.Figure()
+    
+    target_set = set(targets)
+    source_set = set(s['source'] for s in sources)
+    
+    COL_TARGET = '#dc2626'
+    COL_SOURCE = '#16a34a'
+    COL_FLOW = '#3b82f6'
+    COL_MUTED = '#e5e7eb'
+    
+    # Background edges
+    for u, v, data in G.edges(data=True):
+        if u not in pos or v not in pos:
+            continue
+        x0, y0 = pos[u]
+        x1, y1 = pos[v]
+        fig.add_trace(go.Scatter(
+            x=[x0, x1, None], y=[y0, y1, None],
+            mode='lines', line=dict(color=COL_MUTED, width=0.3),
+            opacity=0.1, hoverinfo='skip', showlegend=False
+        ))
+    
+    # Background nodes
+    bg_nodes = [n for n in G.nodes() if n not in target_set and n not in source_set and n in pos]
+    if bg_nodes:
+        fig.add_trace(go.Scatter(
+            x=[pos[n][0] for n in bg_nodes], y=[pos[n][1] for n in bg_nodes],
+            mode='markers', marker=dict(size=6, color=COL_MUTED, opacity=0.2),
+            hoverinfo='skip', showlegend=False
+        ))
+    
+    # Leverage flows
+    for flow in flows:
+        src, tgt = flow['source'], flow['target']
+        if src not in pos or tgt not in pos:
+            continue
+        x0, y0 = pos[src]
+        x1, y1 = pos[tgt]
+        width = 1.5 + min(flow['refs'] / 5, 4)
+        
+        dx, dy = x1 - x0, y1 - y0
+        length = np.sqrt(dx**2 + dy**2)
+        if length < 0.01:
+            continue
+        udx, udy = dx / length, dy / length
+        margin = 0.05
+        sx, sy = x0 + udx * margin, y0 + udy * margin
+        ex, ey = x1 - udx * margin, y1 - udy * margin
+        
+        fig.add_trace(go.Scatter(
+            x=[sx, ex], y=[sy, ey], mode='lines',
+            line=dict(color=COL_FLOW, width=width),
+            opacity=0.7, hoverinfo='skip', showlegend=False
+        ))
+        
+        # Arrow
+        head = 0.03
+        px, py = -udy, udx
+        l_x = ex - udx * head - px * head * 0.6
+        l_y = ey - udy * head - py * head * 0.6
+        r_x = ex - udx * head + px * head * 0.6
+        r_y = ey - udy * head + py * head * 0.6
+        fig.add_trace(go.Scatter(
+            x=[l_x, ex, r_x], y=[l_y, ey, r_y],
+            mode='lines', fill='toself', fillcolor=COL_FLOW,
+            line=dict(color=COL_FLOW, width=0.5),
+            opacity=0.7, hoverinfo='skip', showlegend=False
+        ))
+    
+    # Source nodes
+    source_nodes = [s['source'] for s in sources if s['source'] in pos]
+    if source_nodes:
+        sizes = [20 + min(s['total_refs_sent'] / 3, 15) for s in sources if s['source'] in pos]
+        hover = [f"<b>{s['source']}</b><br>Refs: {s['total_refs_sent']}<br>To targets: {s['refs_to_targets']} ({s['target_rate']:.0%})<br>eCPR: ${s['effective_cpr']:,.0f}" for s in sources if s['source'] in pos]
+        fig.add_trace(go.Scatter(
+            x=[pos[n][0] for n in source_nodes], y=[pos[n][1] for n in source_nodes],
+            mode='markers', marker=dict(size=sizes, color=COL_SOURCE, line=dict(width=2, color='white')),
+            hovertext=hover, hoverinfo='text', name='📡 Sources', showlegend=True
+        ))
+    
+    # Target nodes
+    target_nodes = [t for t in targets if t in pos]
+    if target_nodes:
+        fig.add_trace(go.Scatter(
+            x=[pos[n][0] for n in target_nodes], y=[pos[n][1] for n in target_nodes],
+            mode='markers+text', marker=dict(size=28, color=COL_TARGET, line=dict(width=2, color='white')),
+            text=[t[:10] for t in target_nodes], textposition='top center', textfont=dict(size=9),
+            hovertext=[f"<b>{t}</b><br>🎯 Target" for t in target_nodes],
+            hoverinfo='text', name='🎯 Targets', showlegend=True
+        ))
+    
+    fig.update_layout(
+        height=420, margin=dict(l=5, r=5, t=5, b=5),
+        paper_bgcolor='white', plot_bgcolor='white',
+        xaxis=dict(showgrid=False, zeroline=False, showticklabels=False, scaleanchor='y'),
+        yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+        legend=dict(orientation='h', yanchor='bottom', y=1.01, xanchor='center', x=0.5, font=dict(size=10)),
+        hovermode='closest'
+    )
+    return fig
+
+
+def render_spend_waterfall(simulation):
+    """Render Sankey showing spend -> leads -> targets vs leakage."""
+    summary = simulation['summary']
+    
+    fig = go.Figure(go.Sankey(
+        node=dict(
+            pad=15, thickness=20, line=dict(color='white', width=0.5),
+            label=[
+                f"Budget<br>${summary['total_spent']:,.0f}",
+                f"Leads<br>{summary['total_leads_generated']:,.0f}",
+                f"To Targets<br>{summary['leads_to_targets']:,.0f}",
+                f"Leaked<br>{summary['leads_leaked']:,.0f}"
+            ],
+            color=['#6366f1', '#3b82f6', '#16a34a', '#f59e0b']
+        ),
+        link=dict(
+            source=[0, 1, 1], target=[1, 2, 3],
+            value=[summary['total_leads_generated'], summary['leads_to_targets'], summary['leads_leaked']],
+            color=['rgba(99, 102, 241, 0.4)', 'rgba(22, 163, 74, 0.4)', 'rgba(249, 115, 22, 0.4)']
+        )
+    ))
+    fig.update_layout(height=220, margin=dict(l=10, r=10, t=10, b=10), font=dict(size=11))
+    return fig
+
+
+def render_campaign_planner(targets, shortfall_df, leverage_df, G, pos):
+    """Render the full campaign planner with network visualization and traceability."""
+    st.markdown("## 🚀 Campaign Planner")
+    
+    if not targets:
+        st.info("👆 Add builders to your cart using the ➕ button to plan a campaign.")
+        return
+    
+    campaign_analysis = analyze_campaign_network(targets, leverage_df, shortfall_df)
+    sources = campaign_analysis['sources']
+    flows = campaign_analysis['flows']
+    stats = campaign_analysis['stats']
+    
+    if not sources:
+        st.warning("No historical referral paths found to these targets.")
+        return
+    
+    st.markdown(f"### {len(targets)} Target Builders")
+    
+    c1, c2, c3, c4 = st.columns(4)
+    total_shortfall = sum(
+        shortfall_df[shortfall_df['BuilderRegionKey'] == t]['Projected_Shortfall'].iloc[0]
+        for t in targets
+        if not shortfall_df[shortfall_df['BuilderRegionKey'] == t].empty
+        and not pd.isna(shortfall_df[shortfall_df['BuilderRegionKey'] == t]['Projected_Shortfall'].iloc[0])
+    )
+    c1.metric("Lead Shortfall", f"{int(total_shortfall):,}")
+    c2.metric("Sources Available", stats['num_sources'])
+    c3.metric("Target Capture", f"{stats['target_capture_rate']:.0%}")
+    c4.metric("Leakage Risk", f"{1 - stats['target_capture_rate']:.0%}")
+    
+    st.markdown("---")
+    
+    col1, col2 = st.columns([3, 2])
+    
+    with col1:
+        st.markdown("#### 🗺️ Leverage Network")
+        st.caption("Green = Sources | Red = Targets | Blue = Referral flows")
+        fig = render_campaign_network(targets, sources, flows, G, pos)
+        st.plotly_chart(fig, width='stretch')
+    
+    with col2:
+        st.markdown("#### 💰 Budget Simulation")
+        budget = st.number_input("Campaign Budget ($)", 5000, 1000000, 50000, step=5000)
+        
+        if st.button("🔄 Simulate", type="primary"):
+            sim = simulate_campaign_spend(targets, budget, sources, shortfall_df)
+            st.session_state.campaign_simulation = sim
+        
+        if 'campaign_simulation' in st.session_state:
+            sim = st.session_state.campaign_simulation
+            summary = sim['summary']
+            
+            r1, r2 = st.columns(2)
+            r1.metric("Leads to Targets", f"{summary['leads_to_targets']:,.0f}")
+            r2.metric("Effective CPR", f"${summary['effective_cpr']:,.0f}")
+            r3, r4 = st.columns(2)
+            r3.metric("Gap Covered", f"{summary['coverage_pct']:.0%}")
+            r4.metric("Leakage", f"{summary['leakage_pct']:.0%}")
+            
+            st.progress(min(summary['coverage_pct'], 1.0))
+            st.caption(f"{summary['shortfall_covered']:,.0f} / {summary['target_shortfall']:,.0f} gap covered")
+    
+    st.markdown("---")
+    
+    tab1, tab2, tab3 = st.tabs(["📡 Sources", "💰 Allocation", "🔍 Leakage"])
+    
+    with tab1:
+        st.caption("Ranked by effective CPR (cost to get a lead to your targets)")
+        source_df = pd.DataFrame(sources)
+        if not source_df.empty:
+            source_df.columns = ['Source', 'Total Refs', 'To Targets', 'To Others', 'Target Rate', 'Leakage', 'Base CPR', 'Eff CPR']
+            st.dataframe(source_df.style.format({
+                'Target Rate': '{:.0%}', 'Leakage': '{:.0%}', 'Base CPR': '${:,.0f}', 'Eff CPR': '${:,.0f}'
+            }).background_gradient(subset=['Target Rate'], cmap='Greens'), hide_index=True, width='stretch', height=280)
+    
+    with tab2:
+        if 'campaign_simulation' in st.session_state:
+            sim = st.session_state.campaign_simulation
+            alloc_df = pd.DataFrame(sim['allocations'])
+            if not alloc_df.empty:
+                fig = render_spend_waterfall(sim)
+                st.plotly_chart(fig, width='stretch')
+                alloc_df.columns = ['Source', 'Budget', 'Base CPR', 'Eff CPR', 'Total Leads', 'To Targets', 'Leaked', 'Target Rate', 'Leads/$1K']
+                st.dataframe(alloc_df[['Source', 'Budget', 'To Targets', 'Leaked', 'Eff CPR']].style.format({
+                    'Budget': '${:,.0f}', 'To Targets': '{:,.0f}', 'Leaked': '{:,.0f}', 'Eff CPR': '${:,.0f}'
+                }), hide_index=True, width='stretch')
+        else:
+            st.info("Run simulation first")
+    
+    with tab3:
+        leakage = campaign_analysis['leakage']
+        if leakage:
+            st.caption("Where else your sources send leads (not to your targets)")
+            leak_df = pd.DataFrame(leakage)
+            fig = go.Figure(go.Bar(y=leak_df['destination'].head(8), x=leak_df['refs'].head(8), orientation='h', marker_color='#f59e0b'))
+            fig.update_layout(height=250, margin=dict(l=10, r=10, t=10, b=10), yaxis=dict(autorange='reversed'), plot_bgcolor='white')
+            st.plotly_chart(fig, width='stretch')
+            st.caption("💡 Consider adding these to your targets to capture more value")
+        else:
+            st.success("No significant leakage!")
+    
+    if 'campaign_simulation' in st.session_state:
+        st.markdown("---")
+        sim = st.session_state.campaign_simulation
+        export_data = [{'Source': a['source'], 'Budget': a['budget'], 'Eff_CPR': a['effective_cpr'], 'Leads_to_Targets': a['leads_to_targets'], 'Leaked': a['leads_leaked']} for a in sim['allocations']]
+        export_df = pd.DataFrame(export_data)
+        col1, col2 = st.columns(2)
+        col1.download_button("📥 CSV", export_df.to_csv(index=False), "campaign.csv", "text/csv")
+        col2.download_button("📥 Excel", export_to_excel(export_df, "campaign.xlsx"), "campaign.xlsx")
+
 # ==========================================
 # MAIN
 # ==========================================
@@ -482,7 +726,7 @@ def main():
         st.info("No referral connections found in the selected period.")
         return
     
-    # Compute layout once
+    # Compute layout once (store for campaign planner)
     pos = nx.spring_layout(G, seed=42, k=1.0, iterations=50)
     
     builder = st.session_state.selected_builder
@@ -531,53 +775,416 @@ def main():
     st.markdown("---")
     
     # Campaign planner
+    render_campaign_planner(st.session_state.campaign_targets, shortfall_df, leverage_df, G, pos)
+    
+    st.markdown("---")
+    
+    # Campaign planner
+    render_campaign_planner(st.session_state.campaign_targets, shortfall_df, leverage_df, G, pos)
+
+
+def render_campaign_network(targets, sources, flows, G, pos):
+    """Render campaign-specific network showing targets, sources, and leverage flows."""
+    fig = go.Figure()
+    
+    target_set = set(targets)
+    source_set = set(s['source'] for s in sources)
+    
+    # Colors
+    COL_TARGET = '#dc2626'    # Red - targets we want to fill
+    COL_SOURCE = '#16a34a'    # Green - sources we'll leverage
+    COL_FLOW = '#3b82f6'      # Blue - leverage flows
+    COL_LEAKAGE = '#f59e0b'   # Orange - leakage flows
+    COL_MUTED = '#e5e7eb'
+    
+    # Draw background edges (muted)
+    for u, v, data in G.edges(data=True):
+        if u not in pos or v not in pos:
+            continue
+        x0, y0 = pos[u]
+        x1, y1 = pos[v]
+        
+        fig.add_trace(go.Scatter(
+            x=[x0, x1, None], y=[y0, y1, None],
+            mode='lines', line=dict(color=COL_MUTED, width=0.3),
+            opacity=0.1, hoverinfo='skip', showlegend=False
+        ))
+    
+    # Draw background nodes
+    bg_nodes = [n for n in G.nodes() if n not in target_set and n not in source_set and n in pos]
+    if bg_nodes:
+        fig.add_trace(go.Scatter(
+            x=[pos[n][0] for n in bg_nodes],
+            y=[pos[n][1] for n in bg_nodes],
+            mode='markers',
+            marker=dict(size=6, color=COL_MUTED, opacity=0.2),
+            hoverinfo='skip', showlegend=False
+        ))
+    
+    # Draw leverage flows (source -> target)
+    for flow in flows:
+        src, tgt = flow['source'], flow['target']
+        if src not in pos or tgt not in pos:
+            continue
+        
+        x0, y0 = pos[src]
+        x1, y1 = pos[tgt]
+        
+        # Line thickness based on referral count
+        width = 1.5 + min(flow['refs'] / 5, 4)
+        
+        # Draw curved line
+        dx, dy = x1 - x0, y1 - y0
+        length = np.sqrt(dx**2 + dy**2)
+        if length < 0.01:
+            continue
+        udx, udy = dx / length, dy / length
+        
+        margin = 0.05
+        sx, sy = x0 + udx * margin, y0 + udy * margin
+        ex, ey = x1 - udx * margin, y1 - udy * margin
+        
+        fig.add_trace(go.Scatter(
+            x=[sx, ex], y=[sy, ey],
+            mode='lines', line=dict(color=COL_FLOW, width=width),
+            opacity=0.7, hoverinfo='skip', showlegend=False
+        ))
+        
+        # Arrowhead
+        head = 0.03
+        px, py = -udy, udx
+        tip_x, tip_y = ex, ey
+        l_x = tip_x - udx * head - px * head * 0.6
+        l_y = tip_y - udy * head - py * head * 0.6
+        r_x = tip_x - udx * head + px * head * 0.6
+        r_y = tip_y - udy * head + py * head * 0.6
+        
+        fig.add_trace(go.Scatter(
+            x=[l_x, tip_x, r_x], y=[l_y, tip_y, r_y],
+            mode='lines', fill='toself', fillcolor=COL_FLOW,
+            line=dict(color=COL_FLOW, width=0.5),
+            opacity=0.7, hoverinfo='skip', showlegend=False
+        ))
+    
+    # Draw source nodes
+    source_nodes = [s['source'] for s in sources if s['source'] in pos]
+    if source_nodes:
+        sizes = [20 + min(s['total_refs_sent'] / 3, 15) for s in sources if s['source'] in pos]
+        hover = [f"<b>{s['source']}</b><br>Refs sent: {s['total_refs_sent']}<br>To targets: {s['refs_to_targets']} ({s['target_rate']:.0%})<br>eCPR: ${s['effective_cpr']:,.0f}" for s in sources if s['source'] in pos]
+        
+        fig.add_trace(go.Scatter(
+            x=[pos[n][0] for n in source_nodes],
+            y=[pos[n][1] for n in source_nodes],
+            mode='markers',
+            marker=dict(size=sizes, color=COL_SOURCE, line=dict(width=2, color='white')),
+            hovertext=hover, hoverinfo='text',
+            name='📡 Sources (scale media)', showlegend=True
+        ))
+    
+    # Draw target nodes
+    target_nodes = [t for t in targets if t in pos]
+    if target_nodes:
+        fig.add_trace(go.Scatter(
+            x=[pos[n][0] for n in target_nodes],
+            y=[pos[n][1] for n in target_nodes],
+            mode='markers+text',
+            marker=dict(size=28, color=COL_TARGET, line=dict(width=2, color='white')),
+            text=[t[:10] for t in target_nodes],
+            textposition='top center',
+            textfont=dict(size=9, color='#1f2937'),
+            hovertext=[f"<b>{t}</b><br>🎯 Campaign Target" for t in target_nodes],
+            hoverinfo='text',
+            name='🎯 Targets (need leads)', showlegend=True
+        ))
+    
+    fig.update_layout(
+        height=420,
+        margin=dict(l=5, r=5, t=5, b=5),
+        paper_bgcolor='white', plot_bgcolor='white',
+        xaxis=dict(showgrid=False, zeroline=False, showticklabels=False, scaleanchor='y'),
+        yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+        legend=dict(orientation='h', yanchor='bottom', y=1.01, xanchor='center', x=0.5, font=dict(size=10)),
+        hovermode='closest'
+    )
+    
+    return fig
+
+
+def render_spend_waterfall(simulation):
+    """Render waterfall showing spend -> leads -> targets vs leakage."""
+    summary = simulation['summary']
+    
+    labels = ['Budget', 'Total Leads', 'To Targets', 'Leaked']
+    values = [
+        summary['total_spent'],
+        summary['total_leads_generated'],
+        summary['leads_to_targets'],
+        -summary['leads_leaked']
+    ]
+    
+    # Normalize for display (leads vs dollars)
+    # Show as a flow: Budget -> Leads Generated -> Split (Targets vs Leakage)
+    fig = go.Figure()
+    
+    # Sankey-style visualization
+    fig.add_trace(go.Sankey(
+        node=dict(
+            pad=15, thickness=20,
+            line=dict(color='white', width=0.5),
+            label=[
+                f"Budget<br>${summary['total_spent']:,.0f}",
+                f"Leads Generated<br>{summary['total_leads_generated']:,.0f}",
+                f"To Targets<br>{summary['leads_to_targets']:,.0f}",
+                f"Leaked<br>{summary['leads_leaked']:,.0f}"
+            ],
+            color=['#6366f1', '#3b82f6', '#16a34a', '#f59e0b']
+        ),
+        link=dict(
+            source=[0, 1, 1],
+            target=[1, 2, 3],
+            value=[
+                summary['total_leads_generated'],
+                summary['leads_to_targets'],
+                summary['leads_leaked']
+            ],
+            color=['rgba(99, 102, 241, 0.4)', 'rgba(22, 163, 74, 0.4)', 'rgba(249, 115, 22, 0.4)']
+        )
+    ))
+    
+    fig.update_layout(
+        height=250,
+        margin=dict(l=10, r=10, t=10, b=10),
+        font=dict(size=11)
+    )
+    
+    return fig
+
+
+def render_campaign_planner(targets, shortfall_df, leverage_df, G, pos):
+    """Render the full campaign planner with network visualization and traceability."""
+    
     st.markdown("## 🚀 Campaign Planner")
-    targets = st.session_state.campaign_targets
     
     if not targets:
-        st.info("Add builders to your cart using the ➕ button, then generate an optimized media plan.")
-    else:
-        st.markdown(f"**{len(targets)} targets:** " + ", ".join([t[:15] for t in targets[:5]]) + ("..." if len(targets) > 5 else ""))
-        
-        col1, col2, col3 = st.columns([2, 2, 1])
-        with col1:
-            use_cap = st.checkbox("Set budget cap")
-        with col2:
-            budget_cap = st.number_input("Max budget ($)", 10000, 1000000, 100000, step=10000, disabled=not use_cap)
-        with col3:
-            generate = st.button("⚡ Generate", type="primary")
-        
-        if generate:
-            with st.spinner("Optimizing..."):
-                plan_df = generate_targeted_media_plan(list(targets), shortfall_df, leverage_df, budget_cap if use_cap else None)
-                st.session_state.campaign_plan = plan_df
-        
-        if 'campaign_plan' in st.session_state and not st.session_state.campaign_plan.empty:
-            plan = st.session_state.campaign_plan
-            summary = calculate_campaign_summary(plan)
-            
-            m1, m2, m3, m4 = st.columns(4)
-            m1.metric("Total Budget", fmt_currency(summary['total_budget']))
-            m2.metric("Projected Leads", f"{summary['total_leads']:,.0f}")
-            m3.metric("Blended CPR", fmt_currency(summary['avg_cpr']))
-            m4.metric("Sources", summary['sources_used'])
-            
-            avail = plan.columns.tolist()
-            cols = [c for c in ['Target_Builder', 'Status', 'Gap_Leads', 'Recommended_Source', 'Budget_Allocation', 'Projected_Leads', 'Effective_CPR'] if c in avail]
-            
-            fmt = {}
-            if 'Gap_Leads' in cols: fmt['Gap_Leads'] = '{:,.0f}'
-            if 'Budget_Allocation' in cols: fmt['Budget_Allocation'] = '${:,.0f}'
-            if 'Projected_Leads' in cols: fmt['Projected_Leads'] = '{:,.0f}'
-            if 'Effective_CPR' in cols: fmt['Effective_CPR'] = '${:,.0f}'
-            
-            st.dataframe(plan[cols].style.format(fmt), hide_index=True, width='stretch', height=300)
-            
-            col1, col2 = st.columns(2)
-            col1.download_button("📥 Download CSV", plan.to_csv(index=False), "campaign_plan.csv", "text/csv")
-            col2.download_button("📥 Download Excel", export_to_excel(plan, "plan.xlsx"), "campaign_plan.xlsx")
+        st.info("👆 Add builders to your cart using the ➕ button to plan a campaign.")
+        return
     
-    st.caption(f"Network Intelligence • {len(all_builders)} builders • {G.number_of_edges()} connections")
+    # Analyze campaign network
+    campaign_analysis = analyze_campaign_network(targets, leverage_df, shortfall_df)
+    sources = campaign_analysis['sources']
+    flows = campaign_analysis['flows']
+    stats = campaign_analysis['stats']
+    
+    if not sources:
+        st.warning("No historical referral paths found to these targets. Consider establishing new partnerships.")
+        return
+    
+    # Header metrics
+    st.markdown(f"### Campaign: {len(targets)} Target Builders")
+    
+    c1, c2, c3, c4 = st.columns(4)
+    
+    total_shortfall = sum(
+        shortfall_df[shortfall_df['BuilderRegionKey'] == t]['Projected_Shortfall'].iloc[0]
+        for t in targets
+        if not shortfall_df[shortfall_df['BuilderRegionKey'] == t].empty
+        and not pd.isna(shortfall_df[shortfall_df['BuilderRegionKey'] == t]['Projected_Shortfall'].iloc[0])
+    )
+    
+    c1.metric("Lead Shortfall", f"{int(total_shortfall):,}", help="Total leads needed across targets")
+    c2.metric("Available Sources", stats['num_sources'], help="Builders who historically send to your targets")
+    c3.metric("Target Capture Rate", f"{stats['target_capture_rate']:.0%}", help="% of source referrals that go to your targets")
+    c4.metric("Leakage Risk", f"{1 - stats['target_capture_rate']:.0%}", help="% that goes to non-targets")
+    
+    st.markdown("---")
+    
+    # Two columns: Network + Controls
+    col1, col2 = st.columns([3, 2])
+    
+    with col1:
+        st.markdown("#### 🗺️ Leverage Network")
+        st.caption("Green = Sources to scale | Red = Your targets | Blue arrows = Referral flows")
+        
+        fig = render_campaign_network(targets, sources, flows, G, pos)
+        st.plotly_chart(fig, width='stretch')
+    
+    with col2:
+        st.markdown("#### ⚙️ Budget Simulation")
+        
+        budget = st.number_input("Campaign Budget ($)", min_value=5000, max_value=1000000, value=50000, step=5000)
+        
+        if st.button("🔄 Simulate Spend", type="primary"):
+            simulation = simulate_campaign_spend(targets, budget, sources, shortfall_df)
+            st.session_state.campaign_simulation = simulation
+        
+        if 'campaign_simulation' in st.session_state:
+            sim = st.session_state.campaign_simulation
+            summary = sim['summary']
+            
+            st.markdown("##### Results")
+            
+            # Key outcomes
+            r1, r2 = st.columns(2)
+            r1.metric("Leads to Targets", f"{summary['leads_to_targets']:,.0f}")
+            r2.metric("Effective CPR", f"${summary['effective_cpr']:,.0f}")
+            
+            r3, r4 = st.columns(2)
+            r3.metric("Shortfall Covered", f"{summary['coverage_pct']:.0%}")
+            r4.metric("Leakage", f"{summary['leakage_pct']:.0%}")
+            
+            # Progress bar for coverage
+            st.markdown("##### Gap Coverage")
+            st.progress(min(summary['coverage_pct'], 1.0))
+            st.caption(f"{summary['shortfall_covered']:,.0f} of {summary['target_shortfall']:,.0f} lead gap covered")
+    
+    st.markdown("---")
+    
+    # Detailed tables
+    tab1, tab2, tab3 = st.tabs(["📡 Source Analysis", "💰 Spend Allocation", "🔍 Leakage"])
+    
+    with tab1:
+        st.markdown("#### Source Efficiency Ranking")
+        st.caption("Sources ranked by effective CPR (cost to get a lead to YOUR targets)")
+        
+        source_df = pd.DataFrame(sources)
+        if not source_df.empty:
+            source_df = source_df.rename(columns={
+                'source': 'Source Builder',
+                'total_refs_sent': 'Total Refs',
+                'refs_to_targets': 'To Targets',
+                'refs_to_others': 'To Others',
+                'target_rate': 'Target Rate',
+                'leakage_rate': 'Leakage',
+                'base_cpr': 'Base CPR',
+                'effective_cpr': 'Effective CPR'
+            })
+            
+            st.dataframe(
+                source_df.style.format({
+                    'Target Rate': '{:.1%}',
+                    'Leakage': '{:.1%}',
+                    'Base CPR': '${:,.0f}',
+                    'Effective CPR': '${:,.0f}'
+                }).background_gradient(subset=['Target Rate'], cmap='Greens')
+                .background_gradient(subset=['Effective CPR'], cmap='Reds_r'),
+                hide_index=True, width='stretch', height=300
+            )
+    
+    with tab2:
+        if 'campaign_simulation' in st.session_state:
+            sim = st.session_state.campaign_simulation
+            alloc_df = pd.DataFrame(sim['allocations'])
+            
+            if not alloc_df.empty:
+                st.markdown("#### Budget Allocation by Source")
+                st.caption("How the budget flows through sources to generate leads")
+                
+                # Waterfall
+                fig = render_spend_waterfall(sim)
+                st.plotly_chart(fig, width='stretch')
+                
+                st.markdown("##### Detailed Allocation")
+                alloc_df = alloc_df.rename(columns={
+                    'source': 'Source',
+                    'budget': 'Budget',
+                    'total_leads': 'Total Leads',
+                    'leads_to_targets': 'To Targets',
+                    'leads_leaked': 'Leaked',
+                    'target_rate': 'Target Rate',
+                    'effective_cpr': 'Eff. CPR',
+                    'efficiency': 'Leads/$1K'
+                })
+                
+                display_cols = ['Source', 'Budget', 'Total Leads', 'To Targets', 'Leaked', 'Target Rate', 'Eff. CPR', 'Leads/$1K']
+                display_cols = [c for c in display_cols if c in alloc_df.columns]
+                
+                st.dataframe(
+                    alloc_df[display_cols].style.format({
+                        'Budget': '${:,.0f}',
+                        'Total Leads': '{:,.0f}',
+                        'To Targets': '{:,.0f}',
+                        'Leaked': '{:,.0f}',
+                        'Target Rate': '{:.0%}',
+                        'Eff. CPR': '${:,.0f}',
+                        'Leads/$1K': '{:.1f}'
+                    }),
+                    hide_index=True, width='stretch'
+                )
+            else:
+                st.info("Run simulation to see allocation details")
+        else:
+            st.info("Run budget simulation to see allocation details")
+    
+    with tab3:
+        st.markdown("#### Leakage Analysis")
+        st.caption("Where else do your sources send leads? (Referrals not going to your targets)")
+        
+        leakage = campaign_analysis['leakage']
+        if leakage:
+            leak_df = pd.DataFrame(leakage)
+            leak_df = leak_df.rename(columns={'destination': 'Destination (non-target)', 'refs': 'Referrals'})
+            
+            # Bar chart
+            fig = go.Figure(go.Bar(
+                y=leak_df['Destination (non-target)'].head(10),
+                x=leak_df['Referrals'].head(10),
+                orientation='h',
+                marker_color='#f59e0b'
+            ))
+            fig.update_layout(
+                height=300, margin=dict(l=10, r=10, t=10, b=10),
+                xaxis_title='Referrals (leakage)',
+                yaxis=dict(autorange='reversed'),
+                plot_bgcolor='white'
+            )
+            st.plotly_chart(fig, width='stretch')
+            
+            st.caption("💡 **Tip**: Consider adding high-leakage destinations to your target list to capture more value from the same spend.")
+        else:
+            st.success("No significant leakage detected!")
+    
+    st.markdown("---")
+    
+    # Export
+    st.markdown("#### 📥 Export Campaign Plan")
+    
+    if 'campaign_simulation' in st.session_state:
+        sim = st.session_state.campaign_simulation
+        
+        # Build export dataframe
+        export_data = []
+        for alloc in sim['allocations']:
+            export_data.append({
+                'Source': alloc['source'],
+                'Budget_Allocation': alloc['budget'],
+                'Base_CPR': alloc['base_cpr'],
+                'Effective_CPR': alloc['effective_cpr'],
+                'Total_Leads_Generated': alloc['total_leads'],
+                'Leads_to_Targets': alloc['leads_to_targets'],
+                'Leads_Leaked': alloc['leads_leaked'],
+                'Target_Rate': alloc['target_rate']
+            })
+        
+        export_df = pd.DataFrame(export_data)
+        
+        # Add summary row
+        summary_row = {
+            'Source': 'TOTAL',
+            'Budget_Allocation': sim['summary']['total_spent'],
+            'Base_CPR': '',
+            'Effective_CPR': sim['summary']['effective_cpr'],
+            'Total_Leads_Generated': sim['summary']['total_leads_generated'],
+            'Leads_to_Targets': sim['summary']['leads_to_targets'],
+            'Leads_Leaked': sim['summary']['leads_leaked'],
+            'Target_Rate': 1 - sim['summary']['leakage_pct']
+        }
+        export_df = pd.concat([export_df, pd.DataFrame([summary_row])], ignore_index=True)
+        
+        col1, col2 = st.columns(2)
+        col1.download_button("📥 Download CSV", export_df.to_csv(index=False), "campaign_plan.csv", "text/csv")
+        col2.download_button("📥 Download Excel", export_to_excel(export_df, "plan.xlsx"), "campaign_plan.xlsx")
+    else:
+        st.caption("Run budget simulation to enable export")
 
 if __name__ == "__main__":
     main()

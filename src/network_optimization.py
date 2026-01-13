@@ -432,7 +432,6 @@ def calculate_campaign_summary(plan_df: pd.DataFrame) -> Dict:
     if plan_df.empty:
         return {'total_budget': 0, 'total_leads': 0, 'avg_cpr': 0, 'targets_covered': 0, 'sources_used': 0}
     
-    # Filter to actual allocations
     active = plan_df[plan_df['Budget_Allocation'] > 0]
     
     total_budget = active['Budget_Allocation'].sum()
@@ -448,3 +447,182 @@ def calculate_campaign_summary(plan_df: pd.DataFrame) -> Dict:
         'targets_covered': targets_covered,
         'sources_used': sources_used
     }
+
+
+def analyze_campaign_network(
+    target_builders: List[str],
+    leverage_df: pd.DataFrame,
+    shortfall_df: pd.DataFrame
+) -> Dict:
+    """
+    Analyze the network structure for a campaign.
+    Returns sources, flows, and leakage analysis.
+    """
+    if not target_builders or leverage_df.empty:
+        return {'sources': [], 'flows': [], 'leakage': [], 'stats': {}}
+    
+    target_set = set(target_builders)
+    
+    # Find all sources that send to our targets
+    target_flows = leverage_df[leverage_df['Dest_BuilderRegionKey'].isin(target_set)].copy()
+    
+    if target_flows.empty:
+        return {'sources': [], 'flows': [], 'leakage': [], 'stats': {}}
+    
+    # Unique sources
+    sources = target_flows['MediaPayer_BuilderRegionKey'].unique().tolist()
+    
+    # For each source, analyze where ALL their referrals go (not just to targets)
+    all_source_flows = leverage_df[leverage_df['MediaPayer_BuilderRegionKey'].isin(sources)].copy()
+    
+    source_analysis = []
+    for source in sources:
+        source_flows = all_source_flows[all_source_flows['MediaPayer_BuilderRegionKey'] == source]
+        
+        total_refs = source_flows['Referrals_to_Target'].sum()
+        to_targets = source_flows[source_flows['Dest_BuilderRegionKey'].isin(target_set)]['Referrals_to_Target'].sum()
+        to_others = total_refs - to_targets
+        
+        target_rate = to_targets / total_refs if total_refs > 0 else 0
+        leakage_rate = to_others / total_refs if total_refs > 0 else 0
+        
+        # Get CPR for this source
+        cpr = source_flows['CPR_base'].iloc[0] if not source_flows.empty and 'CPR_base' in source_flows.columns else 0
+        
+        source_analysis.append({
+            'source': source,
+            'total_refs_sent': int(total_refs),
+            'refs_to_targets': int(to_targets),
+            'refs_to_others': int(to_others),
+            'target_rate': target_rate,
+            'leakage_rate': leakage_rate,
+            'base_cpr': cpr,
+            'effective_cpr': cpr / target_rate if target_rate > 0 else float('inf')
+        })
+    
+    # Sort by effective CPR
+    source_analysis = sorted(source_analysis, key=lambda x: x['effective_cpr'])
+    
+    # Build flow list for visualization
+    flows = []
+    for _, row in target_flows.iterrows():
+        flows.append({
+            'source': row['MediaPayer_BuilderRegionKey'],
+            'target': row['Dest_BuilderRegionKey'],
+            'refs': row['Referrals_to_Target'],
+            'transfer_rate': row['Transfer_Rate'],
+            'ecpr': row['eCPR']
+        })
+    
+    # Leakage destinations (where else do sources send leads)
+    leakage_flows = all_source_flows[~all_source_flows['Dest_BuilderRegionKey'].isin(target_set)]
+    leakage_summary = leakage_flows.groupby('Dest_BuilderRegionKey')['Referrals_to_Target'].sum().sort_values(ascending=False).head(10)
+    leakage = [{'destination': k, 'refs': int(v)} for k, v in leakage_summary.items()]
+    
+    # Overall stats
+    total_source_refs = sum(s['total_refs_sent'] for s in source_analysis)
+    total_to_targets = sum(s['refs_to_targets'] for s in source_analysis)
+    total_leakage = sum(s['refs_to_others'] for s in source_analysis)
+    
+    stats = {
+        'num_sources': len(sources),
+        'num_targets': len(target_builders),
+        'total_source_output': total_source_refs,
+        'to_target_group': total_to_targets,
+        'leakage': total_leakage,
+        'target_capture_rate': total_to_targets / total_source_refs if total_source_refs > 0 else 0
+    }
+    
+    return {
+        'sources': source_analysis,
+        'flows': flows,
+        'leakage': leakage,
+        'stats': stats
+    }
+
+
+def simulate_campaign_spend(
+    target_builders: List[str],
+    total_budget: float,
+    source_analysis: List[Dict],
+    shortfall_df: pd.DataFrame
+) -> Dict:
+    """
+    Simulate spending the budget across sources and trace impact.
+    Allocates to most efficient sources first.
+    """
+    if not target_builders or not source_analysis or total_budget <= 0:
+        return {'allocations': [], 'summary': {}}
+    
+    # Get shortfalls for targets
+    target_shortfalls = {}
+    for t in target_builders:
+        row = shortfall_df[shortfall_df['BuilderRegionKey'] == t]
+        if not row.empty:
+            sf = row['Projected_Shortfall'].iloc[0]
+            target_shortfalls[t] = sf if not pd.isna(sf) and sf > 0 else 0
+        else:
+            target_shortfalls[t] = 0
+    
+    total_shortfall = sum(target_shortfalls.values())
+    
+    # Allocate budget to sources (sorted by effective CPR - most efficient first)
+    remaining_budget = total_budget
+    allocations = []
+    
+    for source in source_analysis:
+        if remaining_budget <= 0:
+            break
+        
+        if source['effective_cpr'] == float('inf') or source['target_rate'] == 0:
+            continue
+        
+        # How much can this source contribute?
+        # Estimate: if we spend $X, we get X/base_cpr total leads, of which target_rate go to our targets
+        base_cpr = source['base_cpr'] if source['base_cpr'] > 0 else 100  # default
+        
+        # Allocate proportionally to remaining budget
+        allocation = min(remaining_budget, remaining_budget * 0.4)  # Max 40% to single source
+        
+        total_leads_generated = allocation / base_cpr if base_cpr > 0 else 0
+        leads_to_targets = total_leads_generated * source['target_rate']
+        leads_leaked = total_leads_generated * source['leakage_rate']
+        
+        allocations.append({
+            'source': source['source'],
+            'budget': allocation,
+            'base_cpr': base_cpr,
+            'effective_cpr': source['effective_cpr'],
+            'total_leads': total_leads_generated,
+            'leads_to_targets': leads_to_targets,
+            'leads_leaked': leads_leaked,
+            'target_rate': source['target_rate'],
+            'efficiency': leads_to_targets / allocation * 1000 if allocation > 0 else 0  # leads per $1000
+        })
+        
+        remaining_budget -= allocation
+    
+    # Summary
+    total_spent = sum(a['budget'] for a in allocations)
+    total_leads_gen = sum(a['total_leads'] for a in allocations)
+    total_to_targets = sum(a['leads_to_targets'] for a in allocations)
+    total_leaked = sum(a['leads_leaked'] for a in allocations)
+    
+    shortfall_covered = min(total_to_targets, total_shortfall)
+    coverage_pct = shortfall_covered / total_shortfall if total_shortfall > 0 else 1.0
+    
+    summary = {
+        'total_budget': total_budget,
+        'total_spent': total_spent,
+        'unallocated': remaining_budget,
+        'total_leads_generated': total_leads_gen,
+        'leads_to_targets': total_to_targets,
+        'leads_leaked': total_leaked,
+        'target_shortfall': total_shortfall,
+        'shortfall_covered': shortfall_covered,
+        'coverage_pct': coverage_pct,
+        'effective_cpr': total_spent / total_to_targets if total_to_targets > 0 else 0,
+        'leakage_pct': total_leaked / total_leads_gen if total_leads_gen > 0 else 0
+    }
+    
+    return {'allocations': allocations, 'summary': summary}
