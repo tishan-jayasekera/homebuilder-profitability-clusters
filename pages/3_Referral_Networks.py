@@ -375,10 +375,16 @@ def main():
         if sel_builder:
             row = shortfall_data[shortfall_data['BuilderRegionKey'] == sel_builder].iloc[0]
             
+            # Safe conversion to int, handling NaNs
+            target_val = int(row['LeadTarget']) if pd.notna(row['LeadTarget']) else 0
+            proj_val = int(row['Projected_Total']) if pd.notna(row['Projected_Total']) else 0
+            gap_val = int(row['Net_Gap']) if pd.notna(row['Net_Gap']) else 0
+            risk_val = int(row['Risk_Score']) if pd.notna(row['Risk_Score']) else 0
+            
             c1, c2, c3 = st.columns(3)
-            c1.metric("Lead Target", int(row['LeadTarget']))
-            c2.metric("Projected Total", int(row['Projected_Total']), delta=int(row['Net_Gap']))
-            c3.metric("Risk Score", int(row['Risk_Score']))
+            c1.metric("Lead Target", target_val)
+            c2.metric("Projected Total", proj_val, delta=gap_val)
+            c3.metric("Risk Score", risk_val)
             
             st.divider()
             
