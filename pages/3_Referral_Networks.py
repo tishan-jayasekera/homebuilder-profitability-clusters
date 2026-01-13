@@ -37,10 +37,15 @@ STYLES = """
     .card {
         background-color: white;
         border: 1px solid #e5e7eb;
-        border-radius: 8px;
+        border-radius: 12px;
         padding: 1.5rem;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.1);
-        margin-bottom: 1rem;
+        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+        margin-bottom: 1.5rem;
+        transition: transform 0.2s;
+    }
+    .card:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
     }
     
     /* Metrics */
@@ -54,16 +59,17 @@ STYLES = """
         letter-spacing: 0.05em;
         color: #6b7280;
         font-weight: 600;
+        margin-bottom: 0.25rem;
     }
     .metric-value {
         font-size: 1.5rem;
         font-weight: 700;
         color: #111827;
-        margin-top: 0.25rem;
+        line-height: 1;
     }
     .metric-sub {
         font-size: 0.875rem;
-        color: #9ca3af;
+        color: #6b7280;
         margin-top: 0.25rem;
     }
 
@@ -80,46 +86,87 @@ STYLES = """
     .badge-red { background-color: #fef2f2; color: #991b1b; border: 1px solid #fecaca; }
     .badge-yellow { background-color: #fffbeb; color: #92400e; border: 1px solid #fde68a; }
     .badge-green { background-color: #f0fdf4; color: #166534; border: 1px solid #bbf7d0; }
+    .badge-blue { background-color: #eff6ff; color: #1e40af; border: 1px solid #dbeafe; }
     
-    /* Eco Styles (Ported) */
-    .eco-pill-row { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
-    .eco-pill { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; padding: 3px 10px; border-radius: 999px; background: #F3F4F6; color: #4B5563; }
-    .eco-pill-dot { width: 6px; height: 6px; border-radius: 999px; background: currentColor; }
-    .eco-pill--primary { background: #DBEAFE; color: #1D4ED8; }
-    .eco-pill--positive { background: #DCFCE7; color: #15803D; }
-    .eco-pill--warning { background: #FEF3C7; color: #92400E; }
-    .eco-pill--negative { background: #FEE2E2; color: #B91C1C; }
+    /* Eco Styles */
+    .eco-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 1rem;
+        border-bottom: 1px solid #f3f4f6;
+        padding-bottom: 0.75rem;
+    }
+    .eco-title {
+        font-size: 1.25rem;
+        font-weight: 700;
+        color: #111827;
+        margin: 0;
+    }
     
-    .eco-metric-row { display: flex; flex-wrap: wrap; gap: 16px; font-size: 13px; margin-bottom: 8px; padding-bottom: 8px; border-bottom: 1px solid #f3f4f6; }
-    .eco-metric { font-weight: 500; color: #6B7280; }
-    .eco-metric span { font-weight: 600; color: #111827; margin-left: 4px; }
+    .eco-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: 1rem;
+        margin-bottom: 1rem;
+    }
     
-    .eco-bullets { font-size: 13px; line-height: 1.5; color: #374151; }
-    .eco-bullets ul { margin: 4px 0; padding-left: 18px; }
-    .eco-bullets li { margin-bottom: 4px; }
-    .eco-lever-heading { font-weight: 600; margin-top: 8px; color: #111827; }
-    .eco-downstream { color: #6B7280; font-size: 12px; display: block; margin-top: 2px; }
+    .eco-list {
+        list-style: none;
+        padding: 0;
+        margin: 0;
+    }
+    .eco-list li {
+        padding: 0.75rem 0;
+        border-bottom: 1px solid #f3f4f6;
+        font-size: 0.9rem;
+        color: #374151;
+    }
+    .eco-list li:last-child {
+        border-bottom: none;
+    }
+    .eco-list b {
+        color: #111827;
+        font-weight: 600;
+    }
 
     /* Section Headers */
     .step-header {
-        font-size: 1.1rem;
+        font-size: 1.25rem;
         font-weight: 600;
-        color: #374151;
-        margin-bottom: 1rem;
+        color: #111827;
+        margin: 2rem 0 1rem 0;
         display: flex;
         align-items: center;
-        gap: 0.5rem;
+        gap: 0.75rem;
     }
     .step-number {
-        background: #e5e7eb;
-        color: #374151;
-        width: 24px;
-        height: 24px;
+        background: #1f2937;
+        color: white;
+        width: 28px;
+        height: 28px;
         border-radius: 50%;
         display: flex;
         align-items: center;
         justify-content: center;
-        font-size: 0.8rem;
+        font-size: 0.875rem;
+        font-weight: 600;
+    }
+    
+    /* Custom Scrollbar for tables if needed */
+    ::-webkit-scrollbar {
+        width: 8px;
+        height: 8px;
+    }
+    ::-webkit-scrollbar-track {
+        background: #f1f1f1; 
+    }
+    ::-webkit-scrollbar-thumb {
+        background: #888; 
+        border-radius: 4px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+        background: #555; 
     }
 </style>
 """
@@ -235,6 +282,7 @@ def compute_focus_guidance(builders, edges_sub, focus_builder):
     # Direct paths
     direct = edges_sub[edges_sub["Dest_builder"] == focus_builder].copy()
     if not direct.empty:
+        # Merge metrics from origin builders
         direct = direct.merge(
             builders[["BuilderRegionKey", "ROAS", "MediaCost", "Profit"]],
             left_on="Origin_builder",
@@ -249,7 +297,8 @@ def compute_focus_guidance(builders, edges_sub, focus_builder):
         m = direct["Eff_MPR"].replace([np.inf, -np.inf], np.nan)
         if m.notna().any():
             mx, mn = m.max(), m.min()
-            direct["Leverage"] = 100 * (1 - (m - mn) / (mx - mn if mx != mn else 1))
+            denom = mx - mn if mx != mn else 1
+            direct["Leverage"] = 100 * (1 - (m - mn) / denom)
         else:
             direct["Leverage"] = 0
 
@@ -315,7 +364,7 @@ def compute_focus_guidance(builders, edges_sub, focus_builder):
         second = None
         second_sources = set()
 
-    # Best path
+    # Best path selection
     cands = [("Self", eff_self, focus_builder)]
 
     if len(direct) > 0:
@@ -373,6 +422,7 @@ def render_network_map(G, pos, builder_master_df, selected_builder=None, connect
     fig = go.Figure()
     
     # --- PALETTE & STYLING ---
+    # Professional, distinct palette
     CLUSTER_COLORS = [
         '#6366f1', '#ec4899', '#10b981', '#f59e0b', '#3b82f6', 
         '#8b5cf6', '#ef4444', '#14b8a6', '#f97316', '#06b6d4',
@@ -421,6 +471,7 @@ def render_network_map(G, pos, builder_master_df, selected_builder=None, connect
         
         is_highlight = False
         color = ROLE_COLORS['dim']
+        width = 0.5
         
         if selected_builder:
             if u == selected_builder or v == selected_builder:
@@ -428,24 +479,25 @@ def render_network_map(G, pos, builder_master_df, selected_builder=None, connect
                 neighbor = v if u == selected_builder else u
                 role = role_map.get(neighbor, 'dim')
                 color = ROLE_COLORS.get(role, ROLE_COLORS['dim'])
+                width = 2.0
         
         if is_highlight:
             fig.add_trace(go.Scatter(
                 x=[x0, x1, None], y=[y0, y1, None],
                 mode='lines',
-                line=dict(color=color, width=1.5),
-                opacity=0.8, hoverinfo='skip', showlegend=False
+                line=dict(color=color, width=width),
+                opacity=0.9, hoverinfo='skip', showlegend=False
             ))
         else:
             edge_x_dim.extend([x0, x1, None])
             edge_y_dim.extend([y0, y1, None])
 
-    # Background edges
+    # Background edges (one trace for performance)
     fig.add_trace(go.Scatter(
         x=edge_x_dim, y=edge_y_dim,
         mode='lines',
         line=dict(color='#e5e7eb', width=0.5),
-        opacity=0.3 if selected_builder else 0.4,
+        opacity=0.3 if selected_builder else 0.5,
         hoverinfo='skip', showlegend=False
     ))
 
@@ -465,13 +517,15 @@ def render_network_map(G, pos, builder_master_df, selected_builder=None, connect
         node_y.append(y)
         
         deg = degrees.get(node, 0)
-        base_size = 8 + (deg / max_deg) * 15
+        # Sizing based on degree
+        base_size = 10 + (deg / max_deg) * 20
         
         if selected_builder:
             if node in highlight_nodes:
                 role = role_map.get(node, 'dim')
                 c = ROLE_COLORS.get(role, ROLE_COLORS['dim'])
                 s = base_size + 5 if node == selected_builder else base_size + 2
+                op = 1.0
                 
                 role_txt = {
                     'selected': 'SELECTED',
@@ -482,18 +536,21 @@ def render_network_map(G, pos, builder_master_df, selected_builder=None, connect
                 txt = f"<b>{node}</b><br>{role_txt}<br>Volume: {int(deg)}"
             else:
                 c = ROLE_COLORS['dim']
-                s = base_size * 0.8
+                s = base_size * 0.7
+                op = 0.3
                 txt = f"{node}"
         else:
             cid = cluster_map.get(node, 0)
             c = CLUSTER_COLORS[(cid - 1) % len(CLUSTER_COLORS)] if cid > 0 else '#9ca3af'
             s = base_size
+            op = 0.9
             txt = f"<b>{node}</b><br>Cluster {cid}<br>Volume: {int(deg)}"
 
         node_colors.append(c)
         node_sizes.append(s)
         node_texts.append(txt)
 
+    # Node trace
     fig.add_trace(go.Scatter(
         x=node_x, y=node_y,
         mode='markers',
@@ -501,20 +558,23 @@ def render_network_map(G, pos, builder_master_df, selected_builder=None, connect
             size=node_sizes,
             color=node_colors,
             line=dict(width=1, color='white'),
-            opacity=1.0 if not selected_builder else [1.0 if n in highlight_nodes else 0.2 for n in G.nodes()]
+            opacity=1.0 if not selected_builder else [1.0 if n in highlight_nodes else 0.3 for n in G.nodes()]
         ),
         text=node_texts,
         hoverinfo='text',
         showlegend=False
     ))
     
+    # Clean, modern layout
     fig.update_layout(
         margin=dict(l=0, r=0, t=0, b=0),
-        height=500,
+        height=550,
+        paper_bgcolor='white',
         plot_bgcolor='white',
         xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
         yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
-        hovermode='closest'
+        hovermode='closest',
+        dragmode='pan'
     )
     
     return fig
@@ -540,11 +600,11 @@ def render_builder_panel(builder, connections, shortfall_df, leverage_df, builde
         shortfall = row['Projected_Shortfall'].iloc[0]
     
     if risk_score > 50:
-        badge = f'<span class="badge badge-red">Risk: {int(risk_score)}</span>'
-        status_text = f"CRITICAL GAP: {int(shortfall):,} leads"
+        badge = f'<span class="badge badge-red">Critical Risk: {int(risk_score)}</span>'
+        status_text = f"Shortfall: <b>{int(shortfall):,} leads</b>"
     elif risk_score > 20:
-        badge = f'<span class="badge badge-yellow">Risk: {int(risk_score)}</span>'
-        status_text = f"At Risk: {int(shortfall):,} gap"
+        badge = f'<span class="badge badge-yellow">At Risk: {int(risk_score)}</span>'
+        status_text = f"Shortfall: <b>{int(shortfall):,} leads</b>"
     else:
         badge = f'<span class="badge badge-green">Safe</span>'
         status_text = "On Track"
@@ -557,7 +617,7 @@ def render_builder_panel(builder, connections, shortfall_df, leverage_df, builde
         lbl, eff, src = best_choice
         eff_txt = "n/a" if pd.isna(eff) else f"~${eff:,.0f}/eff-ref"
         path_text = f"Self direct" if lbl == "Self" else f"{lbl} via <b>{src}</b>"
-        bullets += f"<li><b>Recommended:</b> {path_text} <span style='color:#6B7280'>({eff_txt})</span></li>"
+        bullets += f"<li><b>Strategy:</b> {path_text} <span style='color:#6B7280; font-size:0.85em'>({eff_txt})</span></li>"
 
     # Self media bullet
     if not pd.isna(raw_self):
@@ -567,7 +627,7 @@ def render_builder_panel(builder, connections, shortfall_df, leverage_df, builde
 
     # Primary Levers (Top 3 Direct)
     if direct is not None and not direct.empty:
-        bullets += "<li class='eco-lever-heading'>Top Media Levers (Direct)</li><ul>"
+        bullets += "<li class='eco-lever-heading'>Top Leverage Partners (Direct)</li><ul>"
         for _, r in direct.head(3).iterrows():
             src = r["Origin_builder"]
             eff = r["Eff_MPR"]
@@ -584,26 +644,28 @@ def render_builder_panel(builder, connections, shortfall_df, leverage_df, builde
 
     card_html = f"""
     <div class="card">
-        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-            <h3 style="margin:0; font-size:1.2rem; color:#111827;">{builder}</h3>
+        <div class="eco-header">
+            <h3 class="eco-title">{builder}</h3>
             {badge}
         </div>
-        <div class="eco-pill-row">
-            <span class="eco-pill eco-pill--primary"><span class="eco-pill-dot"></span>Cluster {cid}</span>
-            <span class="eco-pill"><span class="eco-pill-dot"></span>{status_text}</span>
+        <div class="eco-grid">
+            <div class="eco-pill-row">
+                <span class="eco-pill eco-pill--primary"><span class="eco-pill-dot"></span>Cluster {cid}</span>
+            </div>
+            <div>{status_text}</div>
         </div>
         <div class="eco-metric-row">
             <div class="eco-metric">Profit: <span>${profit:,.0f}</span></div>
             <div class="eco-metric">ROAS: <span>{roas:.2f}x</span></div>
         </div>
         <div class="eco-bullets">
-            <ul>{bullets}</ul>
+            <ul class="eco-list">{bullets}</ul>
         </div>
     </div>
     """
     st.markdown(card_html, unsafe_allow_html=True)
     
-    # 4. Detailed Flow Tables
+    # 4. Detailed Flow Tabs
     tab_in, tab_out, tab_partners = st.tabs(["📥 Supply (In)", "📤 Demand (Out)", "🤝 Partners"])
     
     with tab_in:
@@ -622,7 +684,7 @@ def render_builder_panel(builder, connections, shortfall_df, leverage_df, builde
                 hide_index=True, use_container_width=True, height=200
             )
         else:
-            st.caption("No inbound lead sources found.")
+            st.info("No inbound lead sources found.")
 
     with tab_out:
         if connections['outbound']:
@@ -633,7 +695,7 @@ def render_builder_panel(builder, connections, shortfall_df, leverage_df, builde
                 hide_index=True, use_container_width=True, height=200
             )
         else:
-            st.caption("No outbound referrals found.")
+            st.info("No outbound referrals found.")
 
     with tab_partners:
         if connections['two_way']:
@@ -641,7 +703,7 @@ def render_builder_panel(builder, connections, shortfall_df, leverage_df, builde
             df.columns = ['Partner', 'In', 'Out']
             st.dataframe(df, hide_index=True, use_container_width=True, height=200)
         else:
-            st.caption("No mutual partnerships found.")
+            st.info("No mutual partnerships found.")
 
 # ==========================================
 # CAMPAIGN CART (SIDEBAR)
@@ -734,7 +796,7 @@ def render_campaign_planner(targets, shortfall_df, leverage_df):
     
     with c1:
         st.markdown(f"""
-        <div class="card" style="height:100%">
+        <div class="card" style="height:100%; padding: 1.25rem;">
             <div class="metric-label">Campaign Goal</div>
             <div class="metric-value text-red-600">{int(total_shortfall):,}</div>
             <div class="metric-sub">Leads needed</div>
@@ -743,7 +805,7 @@ def render_campaign_planner(targets, shortfall_df, leverage_df):
         
     with c2:
         st.markdown(f"""
-        <div class="card" style="height:100%">
+        <div class="card" style="height:100%; padding: 1.25rem;">
             <div class="metric-label">Network Power</div>
             <div class="metric-value">{len(sources)}</div>
             <div class="metric-sub">Available sources</div>
@@ -751,7 +813,7 @@ def render_campaign_planner(targets, shortfall_df, leverage_df):
         """, unsafe_allow_html=True)
         
     with c3:
-        st.markdown('<div class="card" style="height:100%">', unsafe_allow_html=True)
+        st.markdown('<div class="card" style="height:100%; padding: 1.25rem;">', unsafe_allow_html=True)
         st.markdown('<div class="metric-label">Budget Allocation</div>', unsafe_allow_html=True)
         budget = st.slider("Total Spend ($)", 5000, 500000, 50000, step=5000, label_visibility="collapsed")
         
@@ -796,11 +858,18 @@ def render_campaign_planner(targets, shortfall_df, leverage_df):
             def generate_justification(row):
                 cpr = row['effective_cpr']
                 rate = row['target_rate']
+                
+                # Efficiency Text
                 if cpr < 300: eff_desc = "Highly efficient"
                 elif cpr < 600: eff_desc = "Cost-effective"
                 else: eff_desc = "Strategic"
                 
-                return f"{eff_desc} source (${int(cpr)}/lead). {int(rate*100)}% of volume reaches targets."
+                # Role Text
+                if rate > 0.5: role_desc = "Direct feeder"
+                elif rate > 0.2: role_desc = "Broad mix"
+                else: role_desc = "Volume play"
+                
+                return f"{eff_desc} source (${int(cpr)}/lead). {role_desc}: {int(rate*100)}% of volume reaches targets."
 
             allocs['Justification'] = allocs.apply(generate_justification, axis=1)
 
@@ -828,7 +897,7 @@ def render_campaign_planner(targets, shortfall_df, leverage_df):
                     ),
                     "Leads (Target)": st.column_config.NumberColumn("Est. Leads", format="%d"),
                     "CPR": st.column_config.NumberColumn("Eff. CPR", format="$%d"),
-                    "Justification": st.column_config.TextColumn("Investment Rationale", width="medium"),
+                    "Justification": st.column_config.TextColumn("Investment Rationale", width="large"),
                 },
                 hide_index=True,
                 use_container_width=True
