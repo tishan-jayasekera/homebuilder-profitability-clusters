@@ -1,42 +1,45 @@
+"""
+Network Optimization Engine - Enhanced for Campaign Planning
+Supports targeted optimization for user-selected builder groups.
+"""
 import pandas as pd
 import numpy as np
+from typing import List, Dict, Optional, Tuple
 
-def calculate_shortfalls(events_df: pd.DataFrame, targets_df: pd.DataFrame = None, period_days: int = None, total_events_df: pd.DataFrame = None) -> pd.DataFrame:
-    """
-    Step 1: Calculate Demand (Shortfalls) with Pace & Projection.
+def calculate_shortfalls(
+    events_df: pd.DataFrame, 
+    targets_df: pd.DataFrame = None, 
+    period_days: int = None, 
+    total_events_df: pd.DataFrame = None,
+    scenario_params: dict = None
+) -> pd.DataFrame:
+    """Calculate Demand (Shortfalls) with Pace & Projection."""
+    if scenario_params is None:
+        scenario_params = {}
     
-    Args:
-        events_df: Events data for the selected period (used for Velocity/Pace).
-        targets_df: Optional dataframe with builder targets.
-        period_days: Duration of the selected period in days. Used for velocity calc.
-        total_events_df: Optional cumulative events data. Used for Actuals vs Target.
-                        If None, events_df is assumed to be cumulative.
-    
-    Logic:
-    - Actuals = Cumulative Leads (from total_events_df if provided, else events_df)
-    - Pace = Leads/Day based on events_df (selected period)
-    - Projected = Actuals + (Pace * Days_Remaining)
-    - Shortfall = Target - Projected
-    """
-    # 1. Period Actuals (For Velocity)
+    velocity_mult = scenario_params.get('velocity_mult', 1.0)
+    target_mult = scenario_params.get('target_mult', 1.0)
+
     period_actuals = events_df[events_df['is_referral'] == True].groupby('Dest_BuilderRegionKey').size().reset_index(name='Period_Referrals')
     
-    # 2. Cumulative Actuals (For Progress)
     if total_events_df is not None:
         cum_actuals = total_events_df[total_events_df['is_referral'] == True].groupby('Dest_BuilderRegionKey').size().reset_index(name='Actual_Referrals')
-        target_source_df = total_events_df # Use full dataset to find all builders/targets
+        target_source_df = total_events_df 
     else:
         cum_actuals = period_actuals.rename(columns={'Period_Referrals': 'Actual_Referrals'})
         target_source_df = events_df
 
-    # 3. Targets: Retrieve or Mock
     if targets_df is None:
-        builders = target_source_df['Dest_BuilderRegionKey'].dropna().unique()
+        if 'Dest_BuilderRegionKey' in target_source_df.columns:
+            builders = target_source_df['Dest_BuilderRegionKey'].dropna().unique()
+        else:
+            builders = []
+
         cols_to_check = ['LeadTarget_from_job', 'WIP_JOB_LIVE_END']
         
         if all(c in target_source_df.columns for c in cols_to_check):
-             targets_df = target_source_df[['Dest_BuilderRegionKey', 'LeadTarget_from_job', 'WIP_JOB_LIVE_END']].drop_duplicates('Dest_BuilderRegionKey').copy()
-             targets_df = targets_df.rename(columns={'Dest_BuilderRegionKey': 'BuilderRegionKey', 'LeadTarget_from_job': 'LeadTarget'})
+            targets_df = target_source_df[['Dest_BuilderRegionKey', 'LeadTarget_from_job', 'WIP_JOB_LIVE_END']].drop_duplicates('Dest_BuilderRegionKey').copy()
+            targets_df = targets_df.rename(columns={'Dest_BuilderRegionKey': 'BuilderRegionKey', 'LeadTarget_from_job': 'LeadTarget'})
         else:
             targets_df = pd.DataFrame({
                 'BuilderRegionKey': builders,
@@ -47,30 +50,26 @@ def calculate_shortfalls(events_df: pd.DataFrame, targets_df: pd.DataFrame = Non
         rename_map = {'LeadTarget_from_job': 'LeadTarget', 'Builder': 'BuilderRegionKey'}
         targets_df = targets_df.rename(columns=rename_map)
     
-    # 4. Merge Targets with Cumulative Actuals
+    targets_df['LeadTarget'] = targets_df['LeadTarget'] * target_mult
+
     df = targets_df.merge(cum_actuals, left_on='BuilderRegionKey', right_on='Dest_BuilderRegionKey', how='left')
     df['Actual_Referrals'] = df['Actual_Referrals'].fillna(0)
     
-    # 5. Merge Period Actuals for Pace calculation
     df = df.merge(period_actuals, left_on='BuilderRegionKey', right_on='Dest_BuilderRegionKey', how='left', suffixes=('', '_period'))
     df['Period_Referrals'] = df['Period_Referrals'].fillna(0)
     
-    # 6. Time Components & Pace
     now = pd.Timestamp.now()
     if 'WIP_JOB_LIVE_END' in df.columns:
         df['WIP_JOB_LIVE_END'] = pd.to_datetime(df['WIP_JOB_LIVE_END'], errors='coerce')
         df['Days_Remaining'] = (df['WIP_JOB_LIVE_END'] - now).dt.days.fillna(0).astype(int)
     else:
-        df['Days_Remaining'] = 30 # Default assumption if missing
+        df['Days_Remaining'] = 30
 
-    # Ensure no negative days
     df['Days_Remaining'] = df['Days_Remaining'].clip(lower=0)
     
-    # Determine Velocity Duration (Leads per day in selected period)
     if period_days:
         velocity_days = max(period_days, 1)
     else:
-        # Infer from data if not provided (default to 90 if data is empty/weird)
         date_col = 'lead_date' if 'lead_date' in events_df.columns else 'RefDate'
         if date_col in events_df.columns and not events_df.empty:
             dates = pd.to_datetime(events_df[date_col], errors='coerce')
@@ -79,46 +78,32 @@ def calculate_shortfalls(events_df: pd.DataFrame, targets_df: pd.DataFrame = Non
         else:
             velocity_days = 90
             
-    df['Velocity_LeadsPerDay'] = df['Period_Referrals'] / velocity_days
+    base_velocity = df['Period_Referrals'] / velocity_days
+    df['Velocity_LeadsPerDay'] = base_velocity * velocity_mult
     
-    # 7. Projection
     df['Projected_Additional'] = df['Velocity_LeadsPerDay'] * df['Days_Remaining']
     df['Projected_Total'] = df['Actual_Referrals'] + df['Projected_Additional']
     
-    # 8. Gap Analysis
-    # Deficit: Expected to miss target
-    # Surplus: Expected to exceed target
     df['Net_Gap'] = df['Projected_Total'] - df['LeadTarget']
-    
     df['Projected_Shortfall'] = np.where(df['Net_Gap'] < 0, abs(df['Net_Gap']), 0)
     df['Projected_Surplus'] = np.where(df['Net_Gap'] > 0, df['Net_Gap'], 0)
     
-    # 9. Risk Scoring
-    # Urgency = Shortfall / Days_Remaining (Leads needed per day to catch up)
     df['CatchUp_Pace_Req'] = np.where(
         (df['Projected_Shortfall'] > 0) & (df['Days_Remaining'] > 0),
-        df['Projected_Shortfall'] / df['Days_Remaining'],
-        0
+        df['Projected_Shortfall'] / df['Days_Remaining'], 0
     )
     
-    # Risk Index: High Shortfall + Low Time
-    # Normalized score 0-100
-    df['Risk_Score'] = (
-        (df['Projected_Shortfall'] * 5) + 
-        (df['CatchUp_Pace_Req'] * 20)
-    ).fillna(0)
+    df['Risk_Score'] = ((df['Projected_Shortfall'] * 5) + (df['CatchUp_Pace_Req'] * 20)).fillna(0)
     
     return df
 
-def analyze_network_leverage(events_df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Step 2: Analyze Supply Sources (The Leverage).
-    Calculates Transfer Rate (TR), Base CPR (CPR_base), and Effective CPR (eCPR).
-    """
-    refs = events_df[events_df['is_referral'] == True].copy()
-    if refs.empty: return pd.DataFrame()
 
-    # A. Source Metrics
+def analyze_network_leverage(events_df: pd.DataFrame) -> pd.DataFrame:
+    """Analyze Supply Sources - Transfer Rate, CPR, eCPR."""
+    refs = events_df[events_df['is_referral'] == True].copy()
+    if refs.empty:
+        return pd.DataFrame()
+
     source_stats = refs.groupby('MediaPayer_BuilderRegionKey').agg(
         Total_Referrals_Sent=('LeadId', 'count'),
         Total_Media_Spend=('MediaCost_referral_event', 'sum')
@@ -130,106 +115,289 @@ def analyze_network_leverage(events_df: pd.DataFrame) -> pd.DataFrame:
         np.nan
     )
     
-    # B. Flow Metrics
     flows = refs.groupby(['MediaPayer_BuilderRegionKey', 'Dest_BuilderRegionKey']).size().reset_index(name='Referrals_to_Target')
     
-    # C. Merge & Calculate TR / eCPR
     leverage = flows.merge(source_stats, on='MediaPayer_BuilderRegionKey', how='left')
-    
     leverage['Transfer_Rate'] = leverage['Referrals_to_Target'] / leverage['Total_Referrals_Sent']
-    
-    # eCPR: The actual cost to get a lead to the Specific Target
-    leverage['eCPR'] = np.where(
-        leverage['Transfer_Rate'] > 0,
-        leverage['CPR_base'] / leverage['Transfer_Rate'],
-        np.inf
-    )
+    leverage['eCPR'] = np.where(leverage['Transfer_Rate'] > 0, leverage['CPR_base'] / leverage['Transfer_Rate'], np.inf)
     
     return leverage
 
-def generate_global_media_plan(shortfall_df: pd.DataFrame, leverage_df: pd.DataFrame) -> pd.DataFrame:
+
+def get_builder_referral_history(events_df: pd.DataFrame, builder_key: str) -> Dict:
     """
-    Step 3: Global Media Planning.
-    Matches EVERY shortfall builder to their most efficient available leverage points.
+    Get complete referral history for a builder - who sends them leads,
+    monthly trends, and operational metrics.
     """
+    refs = events_df[events_df['is_referral'] == True].copy()
+    
+    # Inbound referrals (received by this builder)
+    inbound = refs[refs['Dest_BuilderRegionKey'] == builder_key].copy()
+    
+    # Outbound referrals (sent by this builder)
+    outbound = refs[refs['MediaPayer_BuilderRegionKey'] == builder_key].copy()
+    
+    result = {
+        'builder': builder_key,
+        'total_received': len(inbound),
+        'total_sent': len(outbound),
+        'unique_sources': inbound['MediaPayer_BuilderRegionKey'].nunique() if not inbound.empty else 0,
+        'unique_destinations': outbound['Dest_BuilderRegionKey'].nunique() if not outbound.empty else 0,
+    }
+    
+    # Monthly trend of inbound referrals
+    if not inbound.empty:
+        date_col = 'lead_date' if 'lead_date' in inbound.columns else 'RefDate'
+        if date_col in inbound.columns:
+            inbound['month'] = pd.to_datetime(inbound[date_col], errors='coerce').dt.to_period('M').dt.start_time
+            monthly = inbound.groupby('month').size().reset_index(name='referrals')
+            monthly = monthly.sort_values('month')
+            result['monthly_trend'] = monthly
+        else:
+            result['monthly_trend'] = pd.DataFrame()
+        
+        # Top sources (who sends the most)
+        top_sources = inbound.groupby('MediaPayer_BuilderRegionKey').agg(
+            referrals=('LeadId', 'count'),
+            media_value=('MediaCost_referral_event', 'sum')
+        ).reset_index().sort_values('referrals', ascending=False).head(10)
+        top_sources.columns = ['Source', 'Referrals', 'Media Value']
+        result['top_sources'] = top_sources
+    else:
+        result['monthly_trend'] = pd.DataFrame()
+        result['top_sources'] = pd.DataFrame()
+    
+    # Top destinations (who they send to)
+    if not outbound.empty:
+        top_dests = outbound.groupby('Dest_BuilderRegionKey').size().reset_index(name='Referrals')
+        top_dests.columns = ['Destination', 'Referrals']
+        top_dests = top_dests.sort_values('Referrals', ascending=False).head(10)
+        result['top_destinations'] = top_dests
+    else:
+        result['top_destinations'] = pd.DataFrame()
+    
+    return result
+
+
+def get_cluster_summary(cluster_id: int, builder_master: pd.DataFrame, leverage_df: pd.DataFrame) -> Dict:
+    """Get summary statistics for a specific cluster."""
+    members = builder_master[builder_master['ClusterId'] == cluster_id]
+    
+    if members.empty:
+        return {'cluster_id': cluster_id, 'member_count': 0}
+    
+    member_list = members['BuilderRegionKey'].tolist()
+    
+    # Internal flows (within cluster)
+    if not leverage_df.empty:
+        internal = leverage_df[
+            (leverage_df['MediaPayer_BuilderRegionKey'].isin(member_list)) &
+            (leverage_df['Dest_BuilderRegionKey'].isin(member_list))
+        ]
+        internal_refs = internal['Referrals_to_Target'].sum() if not internal.empty else 0
+        
+        # External inbound
+        external_in = leverage_df[
+            (~leverage_df['MediaPayer_BuilderRegionKey'].isin(member_list)) &
+            (leverage_df['Dest_BuilderRegionKey'].isin(member_list))
+        ]
+        external_in_refs = external_in['Referrals_to_Target'].sum() if not external_in.empty else 0
+    else:
+        internal_refs, external_in_refs = 0, 0
+    
+    return {
+        'cluster_id': cluster_id,
+        'member_count': len(members),
+        'members': member_list,
+        'internal_referrals': int(internal_refs),
+        'external_inbound': int(external_in_refs),
+        'total_in': members['Referrals_in'].sum() if 'Referrals_in' in members.columns else 0,
+        'total_out': members['Referrals_out'].sum() if 'Referrals_out' in members.columns else 0,
+    }
+
+
+def generate_targeted_media_plan(
+    target_builders: List[str],
+    shortfall_df: pd.DataFrame,
+    leverage_df: pd.DataFrame,
+    budget_cap: float = None
+) -> pd.DataFrame:
+    """Generate optimized media plan for specific target builders."""
+    if not target_builders:
+        return pd.DataFrame()
+    
     plan_rows = []
+    remaining_budget = budget_cap if budget_cap else float('inf')
     
-    # Filter only those with projected shortfall
-    deficits = shortfall_df[shortfall_df['Projected_Shortfall'] > 0].copy()
+    # Handle missing builders in shortfall data
+    known_builders = set(shortfall_df['BuilderRegionKey'].tolist()) if not shortfall_df.empty else set()
     
-    # Sort by Risk (fix critical fires first)
-    deficits = deficits.sort_values('Risk_Score', ascending=False)
+    for builder in target_builders:
+        if builder not in known_builders:
+            plan_rows.append({
+                'Target_Builder': builder,
+                'Status': '⚪ No Data',
+                'Gap_Leads': 0,
+                'Risk_Score': 0,
+                'Recommended_Source': '—',
+                'Budget_Allocation': 0,
+                'Projected_Leads': 0,
+                'Effective_CPR': 0,
+                'Transfer_Rate': 0
+            })
     
-    for _, builder_row in deficits.iterrows():
+    # Filter to requested targets with shortfalls
+    targets = shortfall_df[
+        (shortfall_df['BuilderRegionKey'].isin(target_builders)) &
+        (shortfall_df['Projected_Shortfall'] > 0)
+    ].copy()
+    
+    # Also include on-track targets for completeness
+    on_track = shortfall_df[
+        (shortfall_df['BuilderRegionKey'].isin(target_builders)) &
+        (shortfall_df['Projected_Shortfall'] <= 0)
+    ]
+    
+    for _, row in on_track.iterrows():
+        plan_rows.append({
+            'Target_Builder': row['BuilderRegionKey'],
+            'Status': '✅ On Track',
+            'Gap_Leads': 0,
+            'Risk_Score': 0,
+            'Recommended_Source': '—',
+            'Budget_Allocation': 0,
+            'Projected_Leads': 0,
+            'Effective_CPR': 0,
+            'Transfer_Rate': 0
+        })
+    
+    if targets.empty:
+        return pd.DataFrame(plan_rows)
+    
+    # Sort by risk (highest first)
+    targets = targets.sort_values('Risk_Score', ascending=False)
+    
+    for _, builder_row in targets.iterrows():
         target = builder_row['BuilderRegionKey']
         gap = builder_row['Projected_Shortfall']
+        risk = builder_row['Risk_Score']
         
-        # Find sources connected to this target
-        sources = leverage_df[leverage_df['Dest_BuilderRegionKey'] == target].copy()
+        # Find leverage paths to this target
+        candidates = leverage_df[leverage_df['Dest_BuilderRegionKey'] == target].copy()
         
-        if sources.empty:
-            # No existing leverage - this is a "Cold Start" problem
+        if candidates.empty:
             plan_rows.append({
-                'Priority': 'Critical' if builder_row['Risk_Score'] > 50 else 'High',
                 'Target_Builder': target,
+                'Status': '⚠️ No Path',
                 'Gap_Leads': gap,
-                'Recommended_Source': 'NO HISTORICAL PATH',
-                'Action': 'Establish New Partnership',
-                'Est_Investment': np.nan,
-                'Effective_CPR': np.nan,
-                'Strategy_Note': 'No historical referral flow found. Direct media or new cluster intro required.'
+                'Risk_Score': risk,
+                'Recommended_Source': '—',
+                'Budget_Allocation': 0,
+                'Projected_Leads': 0,
+                'Effective_CPR': 0,
+                'Transfer_Rate': 0
             })
             continue
+        
+        # Sort by efficiency (lowest eCPR first)
+        candidates = candidates[candidates['eCPR'] < np.inf].sort_values('eCPR')
+        
+        if candidates.empty:
+            plan_rows.append({
+                'Target_Builder': target,
+                'Status': '⚠️ Inefficient',
+                'Gap_Leads': gap,
+                'Risk_Score': risk,
+                'Recommended_Source': '—',
+                'Budget_Allocation': 0,
+                'Projected_Leads': 0,
+                'Effective_CPR': 0,
+                'Transfer_Rate': 0
+            })
+            continue
+        
+        # Allocate budget across sources to fill gap
+        leads_needed = gap
+        
+        for _, source_row in candidates.iterrows():
+            if leads_needed <= 0 or remaining_budget <= 0:
+                break
             
-        # Pick the most efficient source (Lowest eCPR)
-        # We could split volume across multiple, but for Executive Summary, pick the "Lead Source"
-        best_source = sources.sort_values('eCPR', ascending=True).iloc[0]
-        
-        invest_needed = gap * best_source['eCPR']
-        
-        plan_rows.append({
-            'Priority': 'Critical' if builder_row['Risk_Score'] > 50 else 'High',
-            'Target_Builder': target,
-            'Gap_Leads': gap,
-            'Recommended_Source': best_source['MediaPayer_BuilderRegionKey'],
-            'Action': f"Scale Media on {best_source['MediaPayer_BuilderRegionKey']}",
-            'Est_Investment': invest_needed,
-            'Effective_CPR': best_source['eCPR'],
-            'Strategy_Note': f"Levg: {best_source['Transfer_Rate']:.1%} TR via {best_source['MediaPayer_BuilderRegionKey']}"
-        })
-        
+            source = source_row['MediaPayer_BuilderRegionKey']
+            ecpr = source_row['eCPR']
+            tr = source_row['Transfer_Rate']
+            
+            cost_for_gap = leads_needed * ecpr
+            allocation = min(cost_for_gap, remaining_budget)
+            leads_from_source = allocation / ecpr if ecpr > 0 else 0
+            
+            status = '🔴 Critical' if risk > 50 else ('🟠 High' if risk > 25 else '🟡 Medium')
+            
+            plan_rows.append({
+                'Target_Builder': target,
+                'Status': status,
+                'Gap_Leads': gap,
+                'Risk_Score': risk,
+                'Recommended_Source': source,
+                'Budget_Allocation': allocation,
+                'Projected_Leads': leads_from_source,
+                'Effective_CPR': ecpr,
+                'Transfer_Rate': tr
+            })
+            
+            leads_needed -= leads_from_source
+            remaining_budget -= allocation
+    
     return pd.DataFrame(plan_rows)
 
-def compute_effective_network_cpr(events_df, shortfall_df):
-    """Legacy helper for compatibility."""
-    leverage = analyze_network_leverage(events_df)
-    if leverage.empty: return pd.DataFrame()
-    
-    grouped = leverage.groupby('MediaPayer_BuilderRegionKey').agg({
-        'Total_Referrals_Sent': 'first',
-        'CPR_base': 'first',
-        'Dest_BuilderRegionKey': 'nunique'
-    }).rename(columns={'Dest_BuilderRegionKey': 'Beneficiaries_Count', 'CPR_base': 'Raw_CPR'})
-    
-    grouped['CPR'] = grouped['Raw_CPR']
-    return grouped.reset_index().rename(columns={'MediaPayer_BuilderRegionKey': 'BuilderRegionKey'})
 
-def generate_investment_strategies(focus_builder: str, shortfall_data: pd.DataFrame, leverage_data: pd.DataFrame, events_df: pd.DataFrame) -> pd.DataFrame:
-    """Wrapper for single-builder detailed view (compatibility)."""
+def analyze_network_health(events_df: pd.DataFrame) -> pd.DataFrame:
+    """Network Health Analysis - Zombie Nodes, Bridge Nodes."""
+    if events_df.empty:
+        return pd.DataFrame()
     
+    receivers = events_df[events_df['is_referral'] == True]['Dest_BuilderRegionKey'].value_counts().reset_index()
+    receivers.columns = ['Builder', 'Leads_Received']
+    
+    senders = events_df[events_df['is_referral'] == True]['MediaPayer_BuilderRegionKey'].value_counts().reset_index()
+    senders.columns = ['Builder', 'Leads_Sent']
+    
+    health = pd.merge(receivers, senders, on='Builder', how='outer').fillna(0)
+    health['Ratio_Give_Take'] = np.where(health['Leads_Received'] > 0, health['Leads_Sent'] / health['Leads_Received'], 0)
+    
+    def diagnose(row):
+        if row['Leads_Received'] > 10 and row['Leads_Sent'] == 0:
+            return "🧟 Zombie"
+        if row['Leads_Sent'] > 10 and row['Leads_Received'] == 0:
+            return "📡 Feeder"
+        if row['Leads_Sent'] > 5 and row['Leads_Received'] > 5:
+            return "🔄 Hub"
+        return "⚪ Low Activity"
+        
+    health['Role'] = health.apply(diagnose, axis=1)
+    
+    return health
+
+
+def generate_investment_strategies(
+    focus_builder: str, 
+    shortfall_data: pd.DataFrame, 
+    leverage_data: pd.DataFrame, 
+    events_df: pd.DataFrame
+) -> pd.DataFrame:
+    """Generate detailed investment strategies for a single builder."""
     target_row = shortfall_data[shortfall_data['BuilderRegionKey'] == focus_builder]
-    if target_row.empty: return pd.DataFrame()
+    if target_row.empty:
+        return pd.DataFrame()
     
-    # Use Projected Shortfall if available, else Shortfall (legacy)
     col = 'Projected_Shortfall' if 'Projected_Shortfall' in target_row.columns else 'Shortfall'
     shortfall = target_row[col].iloc[0]
     
     strategies = leverage_data[leverage_data['Dest_BuilderRegionKey'] == focus_builder].copy()
-    if strategies.empty: return pd.DataFrame()
+    if strategies.empty:
+        return pd.DataFrame()
     
     results = []
-    # FIX: Use the 'col' variable determined above to avoid KeyError when 'Shortfall' is missing
-    shortfall_map = shortfall_data.set_index('BuilderRegionKey')[col].to_dict()
     
     for _, strat in strategies.iterrows():
         source = strat['MediaPayer_BuilderRegionKey']
@@ -241,25 +409,7 @@ def generate_investment_strategies(focus_builder: str, shortfall_data: pd.DataFr
             leads_gen = shortfall / tr
             excess = leads_gen - shortfall
         else:
-            investment = 0; leads_gen = 0; excess = 0
-            
-        # Spillover
-        source_flows = leverage_data[
-            (leverage_data['MediaPayer_BuilderRegionKey'] == source) & 
-            (leverage_data['Dest_BuilderRegionKey'] != focus_builder)
-        ].copy()
-        
-        spillover_txt = "None"; score = 0
-        if not source_flows.empty and excess > 0:
-            source_flows['Proj'] = leads_gen * source_flows['Transfer_Rate']
-            impacts = []
-            for _, r in source_flows.iterrows():
-                ben = r['Dest_BuilderRegionKey']
-                need = shortfall_map.get(ben, 0)
-                if need > 0:
-                    score += min(r['Proj'], need)
-                    impacts.append(f"{ben}")
-            if impacts: spillover_txt = ", ".join(impacts[:2])
+            investment, leads_gen, excess = 0, 0, 0
             
         results.append({
             'Source_Builder': source,
@@ -268,12 +418,211 @@ def generate_investment_strategies(focus_builder: str, shortfall_data: pd.DataFr
             'Effective_CPR': ecpr,
             'Investment_Required': investment,
             'Total_Leads_Generated': leads_gen,
-            'Excess_Leads': excess,
-            'Spillover_Impact': spillover_txt,
-            'Optimization_Score': score
+            'Excess_Leads': excess
         })
         
     res = pd.DataFrame(results)
     if not res.empty:
         res = res.sort_values('Effective_CPR')
     return res
+
+
+def calculate_campaign_summary(plan_df: pd.DataFrame) -> Dict:
+    """Calculate summary statistics for a campaign plan."""
+    if plan_df.empty:
+        return {'total_budget': 0, 'total_leads': 0, 'avg_cpr': 0, 'targets_covered': 0, 'sources_used': 0}
+    
+    active = plan_df[plan_df['Budget_Allocation'] > 0]
+    
+    total_budget = active['Budget_Allocation'].sum()
+    total_leads = active['Projected_Leads'].sum()
+    avg_cpr = total_budget / total_leads if total_leads > 0 else 0
+    targets_covered = plan_df['Target_Builder'].nunique()
+    sources_used = active['Recommended_Source'].nunique()
+    
+    return {
+        'total_budget': total_budget,
+        'total_leads': total_leads,
+        'avg_cpr': avg_cpr,
+        'targets_covered': targets_covered,
+        'sources_used': sources_used
+    }
+
+
+def analyze_campaign_network(
+    target_builders: List[str],
+    leverage_df: pd.DataFrame,
+    shortfall_df: pd.DataFrame
+) -> Dict:
+    """
+    Analyze the network structure for a campaign.
+    Returns sources, flows, and leakage analysis.
+    """
+    if not target_builders or leverage_df.empty:
+        return {'sources': [], 'flows': [], 'leakage': [], 'stats': {}}
+    
+    target_set = set(target_builders)
+    
+    # Find all sources that send to our targets
+    target_flows = leverage_df[leverage_df['Dest_BuilderRegionKey'].isin(target_set)].copy()
+    
+    if target_flows.empty:
+        return {'sources': [], 'flows': [], 'leakage': [], 'stats': {}}
+    
+    # Unique sources
+    sources = target_flows['MediaPayer_BuilderRegionKey'].unique().tolist()
+    
+    # For each source, analyze where ALL their referrals go (not just to targets)
+    all_source_flows = leverage_df[leverage_df['MediaPayer_BuilderRegionKey'].isin(sources)].copy()
+    
+    source_analysis = []
+    for source in sources:
+        source_flows = all_source_flows[all_source_flows['MediaPayer_BuilderRegionKey'] == source]
+        
+        total_refs = source_flows['Referrals_to_Target'].sum()
+        to_targets = source_flows[source_flows['Dest_BuilderRegionKey'].isin(target_set)]['Referrals_to_Target'].sum()
+        to_others = total_refs - to_targets
+        
+        target_rate = to_targets / total_refs if total_refs > 0 else 0
+        leakage_rate = to_others / total_refs if total_refs > 0 else 0
+        
+        # Get CPR for this source
+        cpr = source_flows['CPR_base'].iloc[0] if not source_flows.empty and 'CPR_base' in source_flows.columns else 0
+        
+        source_analysis.append({
+            'source': source,
+            'total_refs_sent': int(total_refs),
+            'refs_to_targets': int(to_targets),
+            'refs_to_others': int(to_others),
+            'target_rate': target_rate,
+            'leakage_rate': leakage_rate,
+            'base_cpr': cpr,
+            'effective_cpr': cpr / target_rate if target_rate > 0 else float('inf')
+        })
+    
+    # Sort by effective CPR
+    source_analysis = sorted(source_analysis, key=lambda x: x['effective_cpr'])
+    
+    # Build flow list for visualization
+    flows = []
+    for _, row in target_flows.iterrows():
+        flows.append({
+            'source': row['MediaPayer_BuilderRegionKey'],
+            'target': row['Dest_BuilderRegionKey'],
+            'refs': row['Referrals_to_Target'],
+            'transfer_rate': row['Transfer_Rate'],
+            'ecpr': row['eCPR']
+        })
+    
+    # Leakage destinations (where else do sources send leads)
+    leakage_flows = all_source_flows[~all_source_flows['Dest_BuilderRegionKey'].isin(target_set)]
+    leakage_summary = leakage_flows.groupby('Dest_BuilderRegionKey')['Referrals_to_Target'].sum().sort_values(ascending=False).head(10)
+    leakage = [{'destination': k, 'refs': int(v)} for k, v in leakage_summary.items()]
+    
+    # Overall stats
+    total_source_refs = sum(s['total_refs_sent'] for s in source_analysis)
+    total_to_targets = sum(s['refs_to_targets'] for s in source_analysis)
+    total_leakage = sum(s['refs_to_others'] for s in source_analysis)
+    
+    stats = {
+        'num_sources': len(sources),
+        'num_targets': len(target_builders),
+        'total_source_output': total_source_refs,
+        'to_target_group': total_to_targets,
+        'leakage': total_leakage,
+        'target_capture_rate': total_to_targets / total_source_refs if total_source_refs > 0 else 0
+    }
+    
+    return {
+        'sources': source_analysis,
+        'flows': flows,
+        'leakage': leakage,
+        'stats': stats
+    }
+
+
+def simulate_campaign_spend(
+    target_builders: List[str],
+    total_budget: float,
+    source_analysis: List[Dict],
+    shortfall_df: pd.DataFrame
+) -> Dict:
+    """
+    Simulate spending the budget across sources and trace impact.
+    Allocates to most efficient sources first.
+    """
+    if not target_builders or not source_analysis or total_budget <= 0:
+        return {'allocations': [], 'summary': {}}
+    
+    # Get shortfalls for targets
+    target_shortfalls = {}
+    for t in target_builders:
+        row = shortfall_df[shortfall_df['BuilderRegionKey'] == t]
+        if not row.empty:
+            sf = row['Projected_Shortfall'].iloc[0]
+            target_shortfalls[t] = sf if not pd.isna(sf) and sf > 0 else 0
+        else:
+            target_shortfalls[t] = 0
+    
+    total_shortfall = sum(target_shortfalls.values())
+    
+    # Allocate budget to sources (sorted by effective CPR - most efficient first)
+    remaining_budget = total_budget
+    allocations = []
+    
+    for source in source_analysis:
+        if remaining_budget <= 0:
+            break
+        
+        if source['effective_cpr'] == float('inf') or source['target_rate'] == 0:
+            continue
+        
+        # How much can this source contribute?
+        # Estimate: if we spend $X, we get X/base_cpr total leads, of which target_rate go to our targets
+        base_cpr = source['base_cpr'] if source['base_cpr'] > 0 else 100  # default
+        
+        # Allocate proportionally to remaining budget
+        allocation = min(remaining_budget, remaining_budget * 0.4)  # Max 40% to single source
+        
+        total_leads_generated = allocation / base_cpr if base_cpr > 0 else 0
+        leads_to_targets = total_leads_generated * source['target_rate']
+        leads_leaked = total_leads_generated * source['leakage_rate']
+        
+        allocations.append({
+            'source': source['source'],
+            'budget': allocation,
+            'base_cpr': base_cpr,
+            'effective_cpr': source['effective_cpr'],
+            'total_leads': total_leads_generated,
+            'leads_to_targets': leads_to_targets,
+            'leads_leaked': leads_leaked,
+            'target_rate': source['target_rate'],
+            'efficiency': leads_to_targets / allocation * 1000 if allocation > 0 else 0  # leads per $1000
+        })
+        
+        remaining_budget -= allocation
+    
+    # Summary
+    total_spent = sum(a['budget'] for a in allocations)
+    total_leads_gen = sum(a['total_leads'] for a in allocations)
+    total_to_targets = sum(a['leads_to_targets'] for a in allocations)
+    total_leaked = sum(a['leads_leaked'] for a in allocations)
+    
+    shortfall_covered = min(total_to_targets, total_shortfall)
+    coverage_pct = shortfall_covered / total_shortfall if total_shortfall > 0 else 1.0
+    
+    summary = {
+        'total_budget': total_budget,
+        'total_spent': total_spent,
+        'unallocated': remaining_budget,
+        'total_leads_generated': total_leads_gen,
+        'leads_to_targets': total_to_targets,
+        'leads_leaked': total_leaked,
+        'target_shortfall': total_shortfall,
+        'shortfall_covered': shortfall_covered,
+        'coverage_pct': coverage_pct,
+        'effective_cpr': total_spent / total_to_targets if total_to_targets > 0 else 0,
+        'leakage_pct': total_leaked / total_leads_gen if total_leads_gen > 0 else 0
+    }
+    
+    return {'allocations': allocations, 'summary': summary}

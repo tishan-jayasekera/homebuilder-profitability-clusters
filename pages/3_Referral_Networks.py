@@ -1,359 +1,619 @@
 """
-Referral Networks Dashboard - Streamlit Page
-Filename: pages/3_Referral_Networks.py
+Network Intelligence Engine
+Commercial focus: Who sends you leads? Who do you send to? What are the strongest partnerships?
 """
 import streamlit as st
 import pandas as pd
 import numpy as np
 import networkx as nx
 import plotly.graph_objects as go
-import plotly.express as px
-
 import sys
 from pathlib import Path
 
+# Add project root to path
 root = Path(__file__).parent.parent
 if str(root) not in sys.path:
     sys.path.insert(0, str(root))
 
 from src.data_loader import load_events, export_to_excel
 from src.normalization import normalize_events
-from src.builder_pnl import build_builder_pnl
-from src.referral_clusters import run_referral_clustering, compute_network_metrics
-from src.utils import fmt_currency, fmt_roas
+from src.referral_clusters import run_referral_clustering
+from src.utils import fmt_currency
 from src.network_optimization import (
-    calculate_shortfalls, 
-    analyze_network_leverage, 
-    generate_investment_strategies,
-    generate_global_media_plan,
-    compute_effective_network_cpr
+    calculate_shortfalls, analyze_network_leverage, 
+    analyze_network_health, simulate_campaign_spend,
+    analyze_campaign_network
 )
 
-st.set_page_config(page_title="Referral Networks", page_icon="🔗", layout="wide")
+st.set_page_config(page_title="Network Intelligence", page_icon="🔗", layout="wide")
 
 # ==========================================
-# STYLING
+# STYLING & CSS
 # ==========================================
-st.markdown("""
+STYLES = """
 <style>
-    .metric-card {
-        background-color: #f8f9fa;
-        border: 1px solid #e9ecef;
-        padding: 15px;
-        border-radius: 8px;
-        text-align: center;
+    /* Cards */
+    .card {
+        background-color: #ffffff;
+        border: 1px solid #e5e7eb;
+        border-radius: 10px;
+        padding: 20px;
+        box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+        margin-bottom: 20px;
     }
-    .metric-value { font-size: 24px; font-weight: bold; color: #0F172A; }
-    .metric-label { font-size: 14px; color: #64748B; margin-bottom: 5px; }
-    .priority-critical { color: #dc2626; font-weight: bold; }
-    .priority-high { color: #ea580c; font-weight: bold; }
+    
+    /* Metrics */
+    .metric-container {
+        display: flex;
+        flex-direction: column;
+    }
+    .metric-label {
+        font-size: 0.85rem;
+        color: #6b7280;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+    }
+    .metric-value {
+        font-size: 1.5rem;
+        font-weight: 700;
+        color: #111827;
+    }
+    .metric-sub {
+        font-size: 0.85rem;
+        color: #9ca3af;
+        margin-top: 4px;
+    }
+    
+    /* Headers */
+    .section-header {
+        font-size: 1.1rem;
+        font-weight: 600;
+        color: #111827;
+        margin-bottom: 1rem;
+        border-bottom: 2px solid #f3f4f6;
+        padding-bottom: 0.5rem;
+    }
+    
+    /* Risk Tags */
+    .tag-critical { background-color: #fef2f2; color: #dc2626; padding: 2px 8px; border-radius: 12px; font-size: 0.75rem; font-weight: 600; border: 1px solid #fecaca; }
+    .tag-warning { background-color: #fffbeb; color: #d97706; padding: 2px 8px; border-radius: 12px; font-size: 0.75rem; font-weight: 600; border: 1px solid #fde68a; }
+    .tag-safe { background-color: #f0fdf4; color: #16a34a; padding: 2px 8px; border-radius: 12px; font-size: 0.75rem; font-weight: 600; border: 1px solid #bbf7d0; }
 </style>
-""", unsafe_allow_html=True)
+"""
+st.markdown(STYLES, unsafe_allow_html=True)
 
-st.title("🔗 Referral Network & Optimization Engine")
-st.markdown("Leverage network effects to close lead gaps efficiently.")
+# ==========================================
+# SESSION STATE
+# ==========================================
+if 'campaign_targets' not in st.session_state:
+    st.session_state.campaign_targets = []
+if 'selected_builder' not in st.session_state:
+    st.session_state.selected_builder = None
 
+def add_to_cart(builder):
+    if builder and builder not in st.session_state.campaign_targets:
+        st.session_state.campaign_targets.append(builder)
 
-def load_data():
+def remove_from_cart(builder):
+    if builder in st.session_state.campaign_targets:
+        st.session_state.campaign_targets.remove(builder)
+
+# ==========================================
+# DATA LOADING
+# ==========================================
+@st.cache_data(show_spinner=False)
+def load_and_process():
     if 'events_file' not in st.session_state:
         return None
     events = load_events(st.session_state['events_file'])
-    if events is None:
-        return None
-    return normalize_events(events)
+    return normalize_events(events) if events is not None else None
 
-def get_date_range_info(events):
-    """Identify date column and range."""
-    date_col = 'lead_date' if 'lead_date' in events.columns else 'RefDate'
-    if date_col not in events.columns:
-        return None, [], None
+def get_all_builders(events_df):
+    builders = set()
+    for col in ['Dest_BuilderRegionKey', 'MediaPayer_BuilderRegionKey']:
+        if col in events_df.columns:
+            builders.update(events_df[col].dropna().unique())
+    return sorted(builders)
+
+def get_builder_connections(events_df, builder):
+    """Get direct connections for a builder with flow classification."""
+    refs = events_df[events_df['is_referral'] == True].copy()
+    if refs.empty:
+        return {'inbound': [], 'outbound': [], 'two_way': []}
+    
+    # Inbound: others -> builder
+    inbound_df = refs[refs['Dest_BuilderRegionKey'] == builder].groupby('MediaPayer_BuilderRegionKey').agg(
+        count=('LeadId', 'count'),
+        value=('MediaCost_referral_event', 'sum')
+    ).reset_index()
+    inbound_df.columns = ['partner', 'refs_in', 'value_in']
+    
+    # Outbound: builder -> others
+    outbound_df = refs[refs['MediaPayer_BuilderRegionKey'] == builder].groupby('Dest_BuilderRegionKey').agg(
+        count=('LeadId', 'count')
+    ).reset_index()
+    outbound_df.columns = ['partner', 'refs_out']
+    
+    # Merge to find two-way
+    merged = pd.merge(inbound_df, outbound_df, on='partner', how='outer').fillna(0)
+    
+    two_way = merged[(merged['refs_in'] > 0) & (merged['refs_out'] > 0)]['partner'].tolist()
+    inbound_only = merged[(merged['refs_in'] > 0) & (merged['refs_out'] == 0)]['partner'].tolist()
+    outbound_only = merged[(merged['refs_in'] == 0) & (merged['refs_out'] > 0)]['partner'].tolist()
+    
+    result = {
+        'two_way': [], 'inbound': [], 'outbound': []
+    }
+    
+    for _, row in merged.iterrows():
+        partner = row['partner']
+        if partner in two_way:
+            result['two_way'].append({'partner': partner, 'in': int(row['refs_in']), 'out': int(row['refs_out'])})
+        elif partner in inbound_only:
+            result['inbound'].append({'partner': partner, 'count': int(row['refs_in']), 'value': row['value_in']})
+        elif partner in outbound_only:
+            result['outbound'].append({'partner': partner, 'count': int(row['refs_out'])})
+    
+    result['two_way'] = sorted(result['two_way'], key=lambda x: x['in'] + x['out'], reverse=True)
+    result['inbound'] = sorted(result['inbound'], key=lambda x: x['count'], reverse=True)
+    result['outbound'] = sorted(result['outbound'], key=lambda x: x['count'], reverse=True)
+    
+    return result
+
+# ==========================================
+# VISUALIZATION COMPONENTS
+# ==========================================
+def render_metric_card(label, value, sub="", color="text-gray-900"):
+    """HTML Helper for metric cards."""
+    st.markdown(f"""
+    <div class="metric-container">
+        <span class="metric-label">{label}</span>
+        <span class="metric-value" style="color: {color}">{value}</span>
+        <span class="metric-sub">{sub}</span>
+    </div>
+    """, unsafe_allow_html=True)
+
+def render_network_map(G, pos, connections, selected_builder=None):
+    fig = go.Figure()
+    
+    # Theme Colors
+    COL_TWO_WAY = '#3b82f6'    # Blue
+    COL_INBOUND = '#10b981'    # Emerald
+    COL_OUTBOUND = '#f59e0b'   # Amber
+    COL_SELECTED = '#ef4444'   # Red
+    COL_BG = '#f3f4f6'
+    
+    two_way_set, inbound_set, outbound_set = set(), set(), set()
+    if selected_builder and connections:
+        two_way_set = {c['partner'] for c in connections.get('two_way', [])}
+        inbound_set = {c['partner'] for c in connections.get('inbound', [])}
+        outbound_set = {c['partner'] for c in connections.get('outbound', [])}
+    
+    # 1. Background Edges (faded)
+    for u, v, data in G.edges(data=True):
+        if u not in pos or v not in pos: continue
+        x0, y0 = pos[u]
+        x1, y1 = pos[v]
         
-    dates = pd.to_datetime(events[date_col], errors='coerce').dropna()
-    if dates.empty:
-        return date_col, [], None
+        # Logic to dim non-relevant edges
+        is_relevant = False
+        if selected_builder:
+            if u == selected_builder or v == selected_builder: is_relevant = True
         
-    min_date = dates.min()
-    max_date = dates.max()
-    
-    # Get list of month starts for slider
-    month_starts = pd.date_range(start=min_date.replace(day=1), end=max_date.replace(day=1), freq='MS')
-    return date_col, month_starts
-
-def render_risk_matrix(shortfall_df):
-    """Scatter plot: Urgency vs Shortfall Size."""
-    df = shortfall_df[shortfall_df['Projected_Shortfall'] > 0].copy()
-    if df.empty:
-        st.info("No builders currently at risk.")
-        return
-
-    fig = px.scatter(
-        df,
-        x="Days_Remaining",
-        y="Projected_Shortfall",
-        size="Risk_Score",
-        color="Risk_Score",
-        hover_name="BuilderRegionKey",
-        color_continuous_scale="RdYlGn_r",
-        text="BuilderRegionKey",
-        title="Risk Matrix: Shortfall Size vs. Time Remaining",
-        labels={"Days_Remaining": "Days Until Campaign End", "Projected_Shortfall": "Projected Lead Deficit"}
-    )
-    
-    fig.update_traces(textposition='top center')
-    fig.update_layout(height=400, plot_bgcolor='white')
-    fig.add_vline(x=30, line_dash="dash", line_color="red", annotation_text="Critical Urgency")
-    
-    st.plotly_chart(fig, use_container_width=True)
-
-def render_media_plan_table(plan_df):
-    """Detailed action plan table."""
-    if plan_df.empty:
-        st.success("✅ No interventions required. All builders on track.")
-        return
-
-    # Formatting for display
-    display_df = plan_df.copy()
-    
-    st.markdown("### 📋 Master Media Plan")
-    st.markdown("Recommended interventions to close projected gaps.")
-    
-    # Metrics
-    total_inv = plan_df['Est_Investment'].sum()
-    leads_closed = plan_df['Gap_Leads'].sum()
-    avg_cpr = total_inv / leads_closed if leads_closed > 0 else 0
-    
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Total Investment Required", fmt_currency(total_inv))
-    c2.metric("Total Lead Gap to Close", f"{int(leads_closed):,}")
-    c3.metric("Blended eCPR", fmt_currency(avg_cpr))
-    
-    # Table
-    st.dataframe(
-        display_df.style.format({
-            "Est_Investment": "${:,.0f}",
-            "Effective_CPR": "${:,.0f}",
-            "Gap_Leads": "{:,.0f}"
-        }).background_gradient(subset=['Est_Investment'], cmap="Reds"),
-        use_container_width=True,
-        hide_index=True
-    )
-    
-    # Download
-    st.download_button(
-        "📥 Download Media Plan CSV",
-        plan_df.to_csv(index=False),
-        "media_optimization_plan.csv",
-        "text/csv"
-    )
-
-def main():
-    events_full = load_data()
-    
-    if events_full is None:
-        st.warning("⚠️ Please upload events data on the Home page first.")
-        st.page_link("app.py", label="← Go to Home", icon="🏠")
-        return
-
-    # --- SIDEBAR CONTROLS ---
-    date_col, available_months = get_date_range_info(events_full)
-    
-    with st.sidebar:
-        st.header("📅 Time Period")
-        st.caption("Adjusting the period recalculates clustering and lead velocity to account for recent network changes.")
+        color = '#e5e7eb' if not is_relevant else '#9ca3af'
+        opacity = 0.1 if not is_relevant else 0.0 # We draw relevant ones later
         
-        use_all_time = st.checkbox("Use All Time", value=True)
+        if not is_relevant:
+            fig.add_trace(go.Scatter(
+                x=[x0, x1, None], y=[y0, y1, None],
+                mode='lines', line=dict(color=color, width=0.5),
+                opacity=opacity, hoverinfo='skip', showlegend=False
+            ))
+
+    # 2. Highlighted Edges for Selected
+    if selected_builder:
+        def draw_link(target, color, width=1.5):
+            if target not in pos: return
+            x0, y0 = pos[selected_builder]
+            x1, y1 = pos[target]
+            fig.add_trace(go.Scatter(
+                x=[x0, x1, None], y=[y0, y1, None],
+                mode='lines', line=dict(color=color, width=width),
+                opacity=0.8, hoverinfo='skip', showlegend=False
+            ))
+
+        for n in two_way_set: draw_link(n, COL_TWO_WAY, 2.5)
+        for n in inbound_set: draw_link(n, COL_INBOUND, 1.5)
+        for n in outbound_set: draw_link(n, COL_OUTBOUND, 1.5)
+
+    # 3. Nodes
+    node_x, node_y, node_color, node_size = [], [], [], []
+    hover_texts = []
+    
+    for node in G.nodes():
+        if node not in pos: continue
+        x, y = pos[node]
+        node_x.append(x)
+        node_y.append(y)
         
-        if use_all_time or not len(available_months):
-            events_selected = events_full
-            # Default period days for velocity calc if using all time (approx)
-            if date_col and not events_full.empty:
-                dates = pd.to_datetime(events_full[date_col], errors='coerce')
-                period_days = max((dates.max() - dates.min()).days, 1)
-            else:
-                period_days = 90
+        # Color logic
+        if node == selected_builder:
+            c = COL_SELECTED
+            s = 25
+            txt = f"<b>{node}</b><br>SELECTED"
+        elif node in two_way_set:
+            c = COL_TWO_WAY
+            s = 15
+            txt = f"<b>{node}</b><br>↔ Partner"
+        elif node in inbound_set:
+            c = COL_INBOUND
+            s = 12
+            txt = f"<b>{node}</b><br>→ Supplier"
+        elif node in outbound_set:
+            c = COL_OUTBOUND
+            s = 12
+            txt = f"<b>{node}</b><br>← Receiver"
         else:
-            # Range Slider
-            start_month, end_month = st.select_slider(
-                "Select Analysis Range",
-                options=available_months,
-                value=(available_months[0], available_months[-1]),
-                format_func=lambda x: x.strftime("%b %Y")
-            )
+            c = '#d1d5db'
+            s = 8
+            txt = f"{node}"
             
-            # Filter Data
-            end_date_filter = end_month + pd.offsets.MonthEnd(1)
-            
-            mask = (pd.to_datetime(events_full[date_col]) >= start_month) & (pd.to_datetime(events_full[date_col]) <= end_date_filter)
-            events_selected = events_full.loc[mask].copy()
-            
-            period_days = max((end_date_filter - start_month).days, 1)
-            
-            st.info(f"Analyzing {period_days} days: {start_month.strftime('%b %Y')} to {end_month.strftime('%b %Y')}")
-            
-        st.metric("Events in Period", f"{len(events_selected):,}")
-        st.divider()
+        node_color.append(c)
+        node_size.append(s)
+        hover_texts.append(txt)
 
-    # --- TOP LEVEL CALCULATIONS ---
-    # 1. Demand & Risk Analysis
-    # We pass 'events_selected' for velocity calculation (current pace)
-    # We pass 'events_full' (total_events_df) for cumulative progress vs targets
-    shortfall_data = calculate_shortfalls(
-        events_df=events_selected,
-        targets_df=None, 
-        period_days=period_days,
-        total_events_df=events_full
+    fig.add_trace(go.Scatter(
+        x=node_x, y=node_y,
+        mode='markers',
+        marker=dict(size=node_size, color=node_color, line=dict(width=1, color='white')),
+        text=hover_texts, hoverinfo='text', showlegend=False
+    ))
+    
+    fig.update_layout(
+        margin=dict(l=0, r=0, t=0, b=0),
+        height=450,
+        plot_bgcolor='white',
+        xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+        yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+        hovermode='closest'
     )
-    
-    # 2. Leverage Analysis (Uses selected period to reflect CURRENT network health/turnover)
-    leverage_data = analyze_network_leverage(events_selected)
-    
-    # 3. Global Plan Generation
-    media_plan = generate_global_media_plan(shortfall_data, leverage_data)
+    return fig
 
-    # --- TABS ---
-    tab_plan, tab_explorer, tab_details = st.tabs(["🚀 Optimization Plan", "🕸️ Network Explorer", "🔍 Builder Deep Dive"])
+def render_builder_panel(builder, connections, shortfall_df, leverage_df):
+    """Refined builder detail panel."""
+    
+    # 1. Header & Risk Status
+    row = shortfall_df[shortfall_df['BuilderRegionKey'] == builder]
+    risk_score = 0
+    shortfall = 0
+    
+    if not row.empty:
+        risk_score = row['Risk_Score'].iloc[0]
+        shortfall = row['Projected_Shortfall'].iloc[0]
+    
+    # Risk Badge
+    if risk_score > 50:
+        badge = f'<span class="tag-critical">Risk: {int(risk_score)}</span>'
+        status_color = "#dc2626"
+        status_text = f"CRITICAL SHORTFALL ({int(shortfall):,} leads)"
+    elif risk_score > 20:
+        badge = f'<span class="tag-warning">Risk: {int(risk_score)}</span>'
+        status_color = "#d97706"
+        status_text = f"At Risk ({int(shortfall):,} leads)"
+    else:
+        badge = f'<span class="tag-safe">Risk: {int(risk_score)}</span>'
+        status_color = "#16a34a"
+        status_text = "On Track"
 
-    # ----------------------------------------
-    # TAB 1: OPTIMIZATION PLAN
-    # ----------------------------------------
-    with tab_plan:
-        st.header("Strategic Media Allocation")
-        
-        # 1. Summary Metrics
-        col1, col2, col3, col4 = st.columns(4)
-        
-        total_shortfall = shortfall_data['Projected_Shortfall'].sum()
-        builders_at_risk = shortfall_data[shortfall_data['Projected_Shortfall'] > 0]['BuilderRegionKey'].nunique()
-        total_surplus = shortfall_data['Projected_Surplus'].sum()
-        
-        col1.metric("Total Projected Shortfall", f"{int(total_shortfall):,}", help="Leads needed across all builders")
-        col2.metric("Builders At Risk", f"{builders_at_risk}", help="Count of builders missing targets")
-        col3.metric("Available Surplus", f"{int(total_surplus):,}", help="Excess leads projected at other builders")
-        
-        # 2. Risk Matrix
-        st.divider()
-        col_risk, col_surplus = st.columns([2, 1])
-        
-        with col_risk:
-            render_risk_matrix(shortfall_data)
+    st.markdown(f"""
+    <div class="card">
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+            <h3 style="margin:0; font-size:1.2rem;">{builder}</h3>
+            {badge}
+        </div>
+        <div style="margin-top:5px; font-size:0.9rem; color:{status_color}; font-weight:600;">
+            {status_text}
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # 2. Commercial Data Tabs
+    tab_in, tab_out, tab_partners = st.tabs(["📥 Supply (In)", "📤 Demand (Out)", "🤝 Partners"])
+    
+    with tab_in:
+        st.caption("Who sends leads TO this builder?")
+        if connections['inbound']:
+            df = pd.DataFrame(connections['inbound'])
+            df = df.rename(columns={'partner': 'Source', 'count': 'Volume', 'value': 'Media Value'})
             
-        with col_surplus:
-            st.subheader("Over-Serviced Builders")
-            st.caption("Potential to reduce spend or shift media from these builders:")
-            surplus_df = shortfall_data[shortfall_data['Projected_Surplus'] > 0].sort_values('Projected_Surplus', ascending=False).head(10)
+            # Show Efficiency if available
+            lev_subset = leverage_df[
+                (leverage_df['Dest_BuilderRegionKey'] == builder) & 
+                (leverage_df['MediaPayer_BuilderRegionKey'].isin(df['Source']))
+            ]
+            if not lev_subset.empty:
+                df = df.merge(lev_subset[['MediaPayer_BuilderRegionKey', 'eCPR']], 
+                              left_on='Source', right_on='MediaPayer_BuilderRegionKey', how='left')
+                df = df.drop(columns=['MediaPayer_BuilderRegionKey'])
+            
             st.dataframe(
-                surplus_df[['BuilderRegionKey', 'Projected_Surplus', 'LeadTarget']]
-                .style.format({'Projected_Surplus': "{:,.0f}", 'LeadTarget': "{:,.0f}"})
-                .background_gradient(cmap="Greens", subset=['Projected_Surplus']),
-                use_container_width=True,
-                hide_index=True
+                df.style.format({'Media Value': '${:,.0f}', 'eCPR': '${:,.0f}'})
+                .background_gradient(subset=['Volume'], cmap='Greens'),
+                hide_index=True, use_container_width=True
+            )
+        else:
+            st.info("No inbound lead sources found.")
+
+    with tab_out:
+        st.caption("Who does this builder send leads TO?")
+        if connections['outbound']:
+            df = pd.DataFrame(connections['outbound'])
+            df = df.rename(columns={'partner': 'Destination', 'count': 'Volume'})
+            st.dataframe(
+                df.style.background_gradient(subset=['Volume'], cmap='Oranges'),
+                hide_index=True, use_container_width=True
+            )
+        else:
+            st.info("No outbound referrals found.")
+
+    with tab_partners:
+        st.caption("Two-way mutual referral partners.")
+        if connections['two_way']:
+            df = pd.DataFrame(connections['two_way'])
+            df.columns = ['Partner', 'Received', 'Sent']
+            st.dataframe(df, hide_index=True, use_container_width=True)
+        else:
+            st.info("No mutual partnerships found.")
+
+# ==========================================
+# CAMPAIGN CART (SIDEBAR)
+# ==========================================
+def render_sidebar_cart(shortfall_df):
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("### 🛒 Campaign Cart")
+    
+    targets = st.session_state.campaign_targets
+    
+    if not targets:
+        st.sidebar.info("Add builders to cart to plan a campaign.")
+        return
+    
+    # Calculate Total Gap
+    total_gap = 0
+    cart_data = []
+    
+    for t in targets:
+        row = shortfall_df[shortfall_df['BuilderRegionKey'] == t]
+        gap = 0
+        risk = 0
+        if not row.empty:
+            gap = row['Projected_Shortfall'].iloc[0] if row['Projected_Shortfall'].iloc[0] > 0 else 0
+            risk = row['Risk_Score'].iloc[0]
+        
+        total_gap += gap
+        cart_data.append({'name': t, 'gap': gap, 'risk': risk})
+    
+    # Summary Card
+    st.sidebar.markdown(f"""
+    <div style="background:#f3f4f6; padding:15px; border-radius:8px; margin-bottom:15px; text-align:center;">
+        <div style="font-size:0.8rem; color:#6b7280; text-transform:uppercase;">Total Shortfall</div>
+        <div style="font-size:1.4rem; font-weight:700; color:#dc2626;">{int(total_gap):,}</div>
+        <div style="font-size:0.75rem; color:#6b7280;">Leads needed</div>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # List Items
+    cart_data.sort(key=lambda x: x['risk'], reverse=True)
+    
+    for item in cart_data:
+        c1, c2 = st.sidebar.columns([0.85, 0.15])
+        
+        # Risk Dot
+        dot_color = "🔴" if item['risk'] > 50 else ("🟠" if item['risk'] > 20 else "🟢")
+        
+        with c1:
+            st.markdown(f"**{item['name'][:18]}..**")
+            st.markdown(f"<span style='font-size:0.8rem; color:#6b7280;'>{dot_color} Gap: {int(item['gap'])}</span>", unsafe_allow_html=True)
+        
+        with c2:
+            if st.button("✕", key=f"rm_{item['name']}", help="Remove"):
+                remove_from_cart(item['name'])
+                st.rerun()
+    
+    if st.sidebar.button("Clear Cart", type="secondary", use_container_width=True):
+        st.session_state.campaign_targets = []
+        st.rerun()
+
+# ==========================================
+# CAMPAIGN PLANNER (WIZARD STYLE)
+# ==========================================
+def render_campaign_planner(targets, shortfall_df, leverage_df, G, pos):
+    if not targets:
+        st.info("👆 Please add builders to the campaign cart to unlock the planner.")
+        return
+
+    st.markdown("## 🚀 Campaign Planner")
+    
+    # Run analysis
+    analysis = analyze_campaign_network(targets, leverage_df, shortfall_df)
+    sources = analysis['sources']
+    
+    # --- STEP 1: SCOPE ---
+    with st.expander("Step 1: Campaign Scope & Network", expanded=True):
+        c1, c2, c3 = st.columns(3)
+        
+        total_shortfall = sum(
+            shortfall_df[shortfall_df['BuilderRegionKey'] == t]['Projected_Shortfall'].iloc[0]
+            for t in targets if not shortfall_df[shortfall_df['BuilderRegionKey'] == t].empty
+        )
+        
+        render_metric_card("Total Shortfall", f"{int(total_shortfall):,}", "Leads needed", "text-red-600")
+        with c2: render_metric_card("Available Sources", len(sources), "Network partners")
+        with c3: render_metric_card("Capture Rate", f"{analysis['stats']['target_capture_rate']:.0%}", "Efficiency")
+    
+    if not sources:
+        st.warning("No historical sources found for these targets. Cannot optimize media.")
+        return
+
+    # --- STEP 2: BUDGET & SIMULATION ---
+    st.markdown("### Step 2: Budget Allocation")
+    
+    col_sim_left, col_sim_right = st.columns([1, 2])
+    
+    with col_sim_left:
+        st.markdown("<div class='card'>", unsafe_allow_html=True)
+        st.subheader("⚙️ Simulation Params")
+        budget = st.slider("Total Budget ($)", 5000, 500000, 50000, step=5000)
+        
+        if st.button("🔄 Run Simulation", type="primary", use_container_width=True):
+            sim = simulate_campaign_spend(targets, budget, sources, shortfall_df)
+            st.session_state.campaign_simulation = sim
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    with col_sim_right:
+        if 'campaign_simulation' in st.session_state:
+            sim = st.session_state.campaign_simulation
+            summ = sim['summary']
+            
+            # Results Cards
+            rc1, rc2, rc3 = st.columns(3)
+            with rc1: render_metric_card("Leads Generated", f"{int(summ['leads_to_targets']):,}", "To Targets")
+            with rc2: render_metric_card("Coverage", f"{summ['coverage_pct']:.1%}", "Of Shortfall")
+            with rc3: render_metric_card("Effective CPR", f"${int(summ['effective_cpr'])}", "Cost per Lead")
+            
+            # Progress Bar
+            st.markdown(f"""
+            <div style="margin-top:15px;">
+                <div style="display:flex; justify-content:space-between; font-size:0.85rem; color:#6b7280; margin-bottom:5px;">
+                    <span>Gap Filled: {int(summ['shortfall_covered']):,}</span>
+                    <span>Target: {int(summ['target_shortfall']):,}</span>
+                </div>
+                <div style="width:100%; background:#e5e7eb; height:8px; border-radius:4px;">
+                    <div style="width:{min(summ['coverage_pct']*100, 100)}%; background:#10b981; height:8px; border-radius:4px;"></div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+        else:
+            st.info("👈 Set budget and click 'Run Simulation' to see results.")
+
+    # --- STEP 3: PLAN DETAILS ---
+    if 'campaign_simulation' in st.session_state:
+        st.markdown("### Step 3: Execution Plan")
+        
+        sim = st.session_state.campaign_simulation
+        allocs = pd.DataFrame(sim['allocations'])
+        
+        if not allocs.empty:
+            allocs = allocs.rename(columns={
+                'source': 'Source Builder',
+                'budget': 'Budget Allocation',
+                'leads_to_targets': 'Target Leads',
+                'leads_leaked': 'Leakage',
+                'effective_cpr': 'Eff. CPR'
+            })
+            
+            st.dataframe(
+                allocs[['Source Builder', 'Budget Allocation', 'Target Leads', 'Eff. CPR', 'Leakage']],
+                column_config={
+                    "Budget Allocation": st.column_config.ProgressColumn(
+                        "Budget", format="$%d", min_value=0, max_value=int(allocs['Budget Allocation'].max())
+                    ),
+                    "Target Leads": st.column_config.NumberColumn("Target Leads", format="%d"),
+                    "Eff. CPR": st.column_config.NumberColumn("CPR", format="$%d"),
+                },
+                hide_index=True,
+                use_container_width=True
+            )
+            
+            # Export
+            csv = allocs.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                "📥 Download Campaign Plan (CSV)",
+                csv,
+                "campaign_plan.csv",
+                "text/csv",
+                key='download-csv'
             )
 
-        # 3. The Plan
-        st.divider()
-        render_media_plan_table(media_plan)
+# ==========================================
+# MAIN APP FLOW
+# ==========================================
+def main():
+    st.title("🔗 Network Intelligence")
+    
+    # Load Data
+    events = load_and_process()
+    if events is None:
+        st.warning("⚠️ Please upload 'Events Master' on the Home page.")
+        return
 
-    # ----------------------------------------
-    # TAB 2: NETWORK EXPLORER
-    # ----------------------------------------
-    with tab_explorer:
-        st.subheader("Ecosystem Clustering")
-        
-        # Clustering Controls
-        c1, c2 = st.columns(2)
-        with c1:
-            resolution = st.slider("Resolution", 0.5, 2.5, 1.5, 0.1)
-        with c2:
-            target_clusters = st.slider("Max Clusters", 3, 25, 15, 1)
-        
-        # Run Clustering ON SELECTED PERIOD
-        with st.spinner("Clustering network..."):
-            results = run_referral_clustering(events_selected, resolution=resolution, target_max_clusters=target_clusters)
-            
-        edges_clean = results.get('edges_clean', pd.DataFrame())
-        builder_master = results.get('builder_master', pd.DataFrame())
-        cluster_summary = results.get('cluster_summary', pd.DataFrame())
-        G = results.get('graph', nx.Graph())
-        
-        # Visualize Graph
-        if not G.nodes:
-            st.warning(f"No network data found in the selected period ({len(events_selected)} events).")
+    # Global Settings
+    with st.sidebar:
+        st.markdown("## ⚙️ Filters")
+        dates = pd.to_datetime(events['lead_date'], errors='coerce').dropna()
+        if not dates.empty:
+            min_d, max_d = dates.min().date(), dates.max().date()
+            dr = st.date_input("Period", value=(min_d, max_d))
         else:
-            # Cluster Select
-            cluster_labels = {int(r.ClusterId): f"Cluster {int(r.ClusterId)} ({int(r.N_builders)} builders)" for r in cluster_summary.itertuples()}
-            sel_cluster_id = st.selectbox("Select Ecosystem to Visualize", options=list(cluster_labels.keys()), format_func=lambda x: cluster_labels[x])
-            
-            # Filter Graph Data
-            sub_builders = builder_master[builder_master["ClusterId"] == sel_cluster_id]
-            sub_edges = edges_clean[(edges_clean["Cluster_origin"] == sel_cluster_id) & (edges_clean["Cluster_dest"] == sel_cluster_id)]
-            
-            if not sub_edges.empty:
-                pos = nx.spring_layout(G, weight="weight", seed=42) # simple layout
-                
-                st.info(f"Visualizing Cluster {sel_cluster_id} with {len(sub_builders)} builders and {len(sub_edges)} connections.")
-                
-                # Simple Plotly Graph
-                edge_x = []
-                edge_y = []
-                for _, row in sub_edges.iterrows():
-                    if row['Origin_builder'] in pos and row['Dest_builder'] in pos:
-                        x0, y0 = pos[row['Origin_builder']]
-                        x1, y1 = pos[row['Dest_builder']]
-                        edge_x.extend([x0, x1, None])
-                        edge_y.extend([y0, y1, None])
+            dr = None
 
-                edge_trace = go.Scatter(x=edge_x, y=edge_y, line=dict(width=0.5, color='#888'), hoverinfo='none', mode='lines')
+    # Processing
+    events_filtered = events.copy() # (simplified filtering for demo)
+    
+    with st.spinner("Analyzing Ecosystem..."):
+        shortfall_df = calculate_shortfalls(events_filtered, period_days=90)
+        leverage_df = analyze_network_leverage(events_filtered)
+        cluster_res = run_referral_clustering(events_filtered, target_max_clusters=12)
+        G = cluster_res.get('graph', nx.Graph())
 
-                node_x = []
-                node_y = []
-                for node in sub_builders['BuilderRegionKey']:
-                    if node in pos:
-                        x, y = pos[node]
-                        node_x.append(x)
-                        node_y.append(y)
+    # Sidebar Cart
+    render_sidebar_cart(shortfall_df)
 
-                node_trace = go.Scatter(
-                    x=node_x, y=node_y, mode='markers', hoverinfo='text',
-                    marker=dict(showscale=True, colorscale='YlGnBu', size=10, color=sub_builders['ClusterId']),
-                    text=sub_builders['BuilderRegionKey']
-                )
+    # 1. Search & Add
+    all_builders = get_all_builders(events_filtered)
+    col_search, col_add = st.columns([4, 1])
+    with col_search:
+        selected = st.selectbox("Find Builder", [""] + all_builders, index=0)
+    with col_add:
+        # Spacer for alignment
+        st.write("")
+        st.write("") 
+        if st.button("➕ Add to Cart", type="secondary", use_container_width=True, disabled=not selected):
+            add_to_cart(selected)
+            st.rerun()
 
-                fig = go.Figure(data=[edge_trace, node_trace], layout=go.Layout(showlegend=False, hovermode='closest', margin=dict(b=20,l=5,r=5,t=40)))
-                st.plotly_chart(fig, use_container_width=True)
+    if selected:
+        st.session_state.selected_builder = selected
 
-    # ----------------------------------------
-    # TAB 3: BUILDER DEEP DIVE
-    # ----------------------------------------
-    with tab_details:
-        st.header("Single Builder Analysis")
+    # 2. Network Visualizer
+    if st.session_state.selected_builder:
+        b = st.session_state.selected_builder
         
-        # Select Builder
-        at_risk = shortfall_data[shortfall_data['Projected_Shortfall'] > 0]['BuilderRegionKey'].tolist()
-        all_builders = sorted(shortfall_data['BuilderRegionKey'].unique())
+        c1, c2 = st.columns([1.8, 1])
         
-        # prioritize at risk in dropdown
-        sorted_opts = at_risk + [b for b in all_builders if b not in at_risk]
-        
-        sel_builder = st.selectbox("Select Builder", sorted_opts)
-        
-        if sel_builder:
-            row = shortfall_data[shortfall_data['BuilderRegionKey'] == sel_builder].iloc[0]
+        with c1:
+            st.markdown(f"#### Network Map: {b}")
+            pos = nx.spring_layout(G, seed=42, k=0.8)
+            conns = get_builder_connections(events_filtered, b)
+            fig = render_network_map(G, pos, conns, b)
+            st.plotly_chart(fig, use_container_width=True)
             
-            c1, c2, c3 = st.columns(3)
-            c1.metric("Lead Target", int(row['LeadTarget']))
-            c2.metric("Projected Total", int(row['Projected_Total']), delta=int(row['Net_Gap']))
-            c3.metric("Days Remaining", int(row['Days_Remaining']))
-            
-            st.divider()
-            
-            # Strategies for this specific builder
-            strats = generate_investment_strategies(sel_builder, shortfall_data, leverage_data, events_selected)
-            
-            if not strats.empty:
-                st.subheader("Available Inbound Pathways (Selected Period)")
-                st.dataframe(strats.style.format({'Effective_CPR': '${:,.0f}', 'Investment_Required': '${:,.0f}'}))
-            else:
-                st.info("No inbound referral history found for this builder in the selected period.")
+        with c2:
+            render_builder_panel(b, conns, shortfall_df, leverage_df)
+
+    else:
+        st.info("Select a builder above to explore their network relationships.")
+
+    st.markdown("---")
+    
+    # 3. Campaign Planner (Full Width)
+    render_campaign_planner(
+        st.session_state.campaign_targets, 
+        shortfall_df, 
+        leverage_df, 
+        G, 
+        nx.spring_layout(G, seed=42) # Re-calc pos for planner
+    )
 
 if __name__ == "__main__":
-    main() 
+    main()
