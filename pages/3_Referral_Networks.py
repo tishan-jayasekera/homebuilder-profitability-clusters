@@ -693,9 +693,16 @@ def main():
 
     # Processing
     events_filtered = events.copy() 
+    if dr and len(dr) == 2:
+        start_date, end_date = pd.Timestamp(dr[0]), pd.Timestamp(dr[1])
+        mask = (events_filtered['lead_date'] >= start_date) & (events_filtered['lead_date'] <= end_date)
+        events_filtered = events_filtered.loc[mask]
+        period_days = (end_date - start_date).days
+    else:
+        period_days = 90
     
     with st.spinner("Mapping Ecosystem..."):
-        shortfall_df = calculate_shortfalls(events_filtered, period_days=90)
+        shortfall_df = calculate_shortfalls(events_filtered, period_days=period_days)
         leverage_df = analyze_network_leverage(events_filtered)
         cluster_res = run_referral_clustering(events_filtered, target_max_clusters=12)
         G = cluster_res.get('graph', nx.Graph())
