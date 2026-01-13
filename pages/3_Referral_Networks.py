@@ -1,5 +1,7 @@
 import io
+import sys
 from datetime import datetime
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -7,7 +9,12 @@ import streamlit as st
 import networkx as nx
 import plotly.graph_objects as go
 
-from network_optimization import (
+# Add parent directory to path for imports
+root = Path(__file__).parent.parent
+if str(root) not in sys.path:
+    sys.path.insert(0, str(root))
+
+from src.network_optimization import (
     OptimConfig,
     calculate_shortfalls,
     analyze_network_leverage,
