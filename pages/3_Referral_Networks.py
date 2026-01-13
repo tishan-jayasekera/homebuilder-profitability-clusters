@@ -216,6 +216,7 @@ def compute_focus_guidance(builders, edges_sub, focus_builder):
     if not focus_builder or focus_builder not in builders["BuilderRegionKey"].values:
         return None, None, set(), set(), None, None, None, np.nan, np.nan
 
+    # Inbound referrals to focus builder
     inbound = edges_sub.loc[
         edges_sub["Dest_builder"] == focus_builder, "Referrals"
     ].sum()
