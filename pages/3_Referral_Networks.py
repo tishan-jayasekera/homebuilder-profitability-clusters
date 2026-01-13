@@ -141,6 +141,8 @@ class AllocationResult:
 # ============================================================================
 # OPTIMIZATION ENGINE
 # ============================================================================
+REC_THRESHOLD = 0.1  # 10% advantage threshold for recommendations
+
 class NetworkOptimizer:
     """
     Algorithmic optimizer that finds the most efficient media allocation
@@ -154,6 +156,7 @@ class NetworkOptimizer:
         self.builder_master = builder_master
         self.shortfalls = shortfalls
         self.leverage = leverage
+        self._analysis_cache = {}
         
         # Build lookup tables
         self._build_lookups()
@@ -192,9 +195,27 @@ class NetworkOptimizer:
         
         # 1. DIRECT PATH: Spend directly on target
         direct_cost = self.media_cost.get(target, 0)
-        direct_refs_in = self.builder_master[
-            self.builder_master['BuilderRegionKey'] == target
-        ]['Referrals_in'].iloc[0] if target in self.builder_master['BuilderRegionKey'].values else 0
+        direct_refs_in = 0
+        if not self.builder_master.empty and 'BuilderRegionKey' in self.builder_master.columns:
+            if 'Referrals_in' in self.builder_master.columns:
+                match = self.builder_master[self.builder_master['BuilderRegionKey'] == target]
+                if not match.empty:
+                    direct_refs_in = float(match['Referrals_in'].iloc[0])
+        if direct_refs_in == 0 and not self.leverage.empty:
+            direct_refs_in = float(
+                self.leverage[self.leverage['Dest_BuilderRegionKey'] == target]['Referrals_to_Target'].sum()
+            )
+        if direct_refs_in == 0 and target in self.G:
+            if self.G.is_directed():
+                direct_refs_in = sum(
+                    float(self.G.get_edge_data(src, target).get('weight', 0))
+                    for src in self.G.predecessors(target)
+                )
+            else:
+                direct_refs_in = sum(
+                    float(self.G.get_edge_data(src, target).get('weight', 0))
+                    for src in self.G.neighbors(target)
+                )
         
         if direct_cost > 0 and direct_refs_in > 0:
             # Direct CPR = cost / refs received (simplified model)
@@ -313,6 +334,8 @@ class NetworkOptimizer:
     
     def analyze_target(self, target: str) -> TargetAnalysis:
         """Complete analysis for a single target."""
+        if target in self._analysis_cache:
+            return self._analysis_cache[target]
         sf_row = self.shortfalls[self.shortfalls['BuilderRegionKey'] == target]
         shortfall = float(sf_row['Projected_Shortfall'].iloc[0]) if not sf_row.empty else 0
         risk = float(sf_row['Risk_Score'].iloc[0]) if not sf_row.empty else 0
@@ -330,10 +353,10 @@ class NetworkOptimizer:
             recommendation = 'insufficient_data'
             best_path = None
         elif direct_cpr is not None and network_cpr is not None:
-            if direct_cpr <= network_cpr * 0.9:  # Direct is 10%+ better
+            if direct_cpr <= network_cpr * (1 - REC_THRESHOLD):
                 recommendation = 'direct'
                 best_path = direct_paths[0]
-            elif network_cpr <= direct_cpr * 0.9:  # Network is 10%+ better
+            elif network_cpr <= direct_cpr * (1 - REC_THRESHOLD):
                 recommendation = 'network'
                 best_path = network_paths[0]
             else:
@@ -346,7 +369,7 @@ class NetworkOptimizer:
             recommendation = 'network'
             best_path = network_paths[0] if network_paths else None
         
-        return TargetAnalysis(
+        analysis = TargetAnalysis(
             builder=target,
             shortfall=shortfall,
             risk_score=risk,
@@ -356,6 +379,8 @@ class NetworkOptimizer:
             network_cpr=network_cpr,
             recommendation=recommendation
         )
+        self._analysis_cache[target] = analysis
+        return analysis
     
     def optimize_basket(self, targets: List[str], budget: float) -> Tuple[List[AllocationResult], Dict]:
         """
@@ -449,25 +474,26 @@ class NetworkOptimizer:
             if allocation < 100:  # Minimum allocation threshold
                 continue
             
-            # Calculate leads per target
-            leads_generated = allocation / source_data['best_cpr']
+            # Calculate leads per target using each target's best path
             leads_per_target = {}
-            
+            best_paths = {}
             for target in unfilled_targets:
-                # Find best path to this target from this source
                 paths_to_target = [p for t, p in source_data['target_paths'] if t == target]
                 if paths_to_target:
-                    best_path = min(paths_to_target, key=lambda p: p.effective_cpr)
-                    # Leads proportional to transfer rate
-                    target_share = best_path.transfer_rate / sum(
-                        min(pp for t, pp in source_data['target_paths'] if t == tt).transfer_rate 
-                        for tt in unfilled_targets
-                        for _, pp in source_data['target_paths'] if _ == tt
-                    ) if len(unfilled_targets) > 1 else 1.0
-                    
-                    leads_for_target = leads_generated * min(target_share, 1.0)
-                    leads_per_target[target] = leads_for_target
-                    target_leads[target] += leads_for_target
+                    best_paths[target] = min(paths_to_target, key=lambda p: p.effective_cpr)
+            total_transfer = sum(p.transfer_rate for p in best_paths.values())
+            if total_transfer <= 0:
+                continue
+            
+            for target in unfilled_targets:
+                best_path = best_paths.get(target)
+                if not best_path:
+                    continue
+                target_share = best_path.transfer_rate / total_transfer
+                target_budget = allocation * min(target_share, 1.0)
+                leads_for_target = target_budget / best_path.effective_cpr
+                leads_per_target[target] = leads_for_target
+                target_leads[target] += leads_for_target
             
             is_direct = source in targets
             
@@ -561,11 +587,16 @@ def process_network(_events, start_date, end_date):
 # VISUALIZATION HELPERS
 # ============================================================================
 def render_network_graph(G, builder_master, focus=None, targets=None):
-    pos = nx.spring_layout(G, seed=42, k=0.7)
+    edges = tuple(
+        (u, v, float(data.get('weight', 1))) for u, v, data in G.edges(data=True)
+    )
+    pos = get_layout(tuple(G.nodes()), edges)
     fig = go.Figure()
     
     targets = targets or []
-    cluster_map = builder_master.set_index('BuilderRegionKey')['ClusterId'].to_dict() if not builder_master.empty else {}
+    cluster_map = {}
+    if not builder_master.empty and 'BuilderRegionKey' in builder_master.columns and 'ClusterId' in builder_master.columns:
+        cluster_map = builder_master.set_index('BuilderRegionKey')['ClusterId'].to_dict()
     colors = px.colors.qualitative.Set2
     
     # Edges
@@ -631,6 +662,16 @@ def get_rec_pill(recommendation):
     return pills.get(recommendation, '<span class="pill pill-gray">Unknown</span>')
 
 # ============================================================================
+# CACHED HELPERS
+# ============================================================================
+@st.cache_data(show_spinner=False)
+def get_layout(nodes, edges):
+    graph = nx.Graph()
+    graph.add_nodes_from(nodes)
+    graph.add_weighted_edges_from(edges)
+    return nx.spring_layout(graph, seed=42, k=0.7)
+
+# ============================================================================
 # MAIN APPLICATION
 # ============================================================================
 def main():
@@ -666,7 +707,10 @@ def main():
             st.caption("No targets selected")
     
     # Process data
-    start_d, end_d = (date_range[0], date_range[1]) if len(date_range) == 2 else (min_d, max_d)
+    if isinstance(date_range, (list, tuple)) and len(date_range) == 2 and all(date_range):
+        start_d, end_d = date_range[0], date_range[1]
+    else:
+        start_d, end_d = min_d, max_d
     with st.spinner("Analyzing..."):
         data = process_network(events, start_d, end_d)
     
