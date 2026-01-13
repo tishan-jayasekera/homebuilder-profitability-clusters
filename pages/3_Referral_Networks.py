@@ -112,227 +112,195 @@ def get_builder_connections(events_df, builder):
     return result
 
 # ==========================================
-# NETWORK MAP - CLEAN, COMMERCIAL FOCUS
+# NETWORK MAP - FULL GRAPH WITH HIGHLIGHTED CONNECTIONS
 # ==========================================
-def render_ego_network(connections, builder, leverage_df):
-    """Render focused ego network showing only direct connections with clear arrows."""
-    
-    two_way = [c['partner'] for c in connections['two_way']]
-    inbound = [c['partner'] for c in connections['inbound']]
-    outbound = [c['partner'] for c in connections['outbound']]
-    
-    all_partners = two_way + inbound + outbound
-    if not all_partners:
-        return None
-    
-    # Layout: center builder, partners in a circle
-    n = len(all_partners)
-    angles = np.linspace(0, 2 * np.pi, n, endpoint=False)
-    radius = 1.0
-    
-    pos = {builder: (0, 0)}
-    for i, partner in enumerate(all_partners):
-        pos[partner] = (radius * np.cos(angles[i]), radius * np.sin(angles[i]))
-    
+def render_network_map(G, pos, connections, selected_builder=None):
+    """
+    Render full network graph.
+    - When no builder selected: show all nodes/edges in neutral colors
+    - When builder selected: highlight their connections, dim everything else
+    """
     fig = go.Figure()
     
     # Colors
-    COL_TWO_WAY = '#2563eb'   # Blue
-    COL_INBOUND = '#16a34a'   # Green  
-    COL_OUTBOUND = '#ea580c'  # Orange
-    COL_CENTER = '#dc2626'    # Red
+    COL_TWO_WAY = '#2563eb'    # Blue - mutual partnerships
+    COL_INBOUND = '#16a34a'    # Green - sends TO selected
+    COL_OUTBOUND = '#f59e0b'   # Orange - receives FROM selected
+    COL_SELECTED = '#dc2626'   # Red - the selected builder
+    COL_MUTED = '#e5e7eb'      # Light grey - background
+    COL_NODE_DEFAULT = '#6366f1'  # Purple - default node color
     
-    def draw_arrow(x0, y0, x1, y1, color, width, label=None, bidirectional=False):
-        """Draw edge with arrowhead."""
+    # Build connection sets for selected builder
+    two_way_set = set()
+    inbound_set = set()
+    outbound_set = set()
+    
+    if selected_builder and connections:
+        two_way_set = {c['partner'] for c in connections.get('two_way', [])}
+        inbound_set = {c['partner'] for c in connections.get('inbound', [])}
+        outbound_set = {c['partner'] for c in connections.get('outbound', [])}
+    
+    connected_nodes = two_way_set | inbound_set | outbound_set
+    if selected_builder:
+        connected_nodes.add(selected_builder)
+    
+    # Helper to draw arrow
+    def draw_edge(x0, y0, x1, y1, color, width, opacity, show_arrow=True):
         dx, dy = x1 - x0, y1 - y0
         length = np.sqrt(dx**2 + dy**2)
-        if length == 0:
+        if length < 0.01:
             return
         udx, udy = dx / length, dy / length
         
-        # Shorten to not overlap nodes
-        margin = 0.08
+        # Shorten line for node margins
+        margin = 0.04
         sx, sy = x0 + udx * margin, y0 + udy * margin
         ex, ey = x1 - udx * margin, y1 - udy * margin
         
-        # Line
+        # Draw line
         fig.add_trace(go.Scatter(
             x=[sx, ex], y=[sy, ey], mode='lines',
             line=dict(color=color, width=width),
-            hoverinfo='skip', showlegend=False
+            opacity=opacity, hoverinfo='skip', showlegend=False
         ))
         
-        # Arrowhead at end
-        head = 0.04
-        px, py = -udy, udx  # perpendicular
-        tip_x, tip_y = ex, ey
-        l_x, l_y = tip_x - udx * head - px * head * 0.5, tip_y - udy * head - py * head * 0.5
-        r_x, r_y = tip_x - udx * head + px * head * 0.5, tip_y - udy * head + py * head * 0.5
-        
-        fig.add_trace(go.Scatter(
-            x=[l_x, tip_x, r_x], y=[l_y, tip_y, r_y],
-            mode='lines', fill='toself', fillcolor=color,
-            line=dict(color=color, width=1),
-            hoverinfo='skip', showlegend=False
-        ))
-        
-        # If bidirectional, add arrow at start too
-        if bidirectional:
-            tip_x, tip_y = sx, sy
-            l_x, l_y = tip_x + udx * head - px * head * 0.5, tip_y + udy * head - py * head * 0.5
-            r_x, r_y = tip_x + udx * head + px * head * 0.5, tip_y + udy * head + py * head * 0.5
+        # Draw arrowhead
+        if show_arrow and opacity > 0.3:
+            head = 0.025
+            px, py = -udy, udx
+            tip_x, tip_y = ex, ey
+            l_x = tip_x - udx * head - px * head * 0.6
+            l_y = tip_y - udy * head - py * head * 0.6
+            r_x = tip_x - udx * head + px * head * 0.6
+            r_y = tip_y - udy * head + py * head * 0.6
             
             fig.add_trace(go.Scatter(
                 x=[l_x, tip_x, r_x], y=[l_y, tip_y, r_y],
                 mode='lines', fill='toself', fillcolor=color,
-                line=dict(color=color, width=1),
-                hoverinfo='skip', showlegend=False
+                line=dict(color=color, width=0.5),
+                opacity=opacity, hoverinfo='skip', showlegend=False
             ))
     
-    # Draw edges
-    for c in connections['two_way']:
-        p = c['partner']
-        x0, y0 = pos[builder]
-        x1, y1 = pos[p]
-        w = 2 + min((c['in'] + c['out']) / 10, 4)
-        draw_arrow(x0, y0, x1, y1, COL_TWO_WAY, w, bidirectional=True)
-    
-    for c in connections['inbound']:
-        p = c['partner']
-        x0, y0 = pos[p]  # From partner
-        x1, y1 = pos[builder]  # To builder
-        w = 1.5 + min(c['count'] / 10, 3)
-        draw_arrow(x0, y0, x1, y1, COL_INBOUND, w)
-    
-    for c in connections['outbound']:
-        p = c['partner']
-        x0, y0 = pos[builder]  # From builder
-        x1, y1 = pos[p]  # To partner
-        w = 1.5 + min(c['count'] / 10, 3)
-        draw_arrow(x0, y0, x1, y1, COL_OUTBOUND, w)
-    
-    # Draw nodes
-    # Partners - Two-way
-    if two_way:
-        fig.add_trace(go.Scatter(
-            x=[pos[p][0] for p in two_way],
-            y=[pos[p][1] for p in two_way],
-            mode='markers+text',
-            marker=dict(size=28, color=COL_TWO_WAY, line=dict(width=2, color='white')),
-            text=[p[:12] for p in two_way],
-            textposition='bottom center',
-            textfont=dict(size=9, color='#374151'),
-            hovertext=[f"<b>{p}</b><br>↔ Two-way partner" for p in two_way],
-            hoverinfo='text',
-            name='↔ Two-Way',
-            showlegend=True
-        ))
-    
-    # Partners - Inbound only
-    if inbound:
-        fig.add_trace(go.Scatter(
-            x=[pos[p][0] for p in inbound],
-            y=[pos[p][1] for p in inbound],
-            mode='markers+text',
-            marker=dict(size=24, color=COL_INBOUND, line=dict(width=2, color='white')),
-            text=[p[:12] for p in inbound],
-            textposition='bottom center',
-            textfont=dict(size=9, color='#374151'),
-            hovertext=[f"<b>{p}</b><br>→ Sends you leads" for p in inbound],
-            hoverinfo='text',
-            name='→ Sends You Leads',
-            showlegend=True
-        ))
-    
-    # Partners - Outbound only
-    if outbound:
-        fig.add_trace(go.Scatter(
-            x=[pos[p][0] for p in outbound],
-            y=[pos[p][1] for p in outbound],
-            mode='markers+text',
-            marker=dict(size=24, color=COL_OUTBOUND, line=dict(width=2, color='white')),
-            text=[p[:12] for p in outbound],
-            textposition='bottom center',
-            textfont=dict(size=9, color='#374151'),
-            hovertext=[f"<b>{p}</b><br>← You send them leads" for p in outbound],
-            hoverinfo='text',
-            name='← You Send Leads',
-            showlegend=True
-        ))
-    
-    # Center node (selected builder)
-    fig.add_trace(go.Scatter(
-        x=[0], y=[0],
-        mode='markers+text',
-        marker=dict(size=45, color=COL_CENTER, line=dict(width=3, color='white')),
-        text=[builder[:15]],
-        textposition='middle center',
-        textfont=dict(size=10, color='white', family='Arial Black'),
-        hovertext=f"<b>{builder}</b><br>(Selected)",
-        hoverinfo='text',
-        showlegend=False
-    ))
-    
-    fig.update_layout(
-        height=450,
-        margin=dict(l=10, r=10, t=10, b=10),
-        paper_bgcolor='white',
-        plot_bgcolor='white',
-        xaxis=dict(showgrid=False, zeroline=False, showticklabels=False, range=[-1.5, 1.5], scaleanchor='y'),
-        yaxis=dict(showgrid=False, zeroline=False, showticklabels=False, range=[-1.5, 1.5]),
-        legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='center', x=0.5, font=dict(size=11)),
-        hovermode='closest'
-    )
-    
-    return fig
-
-def render_overview_network(G, pos, top_n=50):
-    """Render simplified overview when no builder selected. Show top connected nodes only."""
-    
-    # Get top nodes by degree
-    degrees = dict(G.degree(weight='weight'))
-    top_nodes = sorted(degrees.keys(), key=lambda x: degrees[x], reverse=True)[:top_n]
-    
-    fig = go.Figure()
-    
-    # Draw edges (only between top nodes)
+    # Draw all edges
     for u, v, data in G.edges(data=True):
-        if u not in top_nodes or v not in top_nodes:
-            continue
         if u not in pos or v not in pos:
             continue
         
         x0, y0 = pos[u]
         x1, y1 = pos[v]
-        w = data.get('weight', 1)
+        weight = data.get('weight', 1)
         
-        fig.add_trace(go.Scatter(
-            x=[x0, x1, None], y=[y0, y1, None],
-            mode='lines', hoverinfo='skip',
-            line=dict(color='#d1d5db', width=0.5 + min(w / 20, 1.5)),
-            opacity=0.5, showlegend=False
-        ))
+        if selected_builder:
+            # Determine edge type relative to selected builder
+            if u == selected_builder and v in two_way_set:
+                # Two-way: draw both directions
+                draw_edge(x0, y0, x1, y1, COL_TWO_WAY, 2 + min(weight/5, 3), 0.9)
+            elif v == selected_builder and u in two_way_set:
+                draw_edge(x0, y0, x1, y1, COL_TWO_WAY, 2 + min(weight/5, 3), 0.9)
+            elif u in inbound_set and v == selected_builder:
+                # Inbound: partner -> selected
+                draw_edge(x0, y0, x1, y1, COL_INBOUND, 1.5 + min(weight/8, 2.5), 0.85)
+            elif u == selected_builder and v in outbound_set:
+                # Outbound: selected -> partner
+                draw_edge(x0, y0, x1, y1, COL_OUTBOUND, 1.5 + min(weight/8, 2.5), 0.85)
+            else:
+                # Background edge
+                draw_edge(x0, y0, x1, y1, COL_MUTED, 0.5, 0.15, show_arrow=False)
+        else:
+            # No selection - show all edges muted
+            draw_edge(x0, y0, x1, y1, '#9ca3af', 0.5 + min(weight/15, 1.5), 0.4, show_arrow=False)
     
     # Draw nodes
-    node_x = [pos[n][0] for n in top_nodes if n in pos]
-    node_y = [pos[n][1] for n in top_nodes if n in pos]
-    node_size = [12 + min(degrees[n] / 5, 25) for n in top_nodes if n in pos]
-    node_text = [f"<b>{n}</b><br>Connections: {degrees[n]}" for n in top_nodes if n in pos]
+    all_nodes = list(G.nodes())
     
-    fig.add_trace(go.Scatter(
-        x=node_x, y=node_y, mode='markers',
-        marker=dict(size=node_size, color='#6366f1', line=dict(width=1.5, color='white'), opacity=0.8),
-        text=node_text, hoverinfo='text',
-        showlegend=False
-    ))
+    if selected_builder:
+        # Background nodes (not connected)
+        bg_nodes = [n for n in all_nodes if n not in connected_nodes and n in pos]
+        if bg_nodes:
+            fig.add_trace(go.Scatter(
+                x=[pos[n][0] for n in bg_nodes],
+                y=[pos[n][1] for n in bg_nodes],
+                mode='markers',
+                marker=dict(size=8, color=COL_MUTED, opacity=0.3, line=dict(width=0)),
+                hovertext=[f"{n}" for n in bg_nodes],
+                hoverinfo='text', showlegend=False
+            ))
+        
+        # Two-way partners
+        tw_nodes = [n for n in two_way_set if n in pos]
+        if tw_nodes:
+            sizes = [18 + min(G.degree(n, weight='weight')/3, 15) for n in tw_nodes]
+            fig.add_trace(go.Scatter(
+                x=[pos[n][0] for n in tw_nodes],
+                y=[pos[n][1] for n in tw_nodes],
+                mode='markers',
+                marker=dict(size=sizes, color=COL_TWO_WAY, line=dict(width=2, color='white')),
+                hovertext=[f"<b>{n}</b><br>↔ Two-way partner" for n in tw_nodes],
+                hoverinfo='text', name='↔ Two-Way', showlegend=True
+            ))
+        
+        # Inbound sources
+        in_nodes = [n for n in inbound_set if n in pos]
+        if in_nodes:
+            sizes = [16 + min(G.degree(n, weight='weight')/4, 12) for n in in_nodes]
+            fig.add_trace(go.Scatter(
+                x=[pos[n][0] for n in in_nodes],
+                y=[pos[n][1] for n in in_nodes],
+                mode='markers',
+                marker=dict(size=sizes, color=COL_INBOUND, line=dict(width=2, color='white')),
+                hovertext=[f"<b>{n}</b><br>→ Sends you leads" for n in in_nodes],
+                hoverinfo='text', name='→ Inbound', showlegend=True
+            ))
+        
+        # Outbound destinations
+        out_nodes = [n for n in outbound_set if n in pos]
+        if out_nodes:
+            sizes = [16 + min(G.degree(n, weight='weight')/4, 12) for n in out_nodes]
+            fig.add_trace(go.Scatter(
+                x=[pos[n][0] for n in out_nodes],
+                y=[pos[n][1] for n in out_nodes],
+                mode='markers',
+                marker=dict(size=sizes, color=COL_OUTBOUND, line=dict(width=2, color='white')),
+                hovertext=[f"<b>{n}</b><br>← You send leads" for n in out_nodes],
+                hoverinfo='text', name='← Outbound', showlegend=True
+            ))
+        
+        # Selected builder (on top)
+        if selected_builder in pos:
+            fig.add_trace(go.Scatter(
+                x=[pos[selected_builder][0]],
+                y=[pos[selected_builder][1]],
+                mode='markers+text',
+                marker=dict(size=35, color=COL_SELECTED, line=dict(width=3, color='white')),
+                text=[selected_builder[:12]],
+                textposition='top center',
+                textfont=dict(size=10, color='#1f2937', family='Arial'),
+                hovertext=f"<b>{selected_builder}</b><br>(Selected)",
+                hoverinfo='text', showlegend=False
+            ))
+    else:
+        # No selection - show all nodes by degree
+        degrees = dict(G.degree(weight='weight'))
+        nodes_in_pos = [n for n in all_nodes if n in pos]
+        sizes = [10 + min(degrees.get(n, 0) / 4, 20) for n in nodes_in_pos]
+        
+        fig.add_trace(go.Scatter(
+            x=[pos[n][0] for n in nodes_in_pos],
+            y=[pos[n][1] for n in nodes_in_pos],
+            mode='markers',
+            marker=dict(size=sizes, color=COL_NODE_DEFAULT, opacity=0.7, line=dict(width=1, color='white')),
+            hovertext=[f"<b>{n}</b><br>Connections: {degrees.get(n, 0)}" for n in nodes_in_pos],
+            hoverinfo='text', showlegend=False
+        ))
     
     fig.update_layout(
-        height=400,
-        margin=dict(l=10, r=10, t=10, b=10),
-        paper_bgcolor='#fafafa',
-        plot_bgcolor='#fafafa',
-        xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+        height=480,
+        margin=dict(l=5, r=5, t=5, b=5),
+        paper_bgcolor='white',
+        plot_bgcolor='white',
+        xaxis=dict(showgrid=False, zeroline=False, showticklabels=False, scaleanchor='y'),
         yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+        legend=dict(orientation='h', yanchor='bottom', y=1.01, xanchor='center', x=0.5, font=dict(size=10)),
         hovermode='closest'
     )
     
@@ -510,56 +478,55 @@ def main():
     st.markdown("---")
     
     # Main content
-    if st.session_state.selected_builder:
-        builder = st.session_state.selected_builder
-        connections = get_builder_connections(events_filtered, builder)
-        
-        st.markdown(f"## {builder}")
-        
-        col1, col2 = st.columns([3, 2])
-        
-        with col1:
-            st.markdown("#### Referral Network")
-            fig = render_ego_network(connections, builder, leverage_df)
-            if fig:
-                st.plotly_chart(fig, width='stretch')
-            else:
-                st.info("No direct referral connections found for this builder.")
-        
-        with col2:
-            render_builder_panel(builder, connections, shortfall_df, leverage_df, events_filtered)
+    if G.number_of_nodes() == 0:
+        st.info("No referral connections found in the selected period.")
+        return
     
+    # Compute layout once
+    pos = nx.spring_layout(G, seed=42, k=1.0, iterations=50)
+    
+    builder = st.session_state.selected_builder
+    connections = get_builder_connections(events_filtered, builder) if builder else None
+    
+    if builder:
+        st.markdown(f"## {builder}")
     else:
-        # Overview mode
         st.markdown("### Network Overview")
-        st.caption("Select a builder above to see their referral relationships and leverage paths.")
+        st.caption("Select a builder above to see their referral relationships.")
+    
+    col1, col2 = st.columns([3, 2])
+    
+    with col1:
+        fig = render_network_map(G, pos, connections, builder)
+        st.plotly_chart(fig, width='stretch')
         
-        col1, col2 = st.columns([2, 1])
-        
-        with col1:
-            if G.number_of_nodes() > 0:
-                pos = nx.spring_layout(G, seed=42, k=1.0, iterations=50)
-                fig = render_overview_network(G, pos, top_n=40)
-                st.plotly_chart(fig, width='stretch')
-                st.caption(f"Showing top 40 most connected builders. {G.number_of_nodes()} total in network.")
-            else:
-                st.info("No referral connections in selected period.")
-        
-        with col2:
+        if builder and connections:
+            n_tw = len(connections['two_way'])
+            n_in = len(connections['inbound'])
+            n_out = len(connections['outbound'])
+            st.caption(f"**{builder}**: {n_tw} two-way | {n_in} inbound sources | {n_out} outbound destinations")
+    
+    with col2:
+        if builder:
+            render_builder_panel(builder, connections, shortfall_df, leverage_df, events_filtered)
+        else:
             st.markdown("#### Quick Stats")
             st.metric("Total Builders", len(all_builders))
-            st.metric("Network Connections", G.number_of_edges())
+            st.metric("Connections", G.number_of_edges())
             
             at_risk = len(shortfall_df[shortfall_df['Risk_Score'] > 25])
             st.metric("Builders At Risk", at_risk)
             
-            # Top receivers
             st.markdown("#### Top Lead Receivers")
             refs = events_filtered[events_filtered['is_referral'] == True]
             if not refs.empty:
                 top_recv = refs['Dest_BuilderRegionKey'].value_counts().head(5)
                 for b, c in top_recv.items():
-                    st.markdown(f"**{b[:25]}**: {c}")
+                    cols = st.columns([4, 1])
+                    cols[0].markdown(f"{b[:22]}: **{c}**")
+                    if cols[1].button("→", key=f"go_{b}", help="View this builder"):
+                        st.session_state.selected_builder = b
+                        st.rerun()
     
     st.markdown("---")
     
