@@ -129,6 +129,21 @@ STYLES = """
         color: #111827;
         font-weight: 600;
     }
+    .eco-lever-heading {
+        font-weight: 600;
+        margin-top: 1rem;
+        margin-bottom: 0.5rem;
+        color: #111827;
+        font-size: 0.95rem;
+        display: block;
+    }
+    .eco-downstream {
+        color: #6b7280;
+        font-size: 0.85rem;
+        display: block;
+        margin-top: 0.25rem;
+        font-style: italic;
+    }
 
     /* Section Headers */
     .step-header {
@@ -387,6 +402,7 @@ def compute_focus_guidance(builders, edges_sub, focus_builder):
             focus_out["Referrals"] / tot,
             0
         )
+        focus_out = focus_out.sort_values("Referrals", ascending=False)
     else:
         focus_out = None
 
@@ -622,8 +638,31 @@ def render_builder_panel(builder, connections, shortfall_df, leverage_df, builde
     # Self media bullet
     if not pd.isna(raw_self):
         eff_self_txt = "n/a" if pd.isna(eff_self) else f"${eff_self:,.0f}"
+        
+        # --- Downstream Impact Simulation ---
+        self_downstream_txt = ""
+        if focus_out is not None and not focus_out.empty and eff_self and eff_self > 0:
+            # Simulate +$10k spend: leads generated = 10,000 / eff_self
+            incremental_leads = 10000 / eff_self
+            impacts = []
+            
+            # Show top 3 downstream beneficiaries
+            for _, r in focus_out.head(3).iterrows():
+                dest = r["Dest_builder"]
+                share = r["Out_share"]
+                leads_passed = incremental_leads * share
+                if leads_passed >= 0.5: # Show if significant
+                    impacts.append(f"{leads_passed:.0f} → {dest}")
+            
+            if impacts:
+                self_downstream_txt = (
+                    f"<span class='eco-downstream'>Downstream from +$10k media at self: "
+                    f"{' | '.join(impacts)}</span>"
+                )
+        # ------------------------------------
+
         bullets += f"<li class='eco-lever-heading'>Self Media Efficiency</li>"
-        bullets += f"<ul><li><b>{builder}</b><br>– CPR: ${raw_self:,.0f}<br>– Eff. Cost: {eff_self_txt}</li></ul>"
+        bullets += f"<ul><li><b>{builder}</b><br>– CPR: ${raw_self:,.0f}<br>– Eff. Cost: {eff_self_txt}<br>{self_downstream_txt}</li></ul>"
 
     # Primary Levers (Top 3 Direct)
     if direct is not None and not direct.empty:
@@ -684,7 +723,7 @@ def render_builder_panel(builder, connections, shortfall_df, leverage_df, builde
                 hide_index=True, use_container_width=True, height=200
             )
         else:
-            st.info("No inbound lead sources found.")
+            st.caption("No inbound lead sources found.")
 
     with tab_out:
         if connections['outbound']:
