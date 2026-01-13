@@ -839,35 +839,35 @@ def rank_action_list(df_actions: pd.DataFrame) -> pd.DataFrame:
 
 def render_kpi(label: str, value: str, sub: str = "") -> str:
     """Render a single KPI card."""
-    return f"""
-    <div class="kpi-card">
-        <div class="kpi-label">{label}</div>
-        <div class="kpi-value">{value}</div>
-        <div class="kpi-sub">{sub}</div>
-    </div>
-    """
+    return (
+        f'<div class="kpi-card">'
+        f'<div class="kpi-label">{label}</div>'
+        f'<div class="kpi-value">{value}</div>'
+        f'<div class="kpi-sub">{sub}</div>'
+        f'</div>'
+    )
 
 
 def render_story_card(title: str, headline: str, bullets: list[str]) -> str:
     """Render a story card with headline and bullets."""
     bullet_html = "".join(f"<li>{b}</li>" for b in bullets)
-    return f"""
-    <div class="story-card">
-        <div class="story-title">{title}</div>
-        <div class="story-headline">{headline}</div>
-        <ul class="story-bullets">{bullet_html}</ul>
-    </div>
-    """
+    return (
+        f'<div class="story-card">'
+        f'<div class="story-title">{title}</div>'
+        f'<div class="story-headline">{headline}</div>'
+        f'<ul class="story-bullets">{bullet_html}</ul>'
+        f'</div>'
+    )
 
 
 def render_callout(label: str, text: str) -> str:
     """Render a dark callout box."""
-    return f"""
-    <div class="callout">
-        <div class="label">{label}</div>
-        <div class="text">{text}</div>
-    </div>
-    """
+    return (
+        f'<div class="callout">'
+        f'<div class="label">{label}</div>'
+        f'<div class="text">{text}</div>'
+        f'</div>'
+    )
 
 
 # =============================================================================
@@ -1112,15 +1112,12 @@ def main():
         )
     
     st.markdown(
-        f"""
-        <div class="exec-header">
-            <h1 class="exec-title">Builder Economics — Executive P&L Review</h1>
-            <p class="exec-subtitle">
-                {lens.title()} attribution • {period_label} • 
-                {len(pnl_snapshot)} builders in snapshot
-            </p>
-        </div>
-        """,
+        f'<div class="exec-header">'
+        f'<h1 class="exec-title">Builder Economics — Executive P&L Review</h1>'
+        f'<p class="exec-subtitle">'
+        f'{lens.title()} attribution • {period_label} • '
+        f'{len(pnl_snapshot)} builders in snapshot'
+        f'</p></div>',
         unsafe_allow_html=True,
     )
     
