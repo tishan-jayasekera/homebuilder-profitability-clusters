@@ -438,7 +438,6 @@ def render_network_map(G, pos, builder_master_df, selected_builder=None, connect
     fig = go.Figure()
     
     # --- PALETTE & STYLING ---
-    # Professional, distinct palette
     CLUSTER_COLORS = [
         '#6366f1', '#ec4899', '#10b981', '#f59e0b', '#3b82f6', 
         '#8b5cf6', '#ef4444', '#14b8a6', '#f97316', '#06b6d4',
@@ -479,11 +478,15 @@ def render_network_map(G, pos, builder_master_df, selected_builder=None, connect
 
     # --- 1. EDGES ---
     edge_x_dim, edge_y_dim = [], []
+    edge_x_hi, edge_y_hi = [], []
+    edge_cols_hi = []
+    edge_widths_hi = []
     
     for u, v, data in G.edges(data=True):
         if u not in pos or v not in pos: continue
         x0, y0 = pos[u]
         x1, y1 = pos[v]
+        weight = data.get('weight', 1)
         
         is_highlight = False
         color = ROLE_COLORS['dim']
@@ -495,10 +498,17 @@ def render_network_map(G, pos, builder_master_df, selected_builder=None, connect
                 neighbor = v if u == selected_builder else u
                 role = role_map.get(neighbor, 'dim')
                 color = ROLE_COLORS.get(role, ROLE_COLORS['dim'])
-                width = 2.0
+                width = 2.0 + (weight/10) # scale by weight
         
         if is_highlight:
-            fig.add_trace(go.Scatter(
+            # We add individual traces for highlighted edges to control color properly in one go? 
+            # No, scattergl line trace takes single color. We'll use a loop or grouping.
+            # Group by color for performance
+            edge_x_hi.extend([x0, x1, None])
+            edge_y_hi.extend([y0, y1, None])
+            # For simplicity in this render, we force a single highlight color or loop. 
+            # Let's loop for highlights to get exact colors (there won't be many).
+            fig.add_trace(go.Scattergl(
                 x=[x0, x1, None], y=[y0, y1, None],
                 mode='lines',
                 line=dict(color=color, width=width),
@@ -509,7 +519,7 @@ def render_network_map(G, pos, builder_master_df, selected_builder=None, connect
             edge_y_dim.extend([y0, y1, None])
 
     # Background edges (one trace for performance)
-    fig.add_trace(go.Scatter(
+    fig.add_trace(go.Scattergl(
         x=edge_x_dim, y=edge_y_dim,
         mode='lines',
         line=dict(color='#e5e7eb', width=0.5),
@@ -522,6 +532,7 @@ def render_network_map(G, pos, builder_master_df, selected_builder=None, connect
     node_colors = []
     node_sizes = []
     node_texts = []
+    node_lines = []
     
     degrees = dict(G.degree(weight='weight'))
     max_deg = max(degrees.values()) if degrees else 1
@@ -534,7 +545,9 @@ def render_network_map(G, pos, builder_master_df, selected_builder=None, connect
         
         deg = degrees.get(node, 0)
         # Sizing based on degree
-        base_size = 10 + (deg / max_deg) * 20
+        base_size = 12 + (deg / max_deg) * 25
+        border_col = 'white'
+        border_width = 1
         
         if selected_builder:
             if node in highlight_nodes:
@@ -542,6 +555,13 @@ def render_network_map(G, pos, builder_master_df, selected_builder=None, connect
                 c = ROLE_COLORS.get(role, ROLE_COLORS['dim'])
                 s = base_size + 5 if node == selected_builder else base_size + 2
                 op = 1.0
+                border_width = 2
+                
+                # Halo for selected
+                if node == selected_builder:
+                    border_col = '#111827'
+                    border_width = 3
+                    s += 5
                 
                 role_txt = {
                     'selected': 'SELECTED',
@@ -553,38 +573,49 @@ def render_network_map(G, pos, builder_master_df, selected_builder=None, connect
             else:
                 c = ROLE_COLORS['dim']
                 s = base_size * 0.7
-                op = 0.3
+                op = 0.2
                 txt = f"{node}"
         else:
             cid = cluster_map.get(node, 0)
             c = CLUSTER_COLORS[(cid - 1) % len(CLUSTER_COLORS)] if cid > 0 else '#9ca3af'
             s = base_size
             op = 0.9
+            border_col = 'white'
             txt = f"<b>{node}</b><br>Cluster {cid}<br>Volume: {int(deg)}"
 
         node_colors.append(c)
         node_sizes.append(s)
         node_texts.append(txt)
+        node_lines.append(dict(color=border_col, width=border_width))
 
     # Node trace
-    fig.add_trace(go.Scatter(
+    fig.add_trace(go.Scattergl(
         x=node_x, y=node_y,
         mode='markers',
         marker=dict(
             size=node_sizes,
             color=node_colors,
-            line=dict(width=1, color='white'),
-            opacity=1.0 if not selected_builder else [1.0 if n in highlight_nodes else 0.3 for n in G.nodes()]
+            line=dict(color=[l['color'] for l in node_lines], width=[l['width'] for l in node_lines]),
+            opacity=1.0 if not selected_builder else [1.0 if n in highlight_nodes else 0.2 for n in G.nodes()]
         ),
         text=node_texts,
         hoverinfo='text',
         showlegend=False
     ))
     
-    # Clean, modern layout
+    # Add Halo for selected builder
+    if selected_builder and selected_builder in pos:
+        sx, sy = pos[selected_builder]
+        fig.add_trace(go.Scattergl(
+            x=[sx], y=[sy],
+            mode='markers',
+            marker=dict(size=node_sizes[list(G.nodes()).index(selected_builder)] + 15, color=ROLE_COLORS['selected'], opacity=0.2),
+            hoverinfo='skip', showlegend=False
+        ))
+
     fig.update_layout(
         margin=dict(l=0, r=0, t=0, b=0),
-        height=550,
+        height=600,
         paper_bgcolor='white',
         plot_bgcolor='white',
         xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
