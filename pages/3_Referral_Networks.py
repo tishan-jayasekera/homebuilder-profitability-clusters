@@ -672,6 +672,87 @@ def get_layout(nodes, edges):
     return nx.spring_layout(graph, seed=42, k=0.7)
 
 # ============================================================================
+# FLOW DIAGRAM HELPERS
+# ============================================================================
+def build_budget_flow_sankey(allocations, target_analyses, total_budget, unallocated):
+    nodes = ["Total Budget"]
+    node_index = {"Total Budget": 0}
+    links = []
+
+    def add_node(label):
+        if label not in node_index:
+            node_index[label] = len(nodes)
+            nodes.append(label)
+        return node_index[label]
+
+    for alloc in allocations:
+        source_label = f"Source: {alloc.source[:22]}"
+        source_idx = add_node(source_label)
+        links.append((node_index["Total Budget"], source_idx, alloc.budget, "Allocated"))
+
+        used_budget = 0.0
+        for target, leads in alloc.projected_leads.items():
+            analysis = target_analyses.get(target)
+            if not analysis:
+                continue
+            paths = [p for p in analysis.all_paths if p.source == alloc.source]
+            if not paths:
+                continue
+            best_path = min(paths, key=lambda p: p.effective_cpr)
+            target_budget = leads * best_path.effective_cpr
+            if target_budget <= 0:
+                continue
+
+            used_budget += target_budget
+            delivered_budget = target_budget * best_path.transfer_rate
+            leakage_budget = target_budget - delivered_budget
+
+            target_label = f"Target: {target[:22]}"
+            target_idx = add_node(target_label)
+            links.append((source_idx, target_idx, delivered_budget, f"{best_path.transfer_rate:.0%} delivered"))
+
+            if leakage_budget > 0:
+                leakage_label = f"Leakage: {alloc.source[:10]}→{target[:10]}"
+                leakage_idx = add_node(leakage_label)
+                links.append((source_idx, leakage_idx, leakage_budget, f"{(1 - best_path.transfer_rate):.0%} leakage"))
+
+        unattributed = max(0.0, alloc.budget - used_budget)
+        if unattributed > 0:
+            leakage_label = f"Leakage: {alloc.source[:10]} (unattributed)"
+            leakage_idx = add_node(leakage_label)
+            links.append((source_idx, leakage_idx, unattributed, "Unattributed"))
+
+    if unallocated > 0:
+        unalloc_idx = add_node("Unallocated Budget")
+        links.append((node_index["Total Budget"], unalloc_idx, unallocated, "Unallocated"))
+
+    if not links:
+        return None
+
+    source = [s for s, _, _, _ in links]
+    target = [t for _, t, _, _ in links]
+    value = [v for _, _, v, _ in links]
+    labels = [l for _, _, _, l in links]
+
+    fig = go.Figure(data=[go.Sankey(
+        node=dict(
+            pad=12,
+            thickness=14,
+            label=nodes,
+            color="#dbeafe"
+        ),
+        link=dict(
+            source=source,
+            target=target,
+            value=value,
+            label=labels,
+            color="rgba(59, 130, 246, 0.35)"
+        )
+    )])
+    fig.update_layout(height=520, margin=dict(l=0, r=0, t=10, b=0))
+    return fig
+
+# ============================================================================
 # MAIN APPLICATION
 # ============================================================================
 def main():
@@ -1050,6 +1131,20 @@ def main():
             
             csv = pd.DataFrame(export_data).to_csv(index=False)
             st.download_button("📥 Download Allocation Plan", csv, "allocation_plan.csv", "text/csv")
+
+        # Flow diagram
+        st.markdown("---")
+        st.markdown("**Detailed Flow Diagram**")
+        flow_fig = build_budget_flow_sankey(
+            allocations=allocations,
+            target_analyses=target_analyses,
+            total_budget=summary['total_budget'],
+            unallocated=summary['unallocated']
+        )
+        if flow_fig:
+            st.plotly_chart(flow_fig, use_container_width=True, config={'displayModeBar': False})
+        else:
+            st.caption("Not enough data to render the flow diagram.")
 
 
 if __name__ == "__main__":
