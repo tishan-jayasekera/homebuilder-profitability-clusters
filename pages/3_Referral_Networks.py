@@ -84,7 +84,6 @@ def render_interactive_network_plotly(G, selected_cluster_id):
     # 2. Edges
     edge_x = []
     edge_y = []
-    edge_text = []
     
     for u, v, data in G.edges(data=True):
         # Filter: Only show edges connected to selected cluster (to reduce noise)
@@ -96,7 +95,6 @@ def render_interactive_network_plotly(G, selected_cluster_id):
             x1, y1 = pos[v]
             edge_x.extend([x0, x1, None])
             edge_y.extend([y0, y1, None])
-            edge_text.append(f"{u} -> {v}: {int(data.get('weight', 0))} leads")
 
     edge_trace = go.Scatter(
         x=edge_x, y=edge_y,
@@ -150,8 +148,10 @@ def render_interactive_network_plotly(G, selected_cluster_id):
     fig = go.Figure(
         data=[edge_trace, node_trace],
         layout=go.Layout(
-            title=f"Cluster {selected_cluster_id} Ecosystem",
-            titlefont_size=16,
+            title=dict(
+                text=f"Cluster {selected_cluster_id} Ecosystem",
+                font=dict(size=16)
+            ),
             showlegend=False,
             hovermode='closest',
             margin=dict(b=20,l=5,r=5,t=40),
