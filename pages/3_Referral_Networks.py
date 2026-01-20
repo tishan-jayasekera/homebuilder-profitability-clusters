@@ -1121,11 +1121,20 @@ def main():
                 "Stack by",
                 ["Source Builder", "Campaign"],
                 horizontal=True,
-                label_visibility="collapsed"
+                label_visibility="collapsed",
+                key="inbound_stack_by"
+            )
+            grain = st.radio(
+                "Time grain",
+                ["Weekly", "Monthly"],
+                horizontal=True,
+                label_visibility="collapsed",
+                key="inbound_grain"
             )
             inbound["lead_date"] = pd.to_datetime(inbound["lead_date"], errors="coerce")
             inbound = inbound.dropna(subset=["lead_date"])
-            inbound["period"] = inbound["lead_date"].dt.to_period("W").dt.start_time
+            period_freq = "W" if grain == "Weekly" else "M"
+            inbound["period"] = inbound["lead_date"].dt.to_period(period_freq).dt.start_time
             if stack_by == "Campaign":
                 if not campaign_col:
                     st.caption("No campaign fields found (utm_campaign, utm_key, ad_key).")
@@ -1135,15 +1144,23 @@ def main():
                         .nunique()
                         .rename(columns={"LeadId": "Inbound Referrals"})
                     )
-                    totals = ts.groupby("Campaign", as_index=False)["Inbound Referrals"].sum()
-                    top_campaigns = totals.nlargest(12, "Inbound Referrals")["Campaign"]
-                    ts["Campaign"] = np.where(
-                        ts["Campaign"].isin(top_campaigns), ts["Campaign"], "Other"
+                    campaign_filter = st.selectbox(
+                        "Filter campaign",
+                        ["All"] + sorted(ts["Campaign"].unique().tolist()),
+                        key="inbound_campaign_filter"
                     )
-                    ts = (
-                        ts.groupby(["period", "Campaign"], as_index=False)["Inbound Referrals"]
-                        .sum()
-                    )
+                    if campaign_filter != "All":
+                        ts = ts[ts["Campaign"] == campaign_filter]
+                    else:
+                        totals = ts.groupby("Campaign", as_index=False)["Inbound Referrals"].sum()
+                        top_campaigns = totals.nlargest(12, "Inbound Referrals")["Campaign"]
+                        ts["Campaign"] = np.where(
+                            ts["Campaign"].isin(top_campaigns), ts["Campaign"], "Other"
+                        )
+                        ts = (
+                            ts.groupby(["period", "Campaign"], as_index=False)["Inbound Referrals"]
+                            .sum()
+                        )
                     fig = px.bar(
                         ts,
                         x="period",
@@ -1168,6 +1185,13 @@ def main():
                         "MediaPayer_BuilderRegionKey": "Source Builder"
                     })
                 )
+                source_filter = st.selectbox(
+                    "Filter source",
+                    ["All"] + sorted(ts["Source Builder"].unique().tolist()),
+                    key="inbound_source_filter"
+                )
+                if source_filter != "All":
+                    ts = ts[ts["Source Builder"] == source_filter]
                 fig = px.bar(
                     ts,
                     x="period",
@@ -1185,6 +1209,88 @@ def main():
                 st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
     else:
         st.caption("Select a builder to see inbound referral flow over time.")
+
+    # ========================================================================
+    # SECTION 1D: OUTBOUND REFERRAL FLOW OVER TIME
+    # ========================================================================
+    st.markdown("""
+    <div class="section">
+        <div class="section-header">
+            <span class="section-num">1D</span>
+            <span class="section-title">Outbound Referral Flow Over Time</span>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    if st.session_state.focus_builder:
+        focus = st.session_state.focus_builder
+        events_df = data["events"]
+        mask_referral = events_df["is_referral"].fillna(False).astype(bool)
+        mask_cross_payer = (
+            events_df["MediaPayer_BuilderRegionKey"].notna() &
+            events_df["Dest_BuilderRegionKey"].notna() &
+            (events_df["MediaPayer_BuilderRegionKey"] != events_df["Dest_BuilderRegionKey"])
+        )
+        outbound = events_df[
+            (mask_referral | mask_cross_payer) &
+            (events_df["MediaPayer_BuilderRegionKey"] == focus)
+        ].copy()
+        if outbound.empty:
+            st.caption("No outbound referrals in the filtered time window.")
+        else:
+            grain_out = st.radio(
+                "Time grain",
+                ["Weekly", "Monthly"],
+                horizontal=True,
+                label_visibility="collapsed",
+                key="outbound_grain"
+            )
+            outbound["lead_date"] = pd.to_datetime(outbound["lead_date"], errors="coerce")
+            outbound = outbound.dropna(subset=["lead_date"])
+            period_freq = "W" if grain_out == "Weekly" else "M"
+            outbound["period"] = outbound["lead_date"].dt.to_period(period_freq).dt.start_time
+            leaderboard = (
+                outbound.groupby("Dest_BuilderRegionKey", as_index=False)
+                .agg(Referrals=("LeadId", "nunique"))
+                .rename(columns={"Dest_BuilderRegionKey": "Destination Builder"})
+                .sort_values("Referrals", ascending=False)
+                .head(15)
+            )
+            st.markdown("**Top destinations (lifetime, filtered window)**")
+            st.dataframe(leaderboard, hide_index=True, use_container_width=True)
+
+            ts = (
+                outbound.groupby(["period", "Dest_BuilderRegionKey"], as_index=False)["LeadId"]
+                .nunique()
+                .rename(columns={
+                    "LeadId": "Outbound Referrals",
+                    "Dest_BuilderRegionKey": "Destination Builder"
+                })
+            )
+            dest_filter = st.selectbox(
+                "Filter destination",
+                ["All"] + sorted(ts["Destination Builder"].unique().tolist()),
+                key="outbound_destination_filter"
+            )
+            if dest_filter != "All":
+                ts = ts[ts["Destination Builder"] == dest_filter]
+            fig = px.bar(
+                ts,
+                x="period",
+                y="Outbound Referrals",
+                color="Destination Builder",
+                title=f"Outbound referrals by destination for {focus}",
+                barmode="stack"
+            )
+            fig.update_layout(
+                height=320,
+                margin=dict(l=0, r=0, t=40, b=0),
+                xaxis_title=None,
+                yaxis_title="Referrals"
+            )
+            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+    else:
+        st.caption("Select a builder to see outbound referral flow over time.")
     
     # ========================================================================
     # SECTION 2: CAMPAIGN OPTIMIZATION
