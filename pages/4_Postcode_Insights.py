@@ -7,6 +7,8 @@ import pandas as pd
 import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
+import pydeck as pdk
+import os
 import json
 import sys
 from pathlib import Path
@@ -107,6 +109,14 @@ def _auto_center_zoom(df_points, default_center, default_zoom):
     zoom = 7.5 - (np.log(span + 1e-6) * 2.2)
     zoom = float(np.clip(zoom, 3.5, 8.5))
     return center, zoom
+
+def _postcode_centroids(meta_df: pd.DataFrame) -> pd.DataFrame:
+    if meta_df is None or meta_df.empty:
+        return pd.DataFrame(columns=["Postcode", "Lat", "Lng"])
+    return (
+        meta_df.groupby("Postcode", as_index=False)
+        .agg(Lat=("Lat", "mean"), Lng=("Lng", "mean"))
+    )
 
 
 def main():
@@ -346,6 +356,15 @@ def main():
             label_visibility="collapsed",
             key="postcode_map_metric"
         )
+        map_style = st.radio(
+            "Map style",
+            ["2D regions", "3D columns"],
+            horizontal=True,
+            label_visibility="collapsed",
+            key="postcode_map_style"
+        )
+        if map_style == "3D columns" and not (os.environ.get("MAPBOX_API_KEY") or ("MAPBOX_API_KEY" in st.secrets)):
+            st.caption("3D map needs `MAPBOX_API_KEY` in environment or Streamlit secrets.")
         metric_map = {
             "Opportunity Score": "Opportunity_Score",
             "Total Events": "Total_Events",
@@ -512,27 +531,68 @@ def main():
                         map_df["Metric Bin"] = metric_bins.map(
                             lambda x: safe_labels[int(x)] if pd.notna(x) and int(x) < len(safe_labels) else "Mid"
                         )
-                hover_cols = {c: True for c in ["Leads", "Referrals", "Campaigns", "CPR"] if c in map_df.columns}
-                fig = px.choropleth_mapbox(
-                    map_df,
-                    geojson=geojson_filtered,
-                    locations="Postcode",
-                    featureidkey="properties.POA_CODE",
-                    color="Metric Bin",
-                    color_discrete_map={
-                        "Very Low": "#e0f2fe",
-                        "Low": "#bae6fd",
-                        "Mid": "#7dd3fc",
-                        "High": "#38bdf8",
-                        "Very High": "#0284c7"
-                    },
-                    hover_data=hover_cols,
-                    mapbox_style="carto-positron",
-                    zoom=zoom,
-                    center=center,
-                    opacity=0.6,
-                    title="Postcode performance (select a state to focus)"
-                )
+                hover_cols = {c: True for c in ["Leads", "Referrals", "Campaigns", "CPR", "Total_Events"] if c in map_df.columns}
+                if map_style == "3D columns":
+                    centroids = _postcode_centroids(postcode_meta)
+                    points = map_df.merge(centroids, on="Postcode", how="left")
+                    points = points.dropna(subset=["Lat", "Lng"])
+                    if points.empty:
+                        st.caption("Postcode centroids unavailable for 3D view.")
+                    else:
+                        metric_vals = pd.to_numeric(points[metric_col], errors="coerce").fillna(0)
+                        max_val = metric_vals.max()
+                        points["metric_value"] = metric_vals
+                        points["elevation"] = metric_vals / max_val * 30000 if max_val > 0 else 0
+                        color_map = {
+                            "Very Low": [255, 237, 160],
+                            "Low": [254, 217, 118],
+                            "Mid": [254, 178, 76],
+                            "High": [253, 141, 60],
+                            "Very High": [240, 59, 32]
+                        }
+                        points["color"] = points["Metric Bin"].map(color_map).fillna([180, 180, 180])
+                        layer = pdk.Layer(
+                            "ColumnLayer",
+                            data=points,
+                            get_position=["Lng", "Lat"],
+                            get_elevation="elevation",
+                            get_fill_color="color",
+                            radius=2000,
+                            elevation_scale=1,
+                            pickable=True,
+                            extruded=True
+                        )
+                        view_state = pdk.ViewState(
+                            latitude=center["lat"],
+                            longitude=center["lon"],
+                            zoom=zoom,
+                            pitch=45,
+                            bearing=0
+                        )
+                        tooltip = {"text": "Postcode {Postcode}\nValue: {metric_value}\nLeads: {Leads}\nReferrals: {Referrals}"}
+                        st.pydeck_chart(pdk.Deck(layers=[layer], initial_view_state=view_state, tooltip=tooltip))
+                        fig = None
+                else:
+                    fig = px.choropleth_mapbox(
+                        map_df,
+                        geojson=geojson_filtered,
+                        locations="Postcode",
+                        featureidkey="properties.POA_CODE",
+                        color="Metric Bin",
+                        color_discrete_map={
+                            "Very Low": "#fee391",
+                            "Low": "#fec44f",
+                            "Mid": "#fe9929",
+                            "High": "#ec7014",
+                            "Very High": "#cc4c02"
+                        },
+                        hover_data=hover_cols,
+                        mapbox_style="carto-positron",
+                        zoom=zoom,
+                        center=center,
+                        opacity=0.6,
+                        title="Postcode performance (select a state to focus)"
+                    )
             else:
                 if "Primary Builder" not in map_df.columns or map_df["Primary Builder"].isna().all():
                     map_df["Primary Builder"] = "Unknown"
@@ -667,7 +727,7 @@ def main():
                         opacity=0.6,
                         title="Marketing regions (dominant referral-serving builder)"
                     )
-            if not map_df.empty and "fig" in locals():
+            if not map_df.empty and "fig" in locals() and fig is not None:
                 fig.update_layout(
                     height=560,
                     margin=dict(l=0, r=0, t=40, b=0),
