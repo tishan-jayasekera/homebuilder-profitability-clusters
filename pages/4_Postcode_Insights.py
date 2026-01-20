@@ -90,6 +90,24 @@ def load_postcode_meta():
     df["State"] = df["State"].astype(str).str.strip().str.upper()
     return df[["Postcode", "Suburb", "State", "Lat", "Lng"]]
 
+def _auto_center_zoom(df_points, default_center, default_zoom):
+    if df_points is None or df_points.empty:
+        return default_center, default_zoom
+    if "Lat" not in df_points.columns or "Lng" not in df_points.columns:
+        return default_center, default_zoom
+    lats = pd.to_numeric(df_points["Lat"], errors="coerce").dropna()
+    lngs = pd.to_numeric(df_points["Lng"], errors="coerce").dropna()
+    if lats.empty or lngs.empty:
+        return default_center, default_zoom
+    min_lat, max_lat = lats.min(), lats.max()
+    min_lng, max_lng = lngs.min(), lngs.max()
+    center = {"lat": float((min_lat + max_lat) / 2), "lon": float((min_lng + max_lng) / 2)}
+    span = max(abs(max_lat - min_lat), abs(max_lng - min_lng))
+    # Rough zoom heuristic: smaller span -> higher zoom.
+    zoom = 7.5 - (np.log(span + 1e-6) * 2.2)
+    zoom = float(np.clip(zoom, 3.5, 8.5))
+    return center, zoom
+
 
 def main():
     events = load_data()
@@ -350,6 +368,7 @@ def main():
                 geojson_filtered = geojson_data
             center = {"lat": -25.5, "lon": 134.0}
             zoom = 4.2
+            center, zoom = _auto_center_zoom(group, center, zoom)
             postcode_rollup = (
                 group.groupby("Postcode", as_index=False)
                 .agg(
