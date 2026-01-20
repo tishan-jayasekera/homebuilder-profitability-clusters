@@ -867,6 +867,17 @@ def main():
                 .sort_values("period")
             )
             ts["CPL"] = np.where(ts["Leads"] > 0, ts["Spend"] / ts["Leads"], np.nan)
+            if "is_referral" in seg_df.columns:
+                qualified_ts = (
+                    seg_df[seg_df["is_referral"] == True]
+                    .assign(period=seg_df["lead_date"].dt.to_period(period_freq).dt.start_time)
+                    .groupby("period", as_index=False)
+                    .agg(Qualified_Leads=(lead_id_col, "nunique") if lead_id_col else ("lead_date", "size"))
+                )
+                ts = ts.merge(qualified_ts, on="period", how="left")
+            ts["Qualified_Leads"] = ts.get("Qualified_Leads", 0).fillna(0)
+            denom_ts = ts["Leads"] + ts["Qualified_Leads"]
+            ts["CPR"] = np.where(denom_ts > 0, ts["Spend"] / denom_ts, np.nan)
             lookback = min(lookback_periods, len(ts))
             cpl_forecast = ts["CPL"].tail(lookback).mean() if lookback > 0 else cpl
             cpl_forecast = cpl_forecast if cpl_forecast and cpl_forecast > 0 else cpl
@@ -926,6 +937,13 @@ def main():
                         y=ts["CPL"],
                         mode="lines+markers",
                         name="Actual CPL"
+                    ))
+                    fig_ts.add_trace(go.Scatter(
+                        x=ts["period"],
+                        y=ts["CPR"],
+                        mode="lines+markers",
+                        name="Actual CPR",
+                        line=dict(dash="dot")
                     ))
                     fig_ts.add_trace(go.Scatter(
                         x=ts["period"],
