@@ -1378,10 +1378,12 @@ def main():
                     balanced_state = skew.idxmin()
 
                     return (
-                        f"So what: {top_label} is the largest segment ({top_share:.0%} of events). "
-                        f"It over-indexes in {top_state} by {delta:+.0%}. "
-                        f"{skew_state} deviates most from the national mix (index gap {skew_val:.0%}); "
-                        f"{balanced_state} is closest to average."
+                        f"So what: {top_label} is the largest segment nationally ({top_share:.0%} of events). "
+                        f"In {top_state}, this segment accounts for {state_share:.0%} of events (a {delta:+.0%} swing vs national), "
+                        f"which signals a different mix of demand and should influence targeting and messaging. "
+                        f"{skew_state} deviates most from the national mix overall (index gap {skew_val:.0%}), "
+                        f"so campaigns there need the most localized creative and budget weighting. "
+                        f"{balanced_state} is closest to average and is the best proxy for national-level performance."
                     )
 
                 def state_stack_chart(df_in, label, color_seq):
