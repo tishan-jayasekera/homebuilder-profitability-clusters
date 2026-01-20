@@ -880,6 +880,11 @@ def main():
             growth = (recent_leads - prev_leads) / prev_leads if prev_leads > 0 else 0
             growth = float(np.clip(growth, -0.5, 0.5))
             pace = recent_leads / 14 if recent_leads > 0 else 0
+            recent_7 = seg_df["lead_date"] >= (end_date - pd.Timedelta(days=7))
+            recent_28 = seg_df["lead_date"] >= (end_date - pd.Timedelta(days=28))
+            pace_7 = (seg_df[recent_7][lead_id_col].nunique() if lead_id_col else recent_7.sum()) / 7 if recent_7.any() else 0
+            pace_14 = pace
+            pace_28 = (seg_df[recent_28][lead_id_col].nunique() if lead_id_col else recent_28.sum()) / 28 if recent_28.any() else 0
             capacity_pace = pace * (1 + growth) * horizon_days
             capacity_spend = planned_spend / cpl_forecast if cpl_forecast > 0 else 0
             capacity = min(capacity_spend, capacity_pace) if capacity_pace > 0 else capacity_spend
@@ -897,6 +902,16 @@ def main():
                     <div class="kpi"><div class="kpi-label">Capacity (Spend)</div><div class="kpi-value">{capacity_spend:,.0f} leads</div></div>
                     <div class="kpi"><div class="kpi-label">Capacity (Pace)</div><div class="kpi-value">{capacity_pace:,.0f} leads</div></div>
                     <div class="kpi"><div class="kpi-label">Recommended Cap</div><div class="kpi-value">{capacity:,.0f} leads</div></div>
+                </div>
+                """, unsafe_allow_html=True)
+                st.markdown(f"""
+                <div class="explainer">
+                    <div class="explainer-title">What these outputs mean</div>
+                    <div class="explainer-text">
+                        <b>Binding</b> shows what limits delivery right now: pace‑limited means the region isn’t producing
+                        fast enough; spend‑limited means budget is the main constraint. <b>Recommended cap</b> is the
+                        smaller of spend capacity and pace capacity, so you don’t over‑allocate into thin supply.
+                    </div>
                 </div>
                 """, unsafe_allow_html=True)
                 st.caption(f"Binding constraint: {binding}")
@@ -938,6 +953,16 @@ def main():
                     ))
                     fig_ts.update_layout(height=280, margin=dict(l=0, r=0, t=40, b=0), yaxis_title="CPL")
                     st.plotly_chart(fig_ts, use_container_width=True, config={"displayModeBar": False})
+
+                pace_fig = go.Figure()
+                pace_fig.add_trace(go.Bar(
+                    x=["Last 7d", "Last 14d", "Last 28d"],
+                    y=[pace_7, pace_14, pace_28],
+                    marker_color=["#60a5fa", "#3b82f6", "#1d4ed8"],
+                    name="Leads per day"
+                ))
+                pace_fig.update_layout(height=220, margin=dict(l=0, r=0, t=40, b=0), yaxis_title="Leads / day", title="Recent delivery pace")
+                st.plotly_chart(pace_fig, use_container_width=True, config={"displayModeBar": False})
 
                 scenario = pd.DataFrame([
                     {"Scenario": "Planned", "Spend": planned_spend, "Capacity (Spend)": capacity_spend, "Recommended Cap": capacity, "Binding": binding},
