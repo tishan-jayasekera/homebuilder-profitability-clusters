@@ -364,13 +364,16 @@ def main():
                         referrals_df.groupby(["Postcode", "Dest_BuilderRegionKey"], as_index=False)
                         .agg(Referrals=("LeadId", "nunique") if "LeadId" in referrals_df.columns else ("lead_date", "size"))
                     )
-                    totals = builder_flows.groupby("Dest_BuilderRegionKey", as_index=False)["Referrals"].sum()
-                    top_builders = totals.sort_values("Referrals", ascending=False).head(12)["Dest_BuilderRegionKey"].tolist()
-                    builder_flows["Builder"] = np.where(
-                        builder_flows["Dest_BuilderRegionKey"].isin(top_builders),
-                        builder_flows["Dest_BuilderRegionKey"],
-                        "Other"
-                    )
+                    if builder_filter:
+                        builder_flows["Builder"] = builder_flows["Dest_BuilderRegionKey"]
+                    else:
+                        totals = builder_flows.groupby("Dest_BuilderRegionKey", as_index=False)["Referrals"].sum()
+                        top_builders = totals.sort_values("Referrals", ascending=False).head(12)["Dest_BuilderRegionKey"].tolist()
+                        builder_flows["Builder"] = np.where(
+                            builder_flows["Dest_BuilderRegionKey"].isin(top_builders),
+                            builder_flows["Dest_BuilderRegionKey"],
+                            "Other"
+                        )
                     overlap = (
                         builder_flows.groupby("Postcode", as_index=False)["Builder"]
                         .nunique()
@@ -390,6 +393,8 @@ def main():
                         suffixes=("_metric", "_primary")
                     )
                     map_df = map_df.merge(overlap, on="Postcode", how="left")
+                    if builder_filter:
+                        map_df = map_df[map_df["Builder_Count"].fillna(0) > 0]
                 else:
                     map_df = postcode_rollup.copy()
                     map_df["Primary Builder"] = "Unknown"
