@@ -193,12 +193,36 @@ def main():
 
     group = df.groupby([postcode_col, suburb_col], as_index=False).agg(
         Leads=(lead_id_col, "nunique") if lead_id_col else (postcode_col, "size"),
-        Referrals=("is_referral", "sum") if "is_referral" in df.columns else (postcode_col, "size"),
         Media_Spend=(spend_col, "sum") if spend_col else (postcode_col, "size"),
         Campaigns=(campaign_col, "nunique") if campaign_col else (postcode_col, "size")
     )
-    if "is_referral" not in df.columns:
+    if "is_referral" in df.columns:
+        refs_df = df[df["is_referral"] == True].copy()
+        if lead_id_col:
+            qualified = (
+                refs_df.groupby([postcode_col, suburb_col])[lead_id_col]
+                .nunique()
+                .reset_index(name="Qualified_Leads")
+            )
+            referrals = (
+                refs_df.groupby([postcode_col, suburb_col])
+                .size()
+                .reset_index(name="Referrals")
+            )
+        else:
+            qualified = (
+                refs_df.groupby([postcode_col, suburb_col])
+                .size()
+                .reset_index(name="Qualified_Leads")
+            )
+            referrals = qualified.rename(columns={"Qualified_Leads": "Referrals"})
+        group = group.merge(qualified, on=[postcode_col, suburb_col], how="left")
+        group = group.merge(referrals, on=[postcode_col, suburb_col], how="left")
+    else:
+        group["Qualified_Leads"] = 0
         group["Referrals"] = 0
+    group["Qualified_Leads"] = group["Qualified_Leads"].fillna(0)
+    group["Referrals"] = group["Referrals"].fillna(0)
     if not spend_col:
         group["Media_Spend"] = 0
     if not campaign_col:
@@ -214,8 +238,9 @@ def main():
         )
         if state_filter:
             group = group[group["State"].isin(state_filter)]
-    group["Conversion_Rate"] = np.where(group["Leads"] > 0, group["Referrals"] / group["Leads"], 0)
-    group["CPR"] = np.where(group["Referrals"] > 0, group["Media_Spend"] / group["Referrals"], np.nan)
+    group["Conversion_Rate"] = np.where(group["Leads"] > 0, group["Qualified_Leads"] / group["Leads"], 0)
+    denom = group["Leads"] + group["Qualified_Leads"]
+    group["CPR"] = np.where(denom > 0, group["Media_Spend"] / denom, np.nan)
     if campaign_col:
         group["Opportunity_Score"] = (1 - group["Conversion_Rate"]) * group["Leads"] * np.log1p(group["Campaigns"])
     else:
@@ -234,7 +259,7 @@ def main():
     <div class="explainer">
         <div class="explainer-title">KPI definitions (plain language)</div>
         <div class="explainer-text">
-            <b>Avg conversion</b> is referrals ÷ leads, so it shows how many leads turn into referrals.
+            <b>Avg conversion</b> is qualified leads ÷ total leads, so it shows how often a lead becomes qualified.
             <b>Campaigns tracked</b> is how many campaigns touched these regions, which helps spot crowding.
             <b>Total leads</b> and <b>postcodes</b> show the scale of your market coverage.
         </div>
@@ -242,10 +267,10 @@ def main():
     """, unsafe_allow_html=True)
     with st.expander("Metric glossary", expanded=False):
         st.markdown("""
-        - **Conversion Rate**: Referrals ÷ Leads. Higher means more leads turn into referrals.
+        - **Conversion Rate**: Qualified leads ÷ total leads. Higher means more leads become qualified.
         - **Opportunity Score**: Higher when leads are high and conversion is low (plus campaign density). Targets fast improvement areas.
         - **CPL (Cost per Lead)**: Spend ÷ Leads. Lower means cheaper lead delivery.
-        - **CPR (Cost per Referral)**: Spend ÷ Referrals. Lower means more efficient referral generation.
+        - **CPR (Cost per Referral)**: Spend ÷ (Unique Leads + Unique Referrals). Lower means more efficient coverage.
         - **Capacity (Spend)**: Planned spend ÷ Forecast CPL. How many leads spend can buy.
         - **Capacity (Pace)**: Recent delivery speed scaled to the forecast window. Avoids over‑allocating.
         - **Recommended Cap**: The smaller of spend capacity and pace capacity, to reduce overspend risk.
@@ -677,7 +702,7 @@ def main():
             "Media_Spend": "Ad Spend"
         }).sort_values("Opportunity Score", ascending=False)
         st.dataframe(
-            display[["Postcode", "Suburb", "Leads", "Referrals", "Conversion Rate", "Campaigns", "Ad Spend", "CPR", "Opportunity Score"]]
+            display[["Postcode", "Suburb", "Leads", "Qualified_Leads", "Referrals", "Conversion Rate", "Campaigns", "Ad Spend", "CPR", "Opportunity Score"]]
             .head(50),
             hide_index=True,
             use_container_width=True
@@ -686,7 +711,7 @@ def main():
         if not group.empty:
             st.markdown("**Suburbs in selected regions**")
             suburb_list = (
-                group[["Postcode", "Suburb", "Leads", "Referrals", "Conversion_Rate", "Campaigns"]]
+                group[["Postcode", "Suburb", "Leads", "Qualified_Leads", "Referrals", "Conversion_Rate", "Campaigns"]]
                 .sort_values(["Postcode", "Suburb"])
                 .head(200)
             )
@@ -773,8 +798,7 @@ def main():
             if not options:
                 return
             with f_cols[col_idx]:
-                default_vals = sorted(options[:3]) if len(options) > 3 else sorted(options)
-                selected = st.multiselect(label, sorted(options), default=default_vals)
+                selected = st.multiselect(label, sorted(options), default=sorted(options))
             if selected:
                 seg_df = seg_df[seg_df[col_name].astype(str).isin(selected)]
 
@@ -786,15 +810,13 @@ def main():
         with f_cols2[0]:
             if house_col and house_col in seg_df.columns:
                 options = seg_df[house_col].dropna().astype(str).unique().tolist()
-                default_vals = sorted(options[:3]) if len(options) > 3 else sorted(options)
-                house_sel = st.multiselect("House type", sorted(options), default=default_vals) if options else []
+                house_sel = st.multiselect("House type", sorted(options), default=sorted(options)) if options else []
                 if house_sel:
                     seg_df = seg_df[seg_df[house_col].astype(str).isin(house_sel)]
         with f_cols2[1]:
             if beds_col and beds_col in seg_df.columns:
                 options = seg_df[beds_col].dropna().astype(str).unique().tolist()
-                default_vals = sorted(options[:3]) if len(options) > 3 else sorted(options)
-                bed_sel = st.multiselect("Bedrooms", sorted(options), default=default_vals) if options else []
+                bed_sel = st.multiselect("Bedrooms", sorted(options), default=sorted(options)) if options else []
                 if bed_sel:
                     seg_df = seg_df[seg_df[beds_col].astype(str).isin(bed_sel)]
         with f_cols2[2]:
