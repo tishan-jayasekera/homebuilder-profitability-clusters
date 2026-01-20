@@ -972,13 +972,15 @@ def main():
             seg_df = seg_df.dropna(subset=["lead_date"])
             if ref_flag_col in seg_df.columns:
                 seg_leads = seg_df[seg_df[ref_flag_col] == False]
+                seg_refs = seg_df[seg_df[ref_flag_col]].copy()
             else:
                 seg_leads = seg_df
-            lead_count = seg_leads[lead_id_col].nunique() if lead_id_col else len(seg_leads)
+                seg_refs = seg_df.iloc[0:0].copy()
             lead_events = len(seg_leads)
+            ref_events = len(seg_refs)
             total_events = len(seg_df)
             spend_total = seg_df[spend_col].sum() if spend_col else 0
-            cpl = spend_total / lead_count if lead_count > 0 else 0
+            cpl = spend_total / lead_events if lead_events > 0 else 0
 
             controls_col, output_col = st.columns([1, 2])
             with controls_col:
@@ -1005,7 +1007,7 @@ def main():
             ts_leads = (
                 lead_ts.assign(period=lead_ts["lead_date"].dt.to_period(period_freq).dt.start_time)
                 .groupby("period", as_index=False)
-                .agg(Leads=(lead_id_col, "nunique") if lead_id_col else ("lead_date", "size"))
+                .agg(Leads=("lead_date", "size"))
             )
             ts_spend = (
                 seg_df.assign(period=seg_df["lead_date"].dt.to_period(period_freq).dt.start_time)
@@ -1013,24 +1015,24 @@ def main():
                 .agg(Spend=(spend_col, "sum") if spend_col else ("lead_date", "size"))
             )
             if ref_flag_col in seg_df.columns:
-                qualified_df = seg_df[seg_df[ref_flag_col] == True].copy()
-                qualified_ts = (
-                    qualified_df.assign(period=qualified_df["lead_date"].dt.to_period(period_freq).dt.start_time)
+                ref_ts = (
+                    seg_df[seg_df[ref_flag_col]]
+                    .assign(period=seg_df["lead_date"].dt.to_period(period_freq).dt.start_time)
                     .groupby("period", as_index=False)
-                    .agg(Qualified_Leads=(lead_id_col, "nunique") if lead_id_col else ("lead_date", "size"))
+                    .agg(Referrals=("lead_date", "size"))
                 )
             else:
-                qualified_ts = pd.DataFrame(columns=["period", "Qualified_Leads"])
+                ref_ts = pd.DataFrame(columns=["period", "Referrals"])
             ts = (periods
                   .merge(ts_leads, on="period", how="left")
                   .merge(ts_spend, on="period", how="left")
-                  .merge(qualified_ts, on="period", how="left"))
+                  .merge(ref_ts, on="period", how="left"))
             ts["Leads"] = ts["Leads"].fillna(0)
             ts["Spend"] = ts["Spend"].fillna(0)
-            ts["Qualified_Leads"] = ts["Qualified_Leads"].fillna(0)
+            ts["Referrals"] = ts["Referrals"].fillna(0)
             ts = ts.sort_values("period")
             ts["CPL"] = np.where(ts["Leads"] > 0, ts["Spend"] / ts["Leads"], np.nan)
-            denom_ts = ts["Leads"] + ts["Qualified_Leads"]
+            denom_ts = ts["Leads"] + ts["Referrals"]
             ts["CPR"] = np.where(denom_ts > 0, ts["Spend"] / denom_ts, np.nan)
             lookback = min(lookback_periods, len(ts))
             cpl_forecast = ts["CPL"].tail(lookback).mean() if lookback > 0 else cpl
@@ -1068,6 +1070,8 @@ def main():
                 st.markdown(f"""
                 <div class="kpi-row">
                     <div class="kpi"><div class="kpi-label">Region Events</div><div class="kpi-value">{total_events:,.0f}</div></div>
+                    <div class="kpi"><div class="kpi-label">Leads</div><div class="kpi-value">{lead_events:,.0f}</div></div>
+                    <div class="kpi"><div class="kpi-label">Referrals</div><div class="kpi-value">{ref_events:,.0f}</div></div>
                     <div class="kpi"><div class="kpi-label">Current CPR</div><div class="kpi-value">${(current_cpr if current_cpr == current_cpr else 0):,.0f}</div></div>
                     <div class="kpi"><div class="kpi-label">Forecast CPR</div><div class="kpi-value">${(cpr_forecast if cpr_forecast == cpr_forecast else 0):,.0f}</div></div>
                     <div class="kpi"><div class="kpi-label">Capacity (Spend)</div><div class="kpi-value">{capacity_spend:,.0f} events</div></div>
@@ -1195,20 +1199,15 @@ def main():
                 )
                 camp_leads = (
                     lead_campaign_df.groupby(campaign_col, as_index=False)
-                    .agg(Leads=(lead_id_col, "nunique") if lead_id_col else ("lead_date", "size"))
+                    .agg(Leads=("lead_date", "size"))
                 )
                 if not ref_campaign_df.empty:
-                    camp_qualified = (
-                        ref_campaign_df.groupby(campaign_col, as_index=False)
-                        .agg(Qualified_Leads=(lead_id_col, "nunique") if lead_id_col else ("lead_date", "size"))
-                    )
                     camp_refs = (
                         ref_campaign_df.groupby(campaign_col, as_index=False)
                         .size()
                         .rename(columns={"size": "Referrals"})
                     )
                 else:
-                    camp_qualified = pd.DataFrame(columns=[campaign_col, "Qualified_Leads"])
                     camp_refs = pd.DataFrame(columns=[campaign_col, "Referrals"])
                 camp_spend = (
                     seg_df.groupby(campaign_col, as_index=False)
@@ -1216,16 +1215,13 @@ def main():
                 )
                 camp = (camp_events
                         .merge(camp_leads, on=campaign_col, how="left")
-                        .merge(camp_qualified, on=campaign_col, how="left")
                         .merge(camp_refs, on=campaign_col, how="left")
                         .merge(camp_spend, on=campaign_col, how="left"))
                 camp["Leads"] = camp["Leads"].fillna(0)
-                camp["Qualified_Leads"] = camp["Qualified_Leads"].fillna(0)
                 camp["Referrals"] = camp["Referrals"].fillna(0)
                 camp["CPL"] = np.where(camp["Leads"] > 0, camp["Spend"] / camp["Leads"], np.nan)
                 camp_denom = camp["Leads"] + camp["Referrals"]
                 camp["CPR"] = np.where(camp_denom > 0, camp["Spend"] / camp_denom, np.nan)
-                camp["Referral/Lead Ratio"] = np.where(camp["Qualified_Leads"] > 0, camp["Referrals"] / camp["Qualified_Leads"], np.nan)
                 camp = camp.sort_values(["Events", "Referrals", "Leads"], ascending=False).head(20)
 
                 st.markdown("**Recommended campaigns for this region**")
