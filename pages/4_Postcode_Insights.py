@@ -113,6 +113,10 @@ def main():
             horizontal=False
         )
         target_conv = st.slider("Target conversion rate", 0.01, 0.5, 0.15, step=0.01)
+        builder_filter = []
+        if "Dest_BuilderRegionKey" in events.columns:
+            builder_options = sorted(events["Dest_BuilderRegionKey"].dropna().unique().tolist())
+            builder_filter = st.multiselect("Builders (marketing regions)", builder_options)
         if postcode_meta is not None and not postcode_meta.empty:
             state_options = sorted(postcode_meta["State"].unique().tolist())
             state_filter = st.multiselect("State/Region", state_options, default=state_options)
@@ -276,6 +280,8 @@ def main():
                 (df["MediaPayer_BuilderRegionKey"] != df["Dest_BuilderRegionKey"])
             )
             referrals_df = df[mask_referral | mask_cross_payer].copy()
+            if builder_filter:
+                referrals_df = referrals_df[referrals_df["Dest_BuilderRegionKey"].isin(builder_filter)]
             if not referrals_df.empty:
                 referrals_df["Postcode"] = referrals_df[postcode_col].astype(str).str.zfill(4)
                 builder_flows = (
