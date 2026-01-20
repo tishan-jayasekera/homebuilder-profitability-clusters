@@ -313,14 +313,8 @@ def main():
                 }
             else:
                 geojson_filtered = geojson_data
-            if "Lat" in group.columns and "Lng" in group.columns and group["Lat"].notna().any():
-                center = {"lat": float(group["Lat"].mean()), "lon": float(group["Lng"].mean())}
-            else:
-                center = {"lat": -25.5, "lon": 134.0}
-            if state_filter:
-                zoom = 6.5 if len(state_filter) == 1 else 5
-            else:
-                zoom = 4.2
+            center = {"lat": -25.5, "lon": 134.0}
+            zoom = 4.2
             postcode_rollup = (
                 group.groupby("Postcode", as_index=False)
                 .agg(
@@ -501,9 +495,15 @@ def main():
                         builder_pool = sorted(builder_flows["Builder"].dropna().unique().tolist())
                     if builder_filter_map:
                         builder_pool = builder_filter_map
+                    selected_builders = builder_pool
                     if builder_pool:
-                        display_builder = st.selectbox("Display builder region", builder_pool)
-                        builder_region = builder_flows[builder_flows["Builder"] == display_builder].copy()
+                        selected_builders = st.multiselect(
+                            "Display builder regions",
+                            builder_pool,
+                            default=builder_pool
+                        )
+                    if selected_builders:
+                        builder_region = builder_flows[builder_flows["Builder"].isin(selected_builders)].copy()
                         builder_region = builder_region.rename(columns={"Referrals": "Builder Referrals"})
                         map_df = map_df.merge(
                             builder_region[["Postcode", "Builder Referrals"]],
@@ -511,7 +511,19 @@ def main():
                             how="left"
                         )
                         map_df = map_df[map_df["Builder Referrals"].fillna(0) > 0]
-                        map_df["Primary Builder"] = display_builder
+                        primary_selected = (
+                            builder_region.groupby(["Postcode", "Builder"], as_index=False)["Builder Referrals"]
+                            .sum()
+                            .sort_values(["Postcode", "Builder Referrals"], ascending=[True, False])
+                            .drop_duplicates("Postcode")
+                            .rename(columns={"Builder": "Primary Builder"})
+                        )
+                        map_df = map_df.drop(columns=["Primary Builder"], errors="ignore").merge(
+                            primary_selected[["Postcode", "Primary Builder"]],
+                            on="Postcode",
+                            how="left"
+                        )
+                    map_df["Primary Builder"] = map_df["Primary Builder"].fillna("Unknown").astype(str)
                     hover_cols = {c: True for c in ["Leads", "Referrals", "Campaigns", "Builder Referrals", "Builder_Count"] if c in map_df.columns}
                     fig = px.choropleth_mapbox(
                         map_df,
