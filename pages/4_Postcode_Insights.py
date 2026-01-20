@@ -812,13 +812,14 @@ def main():
 
         st.markdown("**Targeting filters**")
         f_cols = st.columns(3)
+        base_df = region_df.copy()
         seg_df = region_df.copy()
 
         def apply_filter(col_name, label, col_idx):
             nonlocal seg_df
             if not col_name or col_name not in seg_df.columns:
                 return
-            options = seg_df[col_name].dropna().astype(str).unique().tolist()
+            options = base_df[col_name].dropna().astype(str).unique().tolist()
             if not options:
                 return
             with f_cols[col_idx]:
@@ -826,7 +827,7 @@ def main():
             if selected:
                 seg_df = seg_df[seg_df[col_name].astype(str).isin(selected)]
                 if seg_df.empty:
-                    st.warning(f"No matches after filtering {label}.")
+                    st.caption(f"No matches after filtering {label}.")
 
         apply_filter(finance_col, "Finance Status", 0)
         apply_filter(timeframe_col, "Timeframe", 1)
@@ -835,23 +836,23 @@ def main():
         f_cols2 = st.columns(3)
         with f_cols2[0]:
             if house_col and house_col in seg_df.columns:
-                options = seg_df[house_col].dropna().astype(str).unique().tolist()
+                options = base_df[house_col].dropna().astype(str).unique().tolist()
                 house_sel = st.multiselect("House type", sorted(options), default=sorted(options)) if options else []
                 if house_sel:
                     seg_df = seg_df[seg_df[house_col].astype(str).isin(house_sel)]
                     if seg_df.empty:
-                        st.warning("No matches after filtering House type.")
+                        st.caption("No matches after filtering House type.")
         with f_cols2[1]:
             if beds_col and beds_col in seg_df.columns:
-                options = seg_df[beds_col].dropna().astype(str).unique().tolist()
+                options = base_df[beds_col].dropna().astype(str).unique().tolist()
                 bed_sel = st.multiselect("Bedrooms", sorted(options), default=sorted(options)) if options else []
                 if bed_sel:
                     seg_df = seg_df[seg_df[beds_col].astype(str).isin(bed_sel)]
                     if seg_df.empty:
-                        st.warning("No matches after filtering Bedrooms.")
+                        st.caption("No matches after filtering Bedrooms.")
         with f_cols2[2]:
             if budget_col and budget_col in seg_df.columns:
-                budget_vals = pd.to_numeric(seg_df[budget_col], errors="coerce").dropna()
+                budget_vals = pd.to_numeric(base_df[budget_col], errors="coerce").dropna()
                 if not budget_vals.empty:
                     min_b, max_b = float(budget_vals.min()), float(budget_vals.max())
                     if min_b == max_b:
@@ -862,7 +863,7 @@ def main():
                             pd.to_numeric(seg_df[budget_col], errors="coerce").between(b_range[0], b_range[1])
                         ]
                         if seg_df.empty:
-                            st.warning("No matches after filtering Budget range.")
+                            st.caption("No matches after filtering Budget range.")
 
         if seg_df.empty:
             st.caption("No leads match the selected filters. Clear some filters to continue.")
