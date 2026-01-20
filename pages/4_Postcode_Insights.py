@@ -201,6 +201,13 @@ def main():
     </div>
     """, unsafe_allow_html=True)
 
+    map_mode = st.radio(
+        "Map view",
+        ["Performance", "Marketing Regions"],
+        horizontal=True,
+        label_visibility="collapsed",
+        key="postcode_map_mode"
+    )
     map_metric = st.radio(
         "Color by",
         ["Conversion Rate", "Opportunity Score", "Leads", "Referrals"],
@@ -260,60 +267,116 @@ def main():
             postcode_rollup["Media_Spend"] / postcode_rollup["Referrals"],
             np.nan
         )
-        metric_series = postcode_rollup[metric_col].fillna(0)
-        if metric_series.nunique() <= 1:
-            postcode_rollup["Metric Bin"] = "Mid"
-        else:
-            try:
-                metric_bins = pd.qcut(
-                    metric_series,
-                    q=5,
-                    labels=False,
-                    duplicates="drop"
+
+        if map_mode == "Marketing Regions" and "Dest_BuilderRegionKey" in df.columns:
+            mask_referral = df["is_referral"].fillna(False).astype(bool) if "is_referral" in df.columns else pd.Series(False, index=df.index)
+            mask_cross_payer = (
+                df["MediaPayer_BuilderRegionKey"].notna() &
+                df["Dest_BuilderRegionKey"].notna() &
+                (df["MediaPayer_BuilderRegionKey"] != df["Dest_BuilderRegionKey"])
+            )
+            referrals_df = df[mask_referral | mask_cross_payer].copy()
+            if not referrals_df.empty:
+                referrals_df["Postcode"] = referrals_df[postcode_col].astype(str).str.zfill(4)
+                builder_flows = (
+                    referrals_df.groupby(["Postcode", "Dest_BuilderRegionKey"], as_index=False)
+                    .agg(Referrals=("LeadId", "nunique") if "LeadId" in referrals_df.columns else ("lead_date", "size"))
                 )
-                labels = ["Very Low", "Low", "Mid", "High", "Very High"]
-            except ValueError:
-                metric_bins = pd.qcut(
-                    metric_series,
-                    q=3,
-                    labels=False,
-                    duplicates="drop"
+                totals = builder_flows.groupby("Dest_BuilderRegionKey", as_index=False)["Referrals"].sum()
+                top_builders = totals.sort_values("Referrals", ascending=False).head(12)["Dest_BuilderRegionKey"].tolist()
+                builder_flows["Builder"] = np.where(
+                    builder_flows["Dest_BuilderRegionKey"].isin(top_builders),
+                    builder_flows["Dest_BuilderRegionKey"],
+                    "Other"
                 )
-                labels = ["Low", "Mid", "High"]
-            if metric_bins.isna().all():
-                postcode_rollup["Metric Bin"] = "Mid"
+                primary = (
+                    builder_flows.groupby(["Postcode", "Builder"], as_index=False)["Referrals"]
+                    .sum()
+                    .sort_values(["Postcode", "Referrals"], ascending=[True, False])
+                )
+                primary = primary.drop_duplicates("Postcode")
+                primary = primary.rename(columns={"Builder": "Primary Builder"})
+                map_df = postcode_rollup.merge(primary[["Postcode", "Primary Builder", "Referrals"]], on="Postcode", how="left")
             else:
-                metric_bins = metric_bins.astype("Int64")
-                max_bin = int(metric_bins.max()) if metric_bins.max() is not pd.NA else 0
-                safe_labels = labels[: max_bin + 1]
-                postcode_rollup["Metric Bin"] = metric_bins.map(
-                    lambda x: safe_labels[int(x)] if pd.notna(x) and int(x) < len(safe_labels) else "Mid"
-                )
-        fig = px.choropleth_mapbox(
-            postcode_rollup,
-            geojson=geojson_filtered,
-            locations="Postcode",
-            featureidkey="properties.POA_CODE",
-            color="Metric Bin",
-            color_discrete_map={
-                "Very Low": "#e0f2fe",
-                "Low": "#bae6fd",
-                "Mid": "#7dd3fc",
-                "High": "#38bdf8",
-                "Very High": "#0284c7"
-            },
-            hover_data={
-                "Leads": True,
-                "Referrals": True,
-                "Campaigns": True,
-                "CPR": True
-            },
-            mapbox_style="carto-positron",
-            zoom=zoom,
-            center=center,
-            opacity=0.6,
-            title="Postcode performance (select a state to focus)"
-        )
+                map_df = postcode_rollup.copy()
+                map_df["Primary Builder"] = "Unknown"
+        else:
+            map_df = postcode_rollup.copy()
+            map_df["Primary Builder"] = None
+
+        if map_mode == "Performance":
+            metric_series = map_df[metric_col].fillna(0)
+            if metric_series.nunique() <= 1:
+                map_df["Metric Bin"] = "Mid"
+            else:
+                try:
+                    metric_bins = pd.qcut(
+                        metric_series,
+                        q=5,
+                        labels=False,
+                        duplicates="drop"
+                    )
+                    labels = ["Very Low", "Low", "Mid", "High", "Very High"]
+                except ValueError:
+                    metric_bins = pd.qcut(
+                        metric_series,
+                        q=3,
+                        labels=False,
+                        duplicates="drop"
+                    )
+                    labels = ["Low", "Mid", "High"]
+                if metric_bins.isna().all():
+                    map_df["Metric Bin"] = "Mid"
+                else:
+                    metric_bins = metric_bins.astype("Int64")
+                    max_bin = int(metric_bins.max()) if metric_bins.max() is not pd.NA else 0
+                    safe_labels = labels[: max_bin + 1]
+                    map_df["Metric Bin"] = metric_bins.map(
+                        lambda x: safe_labels[int(x)] if pd.notna(x) and int(x) < len(safe_labels) else "Mid"
+                    )
+            fig = px.choropleth_mapbox(
+                map_df,
+                geojson=geojson_filtered,
+                locations="Postcode",
+                featureidkey="properties.POA_CODE",
+                color="Metric Bin",
+                color_discrete_map={
+                    "Very Low": "#e0f2fe",
+                    "Low": "#bae6fd",
+                    "Mid": "#7dd3fc",
+                    "High": "#38bdf8",
+                    "Very High": "#0284c7"
+                },
+                hover_data={
+                    "Leads": True,
+                    "Referrals": True,
+                    "Campaigns": True,
+                    "CPR": True
+                },
+                mapbox_style="carto-positron",
+                zoom=zoom,
+                center=center,
+                opacity=0.6,
+                title="Postcode performance (select a state to focus)"
+            )
+        else:
+            fig = px.choropleth_mapbox(
+                map_df,
+                geojson=geojson_filtered,
+                locations="Postcode",
+                featureidkey="properties.POA_CODE",
+                color="Primary Builder",
+                hover_data={
+                    "Leads": True,
+                    "Referrals": True,
+                    "Campaigns": True
+                },
+                mapbox_style="carto-positron",
+                zoom=zoom,
+                center=center,
+                opacity=0.6,
+                title="Marketing regions (dominant referral-serving builder)"
+            )
         fig.update_layout(
             height=560,
             margin=dict(l=0, r=0, t=40, b=0),
