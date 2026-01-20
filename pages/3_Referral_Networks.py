@@ -564,6 +564,8 @@ if 'focus_builder' not in st.session_state:
     st.session_state.focus_builder = None
 if 'optimization_result' not in st.session_state:
     st.session_state.optimization_result = None
+if 'excluded_builders' not in st.session_state:
+    st.session_state.excluded_builders = []
 
 # ============================================================================
 # DATA LOADING
@@ -576,12 +578,19 @@ def load_data():
     return normalize_events(events) if events is not None else None
 
 @st.cache_data(show_spinner=False)
-def process_network(_events, start_date, end_date):
+def process_network(_events, start_date, end_date, excluded_builders):
     df = _events.copy()
     
     if start_date and end_date:
         mask = (df['lead_date'] >= pd.Timestamp(start_date)) & (df['lead_date'] <= pd.Timestamp(end_date))
         df = df[mask]
+    
+    if excluded_builders:
+        excluded_set = set(excluded_builders)
+        df = df[
+            ~df["MediaPayer_BuilderRegionKey"].isin(excluded_set) &
+            ~df["Dest_BuilderRegionKey"].isin(excluded_set)
+        ]
     
     period_days = (pd.Timestamp(end_date) - pd.Timestamp(start_date)).days if start_date and end_date else 90
     
@@ -700,22 +709,33 @@ def get_layout(nodes, edges):
 # FLOW DIAGRAM HELPERS
 # ============================================================================
 def build_budget_flow_dot(allocations, target_analyses, total_budget, unallocated):
+    def short_label(value, limit=18):
+        return value if len(value) <= limit else value[:limit - 3] + "..."
+
+    total_leads = sum(sum(a.projected_leads.values()) for a in allocations)
     lines = [
         "digraph BudgetFlow {",
         "rankdir=LR;",
-        "nodesep=0.35;",
-        "ranksep=0.5;",
-        "node [shape=box, style=filled, color=\"#e5e7eb\", fillcolor=\"#eff6ff\", fontname=\"Helvetica\"];",
-        "edge [color=\"#2563eb\", fontname=\"Helvetica\"];",
-        "total [label=\"Total Budget\\n$" + f"{total_budget:,.0f}" + "\"];",
+        "splines=true;",
+        "nodesep=0.5;",
+        "ranksep=0.7;",
+        "node [shape=box, style=filled, color=\"#d1d5db\", fillcolor=\"#eff6ff\", fontname=\"Helvetica\"];",
+        "edge [color=\"#2563eb\", fontname=\"Helvetica\", penwidth=1.2];",
+        "total [label=\"Total Budget\\n$" + f"{total_budget:,.0f}" + "\\n" + f"{total_leads:,.0f} leads" + "\"];",
     ]
+
+    source_ids = []
+    target_ids = []
+    leak_ids = []
 
     for alloc in allocations:
         source_id = f"src_{abs(hash(alloc.source)) % 10**8}"
+        source_ids.append(source_id)
+        source_leads = sum(alloc.projected_leads.values())
         lines.append(
-            f"{source_id} [label=\"Source: {alloc.source[:22]}\\n$" + f"{alloc.budget:,.0f}" + "\"];"
+            f"{source_id} [label=\"Source: {short_label(alloc.source)}\\n$" + f"{alloc.budget:,.0f}" + "\\n" + f"{source_leads:,.0f} leads" + "\"];"
         )
-        lines.append(f"total -> {source_id} [label=\"$" + f"{alloc.budget:,.0f}" + "\"];")
+        lines.append(f"total -> {source_id} [label=\"$" + f"{alloc.budget:,.0f}" + "\", minlen=2];")
 
         used_budget = 0.0
         for target, leads in alloc.projected_leads.items():
@@ -733,29 +753,34 @@ def build_budget_flow_dot(allocations, target_analyses, total_budget, unallocate
             used_budget += target_budget
             delivered_budget = target_budget * best_path.transfer_rate
             leakage_budget = target_budget - delivered_budget
+            delivered_leads = leads * best_path.transfer_rate
+            leakage_leads = max(0.0, leads - delivered_leads)
 
             target_id = f"tgt_{abs(hash((alloc.source, target))) % 10**8}"
+            target_ids.append(target_id)
             lines.append(
-                f"{target_id} [label=\"Target: {target[:22]}\\n$" + f"{delivered_budget:,.0f}" + "\"];"
+                f"{target_id} [shape=ellipse, fillcolor=\"#ecfccb\", label=\"Target: {short_label(target)}\\n$" + f"{delivered_budget:,.0f}" + "\\n" + f"{delivered_leads:,.0f} leads" + "\"];"
             )
             lines.append(
-                f"{source_id} -> {target_id} [label=\"$" + f"{delivered_budget:,.0f}" + " (" + f"{best_path.transfer_rate:.0%}" + ")\"];"
+                f"{source_id} -> {target_id} [label=\"$" + f"{delivered_budget:,.0f}" + " / " + f"{delivered_leads:,.0f} leads (" + f"{best_path.transfer_rate:.0%}" + ")\"];"
             )
 
             if leakage_budget > 0:
                 leak_id = f"leak_{abs(hash((alloc.source, target, 'leak'))) % 10**8}"
+                leak_ids.append(leak_id)
                 lines.append(
-                    f"{leak_id} [label=\"Leakage: {alloc.source[:10]}->{target[:10]}\\n$" + f"{leakage_budget:,.0f}" + "\"];"
+                    f"{leak_id} [shape=diamond, fillcolor=\"#fee2e2\", label=\"Leakage: {short_label(alloc.source)}->{short_label(target)}\\n$" + f"{leakage_budget:,.0f}" + "\\n" + f"{leakage_leads:,.0f} leads" + "\"];"
                 )
                 lines.append(
-                    f"{source_id} -> {leak_id} [label=\"$" + f"{leakage_budget:,.0f}" + " (" + f"{(1 - best_path.transfer_rate):.0%}" + ")\"];"
+                    f"{source_id} -> {leak_id} [label=\"$" + f"{leakage_budget:,.0f}" + " / " + f"{leakage_leads:,.0f} leads (" + f"{(1 - best_path.transfer_rate):.0%}" + ")\"];"
                 )
 
         unattributed = max(0.0, alloc.budget - used_budget)
         if unattributed > 0:
             leak_id = f"leak_{abs(hash((alloc.source, 'unattributed'))) % 10**8}"
+            leak_ids.append(leak_id)
             lines.append(
-                f"{leak_id} [label=\"Leakage: {alloc.source[:10]} (unattributed)\\n$" + f"{unattributed:,.0f}" + "\"];"
+                f"{leak_id} [shape=diamond, fillcolor=\"#fee2e2\", label=\"Leakage: {short_label(alloc.source)} (unattributed)\\n$" + f"{unattributed:,.0f}" + "\"];"
             )
             lines.append(
                 f"{source_id} -> {leak_id} [label=\"$" + f"{unattributed:,.0f}" + "\"];"
@@ -763,10 +788,18 @@ def build_budget_flow_dot(allocations, target_analyses, total_budget, unallocate
 
     if unallocated > 0:
         unalloc_id = "unallocated"
+        leak_ids.append(unalloc_id)
         lines.append(
-            f"{unalloc_id} [label=\"Unallocated\\n$" + f"{unallocated:,.0f}" + "\"];"
+            f"{unalloc_id} [shape=diamond, fillcolor=\"#fee2e2\", label=\"Unallocated\\n$" + f"{unallocated:,.0f}" + "\"];"
         )
         lines.append(f"total -> {unalloc_id} [label=\"$" + f"{unallocated:,.0f}" + "\"];")
+
+    if source_ids:
+        lines.append("{rank=same; " + "; ".join(source_ids) + ";}")
+    if target_ids:
+        lines.append("{rank=same; " + "; ".join(target_ids) + ";}")
+    if leak_ids:
+        lines.append("{rank=same; " + "; ".join(leak_ids) + ";}")
 
     lines.append("}")
     return "\n".join(lines)
@@ -788,6 +821,25 @@ def main():
         dates = pd.to_datetime(events['lead_date'], errors='coerce').dropna()
         min_d, max_d = dates.min().date(), dates.max().date()
         date_range = st.date_input("Date Range", value=(min_d, max_d))
+        
+        builder_options = sorted(set(
+            events["MediaPayer_BuilderRegionKey"].dropna().unique().tolist() +
+            events["Dest_BuilderRegionKey"].dropna().unique().tolist()
+        ))
+        excluded = st.multiselect(
+            "Exclude builders from clustering",
+            builder_options,
+            default=st.session_state.excluded_builders,
+            help="Removes selected builders from the network graph and clustering."
+        )
+        if set(excluded) != set(st.session_state.excluded_builders):
+            st.session_state.excluded_builders = excluded
+            if st.session_state.targets:
+                st.session_state.targets = [t for t in st.session_state.targets if t not in excluded]
+            if st.session_state.focus_builder in set(excluded):
+                st.session_state.focus_builder = None
+            st.session_state.optimization_result = None
+            st.rerun()
         
         st.markdown("---")
         st.markdown("### Campaign Targets")
@@ -812,7 +864,7 @@ def main():
     else:
         start_d, end_d = min_d, max_d
     with st.spinner("Analyzing..."):
-        data = process_network(events, start_d, end_d)
+        data = process_network(events, start_d, end_d, tuple(st.session_state.excluded_builders))
     
     G = data['graph']
     bm = data['builder_master']
