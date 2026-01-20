@@ -711,6 +711,16 @@ def main():
             </div>
         </div>
         """, unsafe_allow_html=True)
+        st.markdown("""
+        <div class="explainer">
+            <div class="explainer-title">Levers you control</div>
+            <div class="explainer-text">
+                Use <b>Forecast horizon</b> to set how far ahead you are planning. <b>Lookback period</b> controls how
+                many recent periods are used to estimate CPL. <b>Planned spend</b> and <b>Target leads</b> let you plan
+                either budget-first or lead-first.
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
 
         if group.empty:
             st.caption("Not enough data to build a regional forecast.")
@@ -763,7 +773,8 @@ def main():
             if not options:
                 return
             with f_cols[col_idx]:
-                selected = st.multiselect(label, sorted(options))
+                default_vals = sorted(options[:3]) if len(options) > 3 else sorted(options)
+                selected = st.multiselect(label, sorted(options), default=default_vals)
             if selected:
                 seg_df = seg_df[seg_df[col_name].astype(str).isin(selected)]
 
@@ -775,13 +786,15 @@ def main():
         with f_cols2[0]:
             if house_col and house_col in seg_df.columns:
                 options = seg_df[house_col].dropna().astype(str).unique().tolist()
-                house_sel = st.multiselect("House type", sorted(options)) if options else []
+                default_vals = sorted(options[:3]) if len(options) > 3 else sorted(options)
+                house_sel = st.multiselect("House type", sorted(options), default=default_vals) if options else []
                 if house_sel:
                     seg_df = seg_df[seg_df[house_col].astype(str).isin(house_sel)]
         with f_cols2[1]:
             if beds_col and beds_col in seg_df.columns:
                 options = seg_df[beds_col].dropna().astype(str).unique().tolist()
-                bed_sel = st.multiselect("Bedrooms", sorted(options)) if options else []
+                default_vals = sorted(options[:3]) if len(options) > 3 else sorted(options)
+                bed_sel = st.multiselect("Bedrooms", sorted(options), default=default_vals) if options else []
                 if bed_sel:
                     seg_df = seg_df[seg_df[beds_col].astype(str).isin(bed_sel)]
         with f_cols2[2]:
@@ -805,6 +818,7 @@ def main():
 
             controls_col, output_col = st.columns([1, 2])
             with controls_col:
+                st.markdown("**Forecast inputs**")
                 horizon_days = st.slider("Forecast horizon (days)", 7, 90, 30, step=1)
                 planned_spend = st.number_input("Planned spend ($)", min_value=0.0, value=5000.0, step=500.0)
                 target_leads = st.number_input("Target leads", min_value=0.0, value=100.0, step=10.0)
@@ -816,6 +830,7 @@ def main():
                 )
                 ts_freq = st.radio("Trend period", ["Weekly", "Monthly"], horizontal=True)
                 period_freq = "W" if ts_freq == "Weekly" else "M"
+                lookback_periods = st.slider("CPL lookback periods", 2, 12, 6, step=1)
 
             ts = (
                 seg_df.assign(period=seg_df["lead_date"].dt.to_period(period_freq).dt.start_time)
@@ -827,7 +842,7 @@ def main():
                 .sort_values("period")
             )
             ts["CPL"] = np.where(ts["Leads"] > 0, ts["Spend"] / ts["Leads"], np.nan)
-            lookback = min(6, len(ts))
+            lookback = min(lookback_periods, len(ts))
             cpl_forecast = ts["CPL"].tail(lookback).mean() if lookback > 0 else cpl
             cpl_forecast = cpl_forecast if cpl_forecast and cpl_forecast > 0 else cpl
             cpl_std = ts["CPL"].tail(lookback).std() if lookback > 1 else 0
