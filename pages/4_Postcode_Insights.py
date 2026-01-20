@@ -1349,6 +1349,25 @@ def main():
                     counts["Share"] = counts["Events"] / totals
                     return counts
 
+                def composition_insight(df_in, label):
+                    if df_in.empty:
+                        return None
+                    top_label = (
+                        df_in.groupby(label)["Events"].sum()
+                        .sort_values(ascending=False)
+                        .index
+                        .tolist()
+                    )
+                    if not top_label:
+                        return None
+                    top_label = top_label[0]
+                    top_state_row = df_in[df_in[label] == top_label].sort_values("Share", ascending=False).head(1)
+                    if top_state_row.empty:
+                        return None
+                    top_state = top_state_row["State"].iloc[0]
+                    top_share = top_state_row["Share"].iloc[0]
+                    return f"Top segment: {top_label}. Strongest state: {top_state} ({top_share:.0%} share)."
+
                 def state_stack_chart(df_in, label, color_seq):
                     if df_in.empty:
                         return None
@@ -1398,35 +1417,55 @@ def main():
 
                 with comp_tabs[0]:
                     if finance_col:
-                        fig = state_stack_chart(state_share_table(comp_df[finance_col], "Finance Status"), "Finance Status", palette)
+                        finance_share = state_share_table(comp_df[finance_col], "Finance Status")
+                        insight = composition_insight(finance_share, "Finance Status")
+                        if insight:
+                            st.caption(insight)
+                        fig = state_stack_chart(finance_share, "Finance Status", palette)
                         if fig:
                             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
                     else:
                         st.caption("Finance Status data not available.")
                 with comp_tabs[1]:
                     if timeframe_col:
-                        fig = state_stack_chart(state_share_table(comp_df[timeframe_col], "Timeframe"), "Timeframe", palette)
+                        timeframe_share = state_share_table(comp_df[timeframe_col], "Timeframe")
+                        insight = composition_insight(timeframe_share, "Timeframe")
+                        if insight:
+                            st.caption(insight)
+                        fig = state_stack_chart(timeframe_share, "Timeframe", palette)
                         if fig:
                             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
                     else:
                         st.caption("Timeframe data not available.")
                 with comp_tabs[2]:
                     if land_col:
-                        fig = state_stack_chart(state_share_table(comp_df[land_col], "Do you have land"), "Do you have land", palette)
+                        land_share = state_share_table(comp_df[land_col], "Do you have land")
+                        insight = composition_insight(land_share, "Do you have land")
+                        if insight:
+                            st.caption(insight)
+                        fig = state_stack_chart(land_share, "Do you have land", palette)
                         if fig:
                             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
                     else:
                         st.caption("Land status data not available.")
                 with comp_tabs[3]:
                     if house_col:
-                        fig = state_stack_chart(state_share_table(comp_df[house_col], "House type"), "House type", palette)
+                        house_share = state_share_table(comp_df[house_col], "House type")
+                        insight = composition_insight(house_share, "House type")
+                        if insight:
+                            st.caption(insight)
+                        fig = state_stack_chart(house_share, "House type", palette)
                         if fig:
                             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
                     else:
                         st.caption("House type data not available.")
                 with comp_tabs[4]:
                     if beds_col:
-                        fig = state_stack_chart(state_share_table(comp_df[beds_col], "Bedrooms"), "Bedrooms", palette)
+                        beds_share = state_share_table(comp_df[beds_col], "Bedrooms")
+                        insight = composition_insight(beds_share, "Bedrooms")
+                        if insight:
+                            st.caption(insight)
+                        fig = state_stack_chart(beds_share, "Bedrooms", palette)
                         if fig:
                             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
                     else:
@@ -1447,10 +1486,14 @@ def main():
                                     bins=bins,
                                     include_lowest=True
                                 ).astype(str)
+                                budget_share = state_share_table(budget_valid["Budget range"], "Budget range")
+                                insight = composition_insight(budget_share, "Budget range")
+                                if insight:
+                                    st.caption(insight)
                                 left, right = st.columns([2, 1])
                                 with left:
                                     fig = state_stack_chart(
-                                        state_share_table(budget_valid["Budget range"], "Budget range"),
+                                        budget_share,
                                         "Budget range",
                                         palette
                                     )
