@@ -869,15 +869,18 @@ def main():
                 lead_ts = seg_df[seg_df["is_referral"].fillna(False).astype(bool) == False].copy()
             else:
                 lead_ts = seg_df.copy()
-            ts = (
+            ts_leads = (
                 lead_ts.assign(period=lead_ts["lead_date"].dt.to_period(period_freq).dt.start_time)
                 .groupby("period", as_index=False)
-                .agg(
-                    Leads=(lead_id_col, "nunique") if lead_id_col else ("lead_date", "size"),
-                    Spend=(spend_col, "sum") if spend_col else ("lead_date", "size")
-                )
+                .agg(Leads=(lead_id_col, "nunique") if lead_id_col else ("lead_date", "size"))
                 .sort_values("period")
             )
+            ts_spend = (
+                seg_df.assign(period=seg_df["lead_date"].dt.to_period(period_freq).dt.start_time)
+                .groupby("period", as_index=False)
+                .agg(Spend=(spend_col, "sum") if spend_col else ("lead_date", "size"))
+            )
+            ts = ts_leads.merge(ts_spend, on="period", how="left")
             ts["CPL"] = np.where(ts["Leads"] > 0, ts["Spend"] / ts["Leads"], np.nan)
             if "is_referral" in seg_df.columns:
                 qualified_ts = (
