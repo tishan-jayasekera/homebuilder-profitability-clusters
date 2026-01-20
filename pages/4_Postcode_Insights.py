@@ -197,7 +197,13 @@ def main():
         Campaigns=(campaign_col, "nunique") if campaign_col else (postcode_col, "size")
     )
     if "is_referral" in df.columns:
-        refs_df = df[df["is_referral"] == True].copy()
+        mask_referral = df["is_referral"].fillna(False).astype(bool)
+        mask_cross_payer = (
+            df["MediaPayer_BuilderRegionKey"].notna() &
+            df["Dest_BuilderRegionKey"].notna() &
+            (df["MediaPayer_BuilderRegionKey"] != df["Dest_BuilderRegionKey"])
+        )
+        refs_df = df[mask_referral | mask_cross_payer].copy()
         if lead_id_col:
             qualified = (
                 refs_df.groupby([postcode_col, suburb_col])[lead_id_col]
@@ -1010,7 +1016,13 @@ def main():
 
             if campaign_col:
                 mask_referral = seg_df["is_referral"].fillna(False).astype(bool) if "is_referral" in seg_df.columns else pd.Series(False, index=seg_df.index)
-                campaign_df = seg_df[mask_referral].copy() if mask_referral.any() else seg_df.copy()
+                mask_cross_payer = (
+                    seg_df["MediaPayer_BuilderRegionKey"].notna() &
+                    seg_df["Dest_BuilderRegionKey"].notna() &
+                    (seg_df["MediaPayer_BuilderRegionKey"] != seg_df["Dest_BuilderRegionKey"])
+                )
+                ref_mask = mask_referral | mask_cross_payer
+                campaign_df = seg_df[ref_mask].copy() if ref_mask.any() else seg_df.copy()
                 camp = (
                     campaign_df.groupby(campaign_col, as_index=False)
                     .agg(
@@ -1030,6 +1042,19 @@ def main():
                     hide_index=True,
                     use_container_width=True
                 )
+
+                total_leads = camp["Leads"].sum()
+                total_refs = camp["Referrals"].sum()
+                top_share = camp.head(3)["Referrals"].sum() / total_refs if total_refs > 0 else 0
+                st.markdown(f"""
+                <div class="explainer">
+                    <div class="explainer-title">Justified by campaigns</div>
+                    <div class="explainer-text">
+                        The top 3 campaigns account for <b>{top_share:.0%}</b> of referral activity in this region.
+                        Forecast assumptions are grounded in these campaigns because they are driving the majority of qualified outcomes.
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
 
                 comp_fields = [
                     (budget_col, "Budget"),
