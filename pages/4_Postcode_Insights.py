@@ -1,6 +1,6 @@
 """
 Postcode Opportunity Insights
-Understand conversion rates and campaign density by postcode/suburb.
+Understand qualified lead rates and campaign density by postcode/suburb.
 """
 import streamlit as st
 import pandas as pd
@@ -123,7 +123,7 @@ def main():
             ["Median-based", "Target-based"],
             horizontal=False
         )
-        target_conv = st.slider("Target conversion rate", 0.01, 0.5, 0.15, step=0.01)
+        target_conv = st.slider("Target qualified/lead rate", 0.01, 0.5, 0.15, step=0.01)
         if postcode_meta is not None and not postcode_meta.empty:
             state_options = sorted(postcode_meta["State"].unique().tolist())
             state_filter = st.multiselect("State/Region", state_options, default=state_options)
@@ -174,7 +174,7 @@ def main():
     st.markdown("""
     <div class="page-header">
         <h1 class="page-title">📍 Postcode Opportunity Insights</h1>
-        <p class="page-subtitle">Conversion efficiency by postcode + suburb and campaign density opportunities.</p>
+        <p class="page-subtitle">Qualified lead efficiency by postcode + suburb and campaign density opportunities.</p>
     </div>
     """, unsafe_allow_html=True)
     st.markdown("""
@@ -244,19 +244,20 @@ def main():
         )
         if state_filter:
             group = group[group["State"].isin(state_filter)]
-    group["Conversion_Rate"] = np.where(group["Leads"] > 0, group["Qualified_Leads"] / group["Leads"], 0)
+    group["Qualified_Lead_Rate"] = np.where(group["Leads"] > 0, group["Qualified_Leads"] / group["Leads"], 0)
+    group["Referral_Lead_Ratio"] = np.where(group["Qualified_Leads"] > 0, group["Referrals"] / group["Qualified_Leads"], 0)
     denom = group["Leads"] + group["Qualified_Leads"]
     group["CPR"] = np.where(denom > 0, group["Media_Spend"] / denom, np.nan)
     if campaign_col:
-        group["Opportunity_Score"] = (1 - group["Conversion_Rate"]) * group["Leads"] * np.log1p(group["Campaigns"])
+        group["Opportunity_Score"] = (1 - group["Qualified_Lead_Rate"]) * group["Leads"] * np.log1p(group["Campaigns"])
     else:
-        group["Opportunity_Score"] = (1 - group["Conversion_Rate"]) * group["Leads"]
+        group["Opportunity_Score"] = (1 - group["Qualified_Lead_Rate"]) * group["Leads"]
 
-    avg_conv = group["Conversion_Rate"].mean() if not group.empty else 0
+    avg_conv = group["Qualified_Lead_Rate"].mean() if not group.empty else 0
     st.markdown(f"""
     <div class="kpi-row">
         <div class="kpi"><div class="kpi-label">Postcodes</div><div class="kpi-value">{group[postcode_col].nunique():,}</div></div>
-        <div class="kpi"><div class="kpi-label">Avg Conversion</div><div class="kpi-value">{avg_conv:.0%}</div></div>
+        <div class="kpi"><div class="kpi-label">Qualified/Lead Rate</div><div class="kpi-value">{avg_conv:.0%}</div></div>
         <div class="kpi"><div class="kpi-label">Campaigns Tracked</div><div class="kpi-value">{group["Campaigns"].sum():,}</div></div>
         <div class="kpi"><div class="kpi-label">Total Leads</div><div class="kpi-value">{group["Leads"].sum():,}</div></div>
     </div>
@@ -265,7 +266,7 @@ def main():
     <div class="explainer">
         <div class="explainer-title">KPI definitions (plain language)</div>
         <div class="explainer-text">
-            <b>Avg conversion</b> is qualified leads ÷ total leads, so it shows how often a lead becomes qualified.
+            <b>Qualified/Lead rate</b> is qualified leads ÷ total leads, so it shows how often a lead becomes qualified.
             <b>Campaigns tracked</b> is how many campaigns touched these regions, which helps spot crowding.
             <b>Total leads</b> and <b>postcodes</b> show the scale of your market coverage.
         </div>
@@ -273,8 +274,9 @@ def main():
     """, unsafe_allow_html=True)
     with st.expander("Metric glossary", expanded=False):
         st.markdown("""
-        - **Conversion Rate**: Qualified leads ÷ total leads. Higher means more leads become qualified.
-        - **Opportunity Score**: Higher when leads are high and conversion is low (plus campaign density). Targets fast improvement areas.
+        - **Qualified/Lead Rate**: Qualified leads ÷ total leads. Higher means more leads become qualified.
+        - **Referral/Lead Ratio**: Referrals ÷ qualified leads. Higher means each qualified lead fans out to more endpoints.
+        - **Opportunity Score**: Higher when leads are high and qualified/lead rate is low (plus campaign density). Targets fast improvement areas.
         - **CPL (Cost per Lead)**: Spend ÷ Leads. Lower means cheaper lead delivery.
         - **CPR (Cost per Referral)**: Spend ÷ (Unique Leads + Unique Referrals). Lower means more efficient coverage.
         - **Capacity (Spend)**: Planned spend ÷ Forecast CPL. How many leads spend can buy.
@@ -305,7 +307,7 @@ def main():
         <div class="explainer">
             <div class="explainer-title">What you are seeing</div>
             <div class="explainer-text">
-                Performance view colors postcodes by conversion, leads, or opportunity score. Marketing Regions groups
+                Performance view colors postcodes by qualified/lead rate, referral/lead ratio, leads, or opportunity score. Marketing Regions groups
                 postcodes by the builder that services the most referrals there. Use this to align spend and ownership.
             </div>
         </div>
@@ -320,13 +322,14 @@ def main():
         )
         map_metric = st.radio(
             "Color by",
-            ["Conversion Rate", "Opportunity Score", "Leads", "Referrals"],
+            ["Qualified/Lead Rate", "Referral/Lead Ratio", "Opportunity Score", "Leads", "Referrals"],
             horizontal=True,
             label_visibility="collapsed",
             key="postcode_map_metric"
         )
         metric_map = {
-            "Conversion Rate": "Conversion_Rate",
+            "Qualified/Lead Rate": "Qualified_Lead_Rate",
+            "Referral/Lead Ratio": "Referral_Lead_Ratio",
             "Opportunity Score": "Opportunity_Score",
             "Leads": "Leads",
             "Referrals": "Referrals"
@@ -351,10 +354,12 @@ def main():
                 group.groupby("Postcode", as_index=False)
                 .agg(
                     Leads=("Leads", "sum"),
+                    Qualified_Leads=("Qualified_Leads", "sum"),
                     Referrals=("Referrals", "sum"),
                     Media_Spend=("Media_Spend", "sum"),
                     Campaigns=("Campaigns", "sum"),
-                    Conversion_Rate=("Conversion_Rate", "mean"),
+                    Qualified_Lead_Rate=("Qualified_Lead_Rate", "mean"),
+                    Referral_Lead_Ratio=("Referral_Lead_Ratio", "mean"),
                     Opportunity_Score=("Opportunity_Score", "sum")
                 )
             )
@@ -366,11 +371,8 @@ def main():
                 .str.zfill(4)
             )
             postcode_rollup = postcode_rollup.dropna(subset=["Postcode"])
-            postcode_rollup["CPR"] = np.where(
-                postcode_rollup["Referrals"] > 0,
-                postcode_rollup["Media_Spend"] / postcode_rollup["Referrals"],
-                np.nan
-            )
+            rollup_denom = postcode_rollup["Leads"] + postcode_rollup["Qualified_Leads"]
+            postcode_rollup["CPR"] = np.where(rollup_denom > 0, postcode_rollup["Media_Spend"] / rollup_denom, np.nan)
 
             region_view = "Dominant"
             if map_mode == "Marketing Regions":
@@ -384,12 +386,7 @@ def main():
 
             if map_mode == "Marketing Regions" and "Dest_BuilderRegionKey" in df.columns:
                 mask_referral = df["is_referral"].fillna(False).astype(bool) if "is_referral" in df.columns else pd.Series(False, index=df.index)
-                mask_cross_payer = (
-                    df["MediaPayer_BuilderRegionKey"].notna() &
-                    df["Dest_BuilderRegionKey"].notna() &
-                    (df["MediaPayer_BuilderRegionKey"] != df["Dest_BuilderRegionKey"])
-                )
-                referrals_df = df[mask_referral | mask_cross_payer].copy()
+                referrals_df = df[mask_referral].copy()
                 builder_flows = pd.DataFrame()
                 builder_filter_map = builder_filter if builder_filter else []
                 if builder_filter_map:
@@ -677,7 +674,7 @@ def main():
         <div class="explainer">
             <div class="explainer-title">Opportunity score explained</div>
             <div class="explainer-text">
-                Opportunity Score increases when a postcode has many leads but low conversion, and when many campaigns
+                Opportunity Score increases when a postcode has many leads but low qualified/lead rate, and when many campaigns
                 are already active. This flags areas where creative or targeting improvements can unlock fast gains.
             </div>
         </div>
@@ -695,7 +692,7 @@ def main():
             y="Label",
             orientation="h",
             color="Campaigns",
-            title="Top opportunity postcodes (low conversion + high campaign density)"
+        title="Top opportunity postcodes (low qualified/lead rate + high campaign density)"
         )
         fig2.update_layout(height=360, margin=dict(l=0, r=0, t=40, b=0))
         st.plotly_chart(fig2, use_container_width=True, config={"displayModeBar": False})
@@ -703,12 +700,13 @@ def main():
         display = group.rename(columns={
             postcode_col: "Postcode",
             suburb_col: "Suburb",
-            "Conversion_Rate": "Conversion Rate",
+            "Qualified_Lead_Rate": "Qualified/Lead Rate",
+            "Referral_Lead_Ratio": "Referral/Lead Ratio",
             "Opportunity_Score": "Opportunity Score",
             "Media_Spend": "Ad Spend"
         }).sort_values("Opportunity Score", ascending=False)
         st.dataframe(
-            display[["Postcode", "Suburb", "Leads", "Qualified_Leads", "Referrals", "Conversion Rate", "Campaigns", "Ad Spend", "CPR", "Opportunity Score"]]
+            display[["Postcode", "Suburb", "Leads", "Qualified_Leads", "Referrals", "Qualified/Lead Rate", "Referral/Lead Ratio", "Campaigns", "Ad Spend", "CPR", "Opportunity Score"]]
             .head(50),
             hide_index=True,
             use_container_width=True
@@ -717,7 +715,7 @@ def main():
         if not group.empty:
             st.markdown("**Suburbs in selected regions**")
             suburb_list = (
-                group[["Postcode", "Suburb", "Leads", "Qualified_Leads", "Referrals", "Conversion_Rate", "Campaigns"]]
+                group[["Postcode", "Suburb", "Leads", "Qualified_Leads", "Referrals", "Qualified_Lead_Rate", "Referral_Lead_Ratio", "Campaigns"]]
                 .sort_values(["Postcode", "Suburb"])
                 .head(200)
             )
@@ -1048,21 +1046,32 @@ def main():
                     .agg(Leads=(lead_id_col, "nunique") if lead_id_col else ("lead_date", "size"))
                 )
                 if not ref_campaign_df.empty:
+                    camp_qualified = (
+                        ref_campaign_df.groupby(campaign_col, as_index=False)
+                        .agg(Qualified_Leads=(lead_id_col, "nunique") if lead_id_col else ("lead_date", "size"))
+                    )
                     camp_refs = (
                         ref_campaign_df.groupby(campaign_col, as_index=False)
-                        .agg(Referrals=(lead_id_col, "nunique") if lead_id_col else ("lead_date", "size"))
+                        .size()
+                        .rename(columns={"size": "Referrals"})
                     )
                 else:
+                    camp_qualified = pd.DataFrame(columns=[campaign_col, "Qualified_Leads"])
                     camp_refs = pd.DataFrame(columns=[campaign_col, "Referrals"])
                 camp_spend = (
                     seg_df.groupby(campaign_col, as_index=False)
                     .agg(Spend=(spend_col, "sum") if spend_col else ("lead_date", "size"))
                 )
-                camp = camp_leads.merge(camp_refs, on=campaign_col, how="left").merge(camp_spend, on=campaign_col, how="left")
+                camp = (camp_leads
+                        .merge(camp_qualified, on=campaign_col, how="left")
+                        .merge(camp_refs, on=campaign_col, how="left")
+                        .merge(camp_spend, on=campaign_col, how="left"))
+                camp["Qualified_Leads"] = camp["Qualified_Leads"].fillna(0)
                 camp["Referrals"] = camp["Referrals"].fillna(0)
                 camp["CPL"] = np.where(camp["Leads"] > 0, camp["Spend"] / camp["Leads"], np.nan)
                 camp_denom = camp["Leads"] + camp["Referrals"]
                 camp["CPR"] = np.where(camp_denom > 0, camp["Spend"] / camp_denom, np.nan)
+                camp["Referral/Lead Ratio"] = np.where(camp["Qualified_Leads"] > 0, camp["Referrals"] / camp["Qualified_Leads"], np.nan)
                 camp = camp.sort_values(["Referrals", "Leads"], ascending=False).head(10)
 
                 st.markdown("**Recommended campaigns for this region**")
@@ -1123,7 +1132,7 @@ def main():
             <div class="explainer-title">How to read benchmarks</div>
             <div class="explainer-text">
                 Benchmarks compare each state to the overall average. Underperforming areas are high volume but low
-                conversion, making them the best candidates for creative or funnel fixes.
+                qualified/lead rate, making them the best candidates for creative or funnel fixes.
             </div>
         </div>
         """, unsafe_allow_html=True)
@@ -1137,33 +1146,33 @@ def main():
                     .agg(
                         Leads=("Leads", "sum"),
                         Referrals=("Referrals", "sum"),
-                        Avg_Conversion=("Conversion_Rate", "mean"),
+                        Avg_Conversion=("Qualified_Lead_Rate", "mean"),
                         Avg_CPR=("CPR", "mean")
                     )
                 )
                 st.markdown("**State benchmarks**")
                 st.dataframe(
                     state_benchmark.rename(columns={
-                        "Avg_Conversion": "Avg Conversion",
+                        "Avg_Conversion": "Avg Qualified/Lead Rate",
                         "Avg_CPR": "Avg CPR"
                     }),
                     hide_index=True,
                     use_container_width=True
                 )
 
-            conv_median = group["Conversion_Rate"].median() if group["Conversion_Rate"].notna().any() else 0
+            conv_median = group["Qualified_Lead_Rate"].median() if group["Qualified_Lead_Rate"].notna().any() else 0
             lead_median = group["Leads"].median() if group["Leads"].notna().any() else 0
-            benchmark_conv = group["Conversion_Rate"].mean() if group["Conversion_Rate"].notna().any() else 0
+            benchmark_conv = group["Qualified_Lead_Rate"].mean() if group["Qualified_Lead_Rate"].notna().any() else 0
             benchmark_cpr = group["CPR"].mean() if group["CPR"].notna().any() else 0
-            group["Conv_vs_Avg"] = group["Conversion_Rate"] - benchmark_conv
+            group["Conv_vs_Avg"] = group["Qualified_Lead_Rate"] - benchmark_conv
             group["CPR_vs_Avg"] = group["CPR"] - benchmark_cpr
             outliers = group[
                 (group["Leads"] >= lead_median) &
-                (group["Conversion_Rate"] < benchmark_conv * 0.8)
+                (group["Qualified_Lead_Rate"] < benchmark_conv * 0.8)
             ].sort_values("Opportunity_Score", ascending=False)
             st.markdown("**Underperforming high-volume postcodes**")
             st.dataframe(
-                outliers[["Postcode", "Suburb", "Leads", "Conversion_Rate", "CPR", "Campaigns"]].head(20),
+                outliers[["Postcode", "Suburb", "Leads", "Qualified_Lead_Rate", "CPR", "Campaigns"]].head(20),
                 hide_index=True,
                 use_container_width=True
             )
@@ -1181,9 +1190,9 @@ def main():
         <div class="explainer">
             <div class="explainer-title">How to use this plan</div>
             <div class="explainer-text">
-                Scale regions that are high volume and high conversion. Fix regions that are high volume but low
-                conversion. Test small budgets in high conversion but low volume areas. Reduce spend in low volume,
-                low conversion areas.
+                Scale regions that are high volume and high qualified/lead rate. Fix regions that are high volume but low
+                qualified/lead rate. Test small budgets in high qualified/lead rate but low volume areas. Reduce spend in low volume,
+                low qualified/lead rate areas.
             </div>
         </div>
         """, unsafe_allow_html=True)
@@ -1191,12 +1200,12 @@ def main():
         if group.empty:
             st.caption("Not enough data to build a regional optimization plan.")
         else:
-            conv_median = group["Conversion_Rate"].median() if group["Conversion_Rate"].notna().any() else 0
+            conv_median = group["Qualified_Lead_Rate"].median() if group["Qualified_Lead_Rate"].notna().any() else 0
             lead_median = group["Leads"].median() if group["Leads"].notna().any() else 0
             conv_threshold = target_conv if zone_method == "Target-based" else conv_median
 
             def zone_for_row(row):
-                high_conv = row["Conversion_Rate"] >= conv_threshold
+                high_conv = row["Qualified_Lead_Rate"] >= conv_threshold
                 high_vol = row["Leads"] >= lead_median
                 if high_conv and high_vol:
                     return "Scale"
@@ -1222,7 +1231,7 @@ def main():
                     Leads=("Leads", "sum"),
                     Referrals=("Referrals", "sum"),
                     Spend=("Media_Spend", "sum"),
-                    Avg_Conversion=("Conversion_Rate", "mean"),
+                    Avg_Conversion=("Qualified_Lead_Rate", "mean"),
                     Avg_CPR=("CPR", "mean")
                 )
             )
@@ -1242,7 +1251,7 @@ def main():
             st.markdown("**Zone summary**")
             st.dataframe(
                 zone_summary.rename(columns={
-                    "Avg_Conversion": "Avg Conversion",
+                    "Avg_Conversion": "Avg Qualified/Lead Rate",
                     "Avg_CPR": "Avg CPR"
                 }),
                 hide_index=True,
@@ -1251,7 +1260,8 @@ def main():
 
             st.markdown("**Priority actions by postcode**")
             action_table = group.rename(columns={
-                "Conversion_Rate": "Conversion Rate",
+                "Qualified_Lead_Rate": "Qualified/Lead Rate",
+                "Referral_Lead_Ratio": "Referral/Lead Ratio",
                 "Media_Spend": "Ad Spend"
             }).sort_values(
                 ["Zone", "Opportunity_Score"],
@@ -1259,7 +1269,7 @@ def main():
             )
             st.dataframe(
                 action_table[[
-                    "Postcode", "Suburb", "Leads", "Referrals", "Conversion Rate",
+                    "Postcode", "Suburb", "Leads", "Qualified_Leads", "Referrals", "Qualified/Lead Rate", "Referral/Lead Ratio",
                     "Campaigns", "Ad Spend", "CPR", "Zone", "Recommended Action"
                 ]].head(50),
                 hide_index=True,
@@ -1293,7 +1303,7 @@ def main():
             crowded = crowd.sort_values("Campaigns", ascending=False).head(15)
             st.markdown("**Most crowded postcodes**")
             st.dataframe(
-                crowded[["Postcode", "Suburb", "Leads", "Campaigns", "Campaigns_per_Lead", "Conversion_Rate"]],
+                crowded[["Postcode", "Suburb", "Leads", "Campaigns", "Campaigns_per_Lead", "Qualified_Lead_Rate"]],
                 hide_index=True,
                 use_container_width=True
             )
@@ -1332,7 +1342,7 @@ def main():
         <div class="explainer">
             <div class="explainer-title">Commercial value</div>
             <div class="explainer-text">
-                Mentioning suburbs or postcodes in your creative typically lifts relevance and conversion. Use the
+                Mentioning suburbs or postcodes in your creative typically lifts relevance and qualified/lead rate. Use the
                 opportunity list to decide which areas to feature in ads and landing pages.
             </div>
         </div>
@@ -1342,7 +1352,7 @@ def main():
     <div class="insight">
         <div class="insight-text">
             <b>Recommendation:</b> Focus more advertising in the opportunity postcodes above and mention those areas directly in the creative.
-            This typically lifts conversion where campaign density is already high but referral efficiency lags.
+            This typically lifts qualified/lead rate where campaign density is already high but referral efficiency lags.
         </div>
     </div>
     """, unsafe_allow_html=True)
