@@ -107,6 +107,12 @@ def main():
         min_d, max_d = dates.min().date(), dates.max().date()
         date_range = st.date_input("Date Range", value=(min_d, max_d))
         min_leads = st.slider("Min leads per postcode", 1, 100, 10, step=1)
+        zone_method = st.radio(
+            "Zone thresholds",
+            ["Median-based", "Target-based"],
+            horizontal=False
+        )
+        target_conv = st.slider("Target conversion rate", 0.01, 0.5, 0.15, step=0.01)
         if postcode_meta is not None and not postcode_meta.empty:
             state_options = sorted(postcode_meta["State"].unique().tolist())
             state_filter = st.multiselect("State/Region", state_options, default=state_options)
@@ -254,13 +260,30 @@ def main():
             postcode_rollup["Media_Spend"] / postcode_rollup["Referrals"],
             np.nan
         )
+        metric_series = postcode_rollup[metric_col].fillna(0)
+        if metric_series.nunique() <= 1:
+            postcode_rollup["Metric Bin"] = "Mid"
+        else:
+            metric_bins = pd.qcut(
+                metric_series,
+                q=5,
+                labels=["Very Low", "Low", "Mid", "High", "Very High"],
+                duplicates="drop"
+            )
+            postcode_rollup["Metric Bin"] = metric_bins.astype(str)
         fig = px.choropleth_mapbox(
             postcode_rollup,
             geojson=geojson_filtered,
             locations="Postcode",
             featureidkey="properties.POA_CODE",
-            color=metric_col,
-            color_continuous_scale="Viridis",
+            color="Metric Bin",
+            color_discrete_map={
+                "Very Low": "#e0f2fe",
+                "Low": "#bae6fd",
+                "Mid": "#7dd3fc",
+                "High": "#38bdf8",
+                "Very High": "#0284c7"
+            },
             hover_data={
                 "Leads": True,
                 "Referrals": True,
@@ -336,11 +359,61 @@ def main():
         )
         st.dataframe(suburb_list, hide_index=True, use_container_width=True)
 
-    # Section 3: Media spend optimization by region
+    # Section 3: Regional benchmarks and outliers
     st.markdown("""
     <div class="section">
         <div class="section-header">
             <span class="section-num">3</span>
+            <span class="section-title">Regional Benchmarks</span>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    if group.empty:
+        st.caption("Not enough data to build benchmarks.")
+    else:
+        if "State" in group.columns and group["State"].notna().any():
+            state_benchmark = (
+                group.groupby("State", as_index=False)
+                .agg(
+                    Leads=("Leads", "sum"),
+                    Referrals=("Referrals", "sum"),
+                    Avg_Conversion=("Conversion_Rate", "mean"),
+                    Avg_CPR=("CPR", "mean")
+                )
+            )
+            st.markdown("**State benchmarks**")
+            st.dataframe(
+                state_benchmark.rename(columns={
+                    "Avg_Conversion": "Avg Conversion",
+                    "Avg_CPR": "Avg CPR"
+                }),
+                hide_index=True,
+                use_container_width=True
+            )
+
+        conv_median = group["Conversion_Rate"].median() if group["Conversion_Rate"].notna().any() else 0
+        lead_median = group["Leads"].median() if group["Leads"].notna().any() else 0
+        benchmark_conv = group["Conversion_Rate"].mean() if group["Conversion_Rate"].notna().any() else 0
+        benchmark_cpr = group["CPR"].mean() if group["CPR"].notna().any() else 0
+        group["Conv_vs_Avg"] = group["Conversion_Rate"] - benchmark_conv
+        group["CPR_vs_Avg"] = group["CPR"] - benchmark_cpr
+        outliers = group[
+            (group["Leads"] >= lead_median) &
+            (group["Conversion_Rate"] < benchmark_conv * 0.8)
+        ].sort_values("Opportunity_Score", ascending=False)
+        st.markdown("**Underperforming high-volume postcodes**")
+        st.dataframe(
+            outliers[["Postcode", "Suburb", "Leads", "Conversion_Rate", "CPR", "Campaigns"]].head(20),
+            hide_index=True,
+            use_container_width=True
+        )
+
+    # Section 4: Media spend optimization by region
+    st.markdown("""
+    <div class="section">
+        <div class="section-header">
+            <span class="section-num">4</span>
             <span class="section-title">Media Spend Optimization Plan</span>
         </div>
     </div>
@@ -351,9 +424,10 @@ def main():
     else:
         conv_median = group["Conversion_Rate"].median() if group["Conversion_Rate"].notna().any() else 0
         lead_median = group["Leads"].median() if group["Leads"].notna().any() else 0
+        conv_threshold = target_conv if zone_method == "Target-based" else conv_median
 
         def zone_for_row(row):
-            high_conv = row["Conversion_Rate"] >= conv_median
+            high_conv = row["Conversion_Rate"] >= conv_threshold
             high_vol = row["Leads"] >= lead_median
             if high_conv and high_vol:
                 return "Scale"
@@ -423,11 +497,55 @@ def main():
             use_container_width=True
         )
 
-    # Section 3: Creative guidance
+    # Section 5: Campaign overlap diagnostics
     st.markdown("""
     <div class="section">
         <div class="section-header">
-            <span class="section-num">4</span>
+            <span class="section-num">5</span>
+            <span class="section-title">Campaign Overlap Diagnostics</span>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    if group.empty or not campaign_col:
+        st.caption("Campaign overlap requires campaign fields (utm_campaign/utm_key/ad_key).")
+    else:
+        crowd = group.copy()
+        crowd["Campaigns_per_Lead"] = np.where(crowd["Leads"] > 0, crowd["Campaigns"] / crowd["Leads"], 0)
+        crowded = crowd.sort_values("Campaigns", ascending=False).head(15)
+        st.markdown("**Most crowded postcodes**")
+        st.dataframe(
+            crowded[["Postcode", "Suburb", "Leads", "Campaigns", "Campaigns_per_Lead", "Conversion_Rate"]],
+            hide_index=True,
+            use_container_width=True
+        )
+
+        if "LeadId" in df.columns:
+            campaign_list = (
+                df.groupby([postcode_col, suburb_col, campaign_col], as_index=False)["LeadId"]
+                .nunique()
+                .rename(columns={"LeadId": "Leads"})
+            )
+        else:
+            campaign_list = (
+                df.groupby([postcode_col, suburb_col, campaign_col], as_index=False)
+                .size()
+                .rename(columns={"size": "Leads"})
+            )
+        campaign_list = campaign_list.sort_values("Leads", ascending=False).head(50)
+        campaign_list = campaign_list.rename(columns={
+            postcode_col: "Postcode",
+            suburb_col: "Suburb",
+            campaign_col: "Campaign"
+        })
+        st.markdown("**Top campaigns in high-overlap areas**")
+        st.dataframe(campaign_list, hide_index=True, use_container_width=True)
+
+    # Section 6: Creative guidance
+    st.markdown("""
+    <div class="section">
+        <div class="section-header">
+            <span class="section-num">6</span>
             <span class="section-title">Creative Guidance</span>
         </div>
     </div>
