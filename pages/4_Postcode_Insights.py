@@ -271,7 +271,6 @@ def main():
                     labels=["Very Low", "Low", "Mid", "High", "Very High"],
                     duplicates="drop"
                 )
-                postcode_rollup["Metric Bin"] = metric_bins.astype(str)
             except ValueError:
                 metric_bins = pd.qcut(
                     metric_series,
@@ -279,6 +278,9 @@ def main():
                     labels=["Low", "Mid", "High"],
                     duplicates="drop"
                 )
+            if metric_bins.isna().all():
+                postcode_rollup["Metric Bin"] = "Mid"
+            else:
                 postcode_rollup["Metric Bin"] = metric_bins.astype(str)
         fig = px.choropleth_mapbox(
             postcode_rollup,
