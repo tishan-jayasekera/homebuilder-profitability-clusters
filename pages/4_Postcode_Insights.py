@@ -41,6 +41,10 @@ html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
 
 .insight { background: #eff6ff; border-left: 3px solid #3b82f6; padding: 0.75rem 1rem; margin: 0.75rem 0; border-radius: 0 8px 8px 0; }
 .insight-text { color: #1e40af; font-size: 0.85rem; line-height: 1.4; }
+
+.explainer { background: #f8fafc; border: 1px solid #e5e7eb; padding: 0.75rem 0.9rem; border-radius: 10px; margin: 0.6rem 0 1rem 0; }
+.explainer-title { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; color: #6b7280; margin-bottom: 0.35rem; font-weight: 600; }
+.explainer-text { color: #374151; font-size: 0.85rem; line-height: 1.45; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -162,6 +166,16 @@ def main():
         <p class="page-subtitle">Conversion efficiency by postcode + suburb and campaign density opportunities.</p>
     </div>
     """, unsafe_allow_html=True)
+    st.markdown("""
+    <div class="explainer">
+        <div class="explainer-title">How to use this page</div>
+        <div class="explainer-text">
+            Start with the map to spot where performance is strong or weak. Then use the forecast section to estimate
+            how many leads a region can deliver for a planned spend. Finally, follow the optimization plan to decide
+            where to scale, fix, or reduce spend. The goal is to put budget where it returns the most referrals.
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
 
     lead_id_col = "LeadId" if "LeadId" in df.columns else None
     is_referral = df["is_referral"].fillna(False).astype(bool) if "is_referral" in df.columns else pd.Series(False, index=df.index)
@@ -205,6 +219,16 @@ def main():
         <div class="kpi"><div class="kpi-label">Total Leads</div><div class="kpi-value">{group["Leads"].sum():,}</div></div>
     </div>
     """, unsafe_allow_html=True)
+    st.markdown("""
+    <div class="explainer">
+        <div class="explainer-title">What these KPIs mean</div>
+        <div class="explainer-text">
+            Postcodes and total leads show the size of your footprint. Avg conversion is referrals divided by leads,
+            so it reflects quality and follow-through. Campaigns tracked shows how many campaigns touch these regions,
+            helping you spot crowded vs under-served areas.
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
 
     # Section 1: Relationship view
     st.markdown("""
@@ -212,6 +236,16 @@ def main():
         <div class="section-header">
             <span class="section-num">1</span>
             <span class="section-title">Australia Postcode Opportunity Map</span>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+    st.markdown("""
+    <div class="explainer">
+        <div class="explainer-title">Why this matters</div>
+        <div class="explainer-text">
+            The map shows where conversion is strong or weak. Use Performance to see efficiency, and Marketing Regions
+            to see which builder primarily services referrals in each postcode. This helps you align spend to the right
+            areas and ownership.
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -429,6 +463,15 @@ def main():
         </div>
     </div>
     """, unsafe_allow_html=True)
+    st.markdown("""
+    <div class="explainer">
+        <div class="explainer-title">What is an opportunity area</div>
+        <div class="explainer-text">
+            These are postcodes with high lead volume and low conversion, especially where many campaigns already run.
+            Improving creative or targeting here typically produces the fastest uplift in referrals.
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
 
     top_opps = group.sort_values("Opportunity_Score", ascending=False).head(15)
     opp_chart = top_opps.rename(columns={
@@ -476,6 +519,15 @@ def main():
         <div class="section-header">
             <span class="section-num">3</span>
             <span class="section-title">Region Forecast & Recommendations</span>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+    st.markdown("""
+    <div class="explainer">
+        <div class="explainer-title">How the forecast works</div>
+        <div class="explainer-text">
+            We estimate cost per lead from recent history and compare it to your planned spend. We also cap the forecast
+            by recent delivery pace, so you do not over-allocate budget to a region that cannot supply more leads.
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -679,6 +731,15 @@ def main():
         </div>
     </div>
     """, unsafe_allow_html=True)
+    st.markdown("""
+    <div class="explainer">
+        <div class="explainer-title">How to read benchmarks</div>
+        <div class="explainer-text">
+            Benchmarks compare each state to the overall average. The underperforming list highlights high-volume
+            postcodes that convert well below average, which are your fastest fix opportunities.
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
 
     if group.empty:
         st.caption("Not enough data to build benchmarks.")
@@ -726,6 +787,15 @@ def main():
         <div class="section-header">
             <span class="section-num">5</span>
             <span class="section-title">Media Spend Optimization Plan</span>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+    st.markdown("""
+    <div class="explainer">
+        <div class="explainer-title">How to use this plan</div>
+        <div class="explainer-text">
+            Scale regions that are high volume and high conversion. Fix regions that are high volume but low conversion.
+            Test small budgets in high conversion but low volume areas. Reduce spend in low volume, low conversion areas.
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -817,6 +887,15 @@ def main():
         </div>
     </div>
     """, unsafe_allow_html=True)
+    st.markdown("""
+    <div class="explainer">
+        <div class="explainer-title">Why overlap matters</div>
+        <div class="explainer-text">
+            When too many campaigns target the same postcodes, performance can dilute. This section shows crowded
+            areas and the campaigns driving them, so you can consolidate and improve efficiency.
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
 
     if group.empty or not campaign_col:
         st.caption("Campaign overlap requires campaign fields (utm_campaign/utm_key/ad_key).")
@@ -858,6 +937,15 @@ def main():
         <div class="section-header">
             <span class="section-num">7</span>
             <span class="section-title">Creative Guidance</span>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+    st.markdown("""
+    <div class="explainer">
+        <div class="explainer-title">Commercial value</div>
+        <div class="explainer-text">
+            Mentioning suburbs or postcodes in your creative typically lifts relevance and conversion. Use the
+            opportunity list to decide which areas to feature in ads and landing pages.
         </div>
     </div>
     """, unsafe_allow_html=True)
