@@ -264,13 +264,22 @@ def main():
         if metric_series.nunique() <= 1:
             postcode_rollup["Metric Bin"] = "Mid"
         else:
-            metric_bins = pd.qcut(
-                metric_series,
-                q=5,
-                labels=["Very Low", "Low", "Mid", "High", "Very High"],
-                duplicates="drop"
-            )
-            postcode_rollup["Metric Bin"] = metric_bins.astype(str)
+            try:
+                metric_bins = pd.qcut(
+                    metric_series,
+                    q=5,
+                    labels=["Very Low", "Low", "Mid", "High", "Very High"],
+                    duplicates="drop"
+                )
+                postcode_rollup["Metric Bin"] = metric_bins.astype(str)
+            except ValueError:
+                metric_bins = pd.qcut(
+                    metric_series,
+                    q=3,
+                    labels=["Low", "Mid", "High"],
+                    duplicates="drop"
+                )
+                postcode_rollup["Metric Bin"] = metric_bins.astype(str)
         fig = px.choropleth_mapbox(
             postcode_rollup,
             geojson=geojson_filtered,
