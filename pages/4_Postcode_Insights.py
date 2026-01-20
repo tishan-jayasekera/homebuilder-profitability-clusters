@@ -194,7 +194,13 @@ def main():
             )
 
     df = events.copy()
-    df = df[(df['lead_date'] >= pd.Timestamp(start_d)) & (df['lead_date'] <= pd.Timestamp(end_d))]
+    if "lead_date" not in df.columns:
+        df["lead_date"] = pd.NaT
+    if "RefDate" in df.columns:
+        df["event_date"] = df["lead_date"].fillna(df["RefDate"])
+    else:
+        df["event_date"] = df["lead_date"]
+    df = df[(df["event_date"] >= pd.Timestamp(start_d)) & (df["event_date"] <= pd.Timestamp(end_d))]
 
     df[postcode_col] = df[postcode_col].astype(str).str.strip().replace({"nan": np.nan, "": np.nan})
     df[postcode_col] = df[postcode_col].str.replace(r"\.0$", "", regex=True).str.zfill(4)
@@ -968,8 +974,8 @@ def main():
         if group.empty or seg_df.empty:
             st.caption("No leads match the selected filters. Clear some filters to continue.")
         else:
-            seg_df["lead_date"] = pd.to_datetime(seg_df["lead_date"], errors="coerce")
-            seg_df = seg_df.dropna(subset=["lead_date"])
+            seg_df["event_date"] = pd.to_datetime(seg_df["event_date"], errors="coerce")
+            seg_df = seg_df.dropna(subset=["event_date"])
             if ref_flag_col in seg_df.columns:
                 seg_leads = seg_df[seg_df[ref_flag_col] == False]
                 seg_refs = seg_df[seg_df[ref_flag_col]].copy()
@@ -998,26 +1004,26 @@ def main():
                 period_freq = "W" if ts_freq == "Weekly" else "M"
                 lookback_periods = st.slider("CPL lookback periods", 2, 12, 6, step=1)
 
-            period_col = seg_df["lead_date"].dt.to_period(period_freq).dt.start_time
+            period_col = seg_df["event_date"].dt.to_period(period_freq).dt.start_time
             periods = pd.DataFrame({"period": period_col}).dropna().drop_duplicates()
             if ref_flag_col in seg_df.columns:
                 lead_ts = seg_df[seg_df[ref_flag_col] == False].copy()
             else:
                 lead_ts = seg_df.copy()
             ts_leads = (
-                lead_ts.assign(period=lead_ts["lead_date"].dt.to_period(period_freq).dt.start_time)
+                lead_ts.assign(period=lead_ts["event_date"].dt.to_period(period_freq).dt.start_time)
                 .groupby("period", as_index=False)
                 .agg(Leads=("lead_date", "size"))
             )
             ts_spend = (
-                seg_df.assign(period=seg_df["lead_date"].dt.to_period(period_freq).dt.start_time)
+                seg_df.assign(period=seg_df["event_date"].dt.to_period(period_freq).dt.start_time)
                 .groupby("period", as_index=False)
                 .agg(Spend=(spend_col, "sum") if spend_col else ("lead_date", "size"))
             )
             if ref_flag_col in seg_df.columns:
                 ref_ts = (
                     seg_df[seg_df[ref_flag_col]]
-                    .assign(period=seg_df["lead_date"].dt.to_period(period_freq).dt.start_time)
+                    .assign(period=seg_df["event_date"].dt.to_period(period_freq).dt.start_time)
                     .groupby("period", as_index=False)
                     .agg(Referrals=("lead_date", "size"))
                 )
@@ -1041,9 +1047,9 @@ def main():
             cpr_forecast = ts["CPR"].tail(lookback).mean() if lookback > 0 else np.nan
             current_cpr = ts["CPR"].tail(1).iloc[0] if not ts["CPR"].dropna().empty else np.nan
 
-            end_date = seg_df["lead_date"].max()
-            recent_mask = seg_df["lead_date"] >= (end_date - pd.Timedelta(days=14))
-            prev_mask = (seg_df["lead_date"] < (end_date - pd.Timedelta(days=14))) & (seg_df["lead_date"] >= (end_date - pd.Timedelta(days=28)))
+            end_date = seg_df["event_date"].max()
+            recent_mask = seg_df["event_date"] >= (end_date - pd.Timedelta(days=14))
+            prev_mask = (seg_df["event_date"] < (end_date - pd.Timedelta(days=14))) & (seg_df["event_date"] >= (end_date - pd.Timedelta(days=28)))
             recent_events_df = seg_df[recent_mask]
             prev_events_df = seg_df[prev_mask]
             recent_events = len(recent_events_df)
@@ -1051,8 +1057,8 @@ def main():
             growth = (recent_events - prev_events) / prev_events if prev_events > 0 else 0
             growth = float(np.clip(growth, -0.5, 0.5))
             pace = recent_events / 14 if recent_events > 0 else 0
-            recent_7 = seg_df["lead_date"] >= (end_date - pd.Timedelta(days=7))
-            recent_28 = seg_df["lead_date"] >= (end_date - pd.Timedelta(days=28))
+            recent_7 = seg_df["event_date"] >= (end_date - pd.Timedelta(days=7))
+            recent_28 = seg_df["event_date"] >= (end_date - pd.Timedelta(days=28))
             recent_7_df = seg_df[recent_7]
             recent_28_df = seg_df[recent_28]
             pace_7 = len(recent_7_df) / 7 if not recent_7_df.empty else 0
