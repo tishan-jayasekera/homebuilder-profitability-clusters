@@ -8,7 +8,6 @@ import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 import pydeck as pdk
-import os
 import json
 import sys
 from pathlib import Path
@@ -358,13 +357,11 @@ def main():
         )
         map_style = st.radio(
             "Map style",
-            ["2D regions", "3D columns", "3D (no token)"],
+            ["2D regions", "3D extruded regions"],
             horizontal=True,
             label_visibility="collapsed",
             key="postcode_map_style"
         )
-        if map_style == "3D columns" and not (os.environ.get("MAPBOX_API_KEY") or ("MAPBOX_API_KEY" in st.secrets)):
-            st.caption("3D map needs `MAPBOX_API_KEY` in environment or Streamlit secrets.")
         metric_map = {
             "Opportunity Score": "Opportunity_Score",
             "Total Events": "Total_Events",
@@ -532,17 +529,12 @@ def main():
                             lambda x: safe_labels[int(x)] if pd.notna(x) and int(x) < len(safe_labels) else "Mid"
                         )
                 hover_cols = {c: True for c in ["Leads", "Referrals", "Campaigns", "CPR", "Total_Events"] if c in map_df.columns}
-                if map_style in ("3D columns", "3D (no token)"):
-                    centroids = _postcode_centroids(postcode_meta)
-                    points = map_df.merge(centroids, on="Postcode", how="left")
-                    points = points.dropna(subset=["Lat", "Lng"])
-                    if points.empty:
-                        st.caption("Postcode centroids unavailable for 3D view.")
+                if map_style == "3D extruded regions":
+                    if not geojson_filtered or "features" not in geojson_filtered:
+                        st.caption("Postcode shapes unavailable for 3D view.")
                     else:
-                        metric_vals = pd.to_numeric(points[metric_col], errors="coerce").fillna(0)
+                        metric_vals = pd.to_numeric(map_df[metric_col], errors="coerce").fillna(0)
                         max_val = metric_vals.max()
-                        points["metric_value"] = metric_vals
-                        points["elevation"] = metric_vals / max_val * 30000 if max_val > 0 else 0
                         color_map = {
                             "Very Low": [255, 237, 160],
                             "Low": [254, 217, 118],
@@ -550,18 +542,40 @@ def main():
                             "High": [253, 141, 60],
                             "Very High": [240, 59, 32]
                         }
-                        points["color"] = points["Metric Bin"].map(color_map)
-                        points["color"] = points["color"].apply(lambda v: v if isinstance(v, list) else [180, 180, 180])
+                        metric_lookup = map_df.set_index("Postcode")[metric_col].to_dict()
+                        bin_lookup = map_df.set_index("Postcode")["Metric Bin"].to_dict()
+                        leads_lookup = map_df.set_index("Postcode")["Leads"].to_dict()
+                        refs_lookup = map_df.set_index("Postcode")["Referrals"].to_dict()
+
+                        features = []
+                        for feature in geojson_filtered.get("features", []):
+                            props = feature.get("properties", {})
+                            postcode = props.get("POA_CODE")
+                            metric_value = float(metric_lookup.get(postcode, 0))
+                            elevation = (metric_value / max_val) * 30000 if max_val > 0 else 0
+                            bin_label = bin_lookup.get(postcode, "Mid")
+                            color = color_map.get(bin_label, [180, 180, 180])
+                            props.update({
+                                "metric_value": metric_value,
+                                "elevation": elevation,
+                                "color": color,
+                                "Leads": leads_lookup.get(postcode, 0),
+                                "Referrals": refs_lookup.get(postcode, 0)
+                            })
+                            features.append({"type": "Feature", "geometry": feature.get("geometry"), "properties": props})
+
+                        geojson_extruded = {"type": "FeatureCollection", "features": features}
                         layer = pdk.Layer(
-                            "ColumnLayer",
-                            data=points,
-                            get_position=["Lng", "Lat"],
-                            get_elevation="elevation",
-                            get_fill_color="color",
-                            radius=2000,
-                            elevation_scale=1,
-                            pickable=True,
-                            extruded=True
+                            "GeoJsonLayer",
+                            data=geojson_extruded,
+                            stroked=True,
+                            filled=True,
+                            extruded=True,
+                            wireframe=True,
+                            get_elevation="properties.elevation",
+                            get_fill_color="properties.color",
+                            get_line_color=[255, 255, 255, 120],
+                            pickable=True
                         )
                         view_state = pdk.ViewState(
                             latitude=center["lat"],
@@ -570,9 +584,8 @@ def main():
                             pitch=45,
                             bearing=0
                         )
-                        tooltip = {"text": "Postcode {Postcode}\nValue: {metric_value}\nLeads: {Leads}\nReferrals: {Referrals}"}
-                        map_style_base = "mapbox://styles/mapbox/light-v9" if map_style == "3D columns" else None
-                        st.pydeck_chart(pdk.Deck(layers=[layer], initial_view_state=view_state, tooltip=tooltip, map_style=map_style_base))
+                        tooltip = {"text": "Postcode {POA_CODE}\nValue: {metric_value}\nLeads: {Leads}\nReferrals: {Referrals}"}
+                        st.pydeck_chart(pdk.Deck(layers=[layer], initial_view_state=view_state, tooltip=tooltip, map_style=None))
                         fig = None
                 else:
                     fig = px.choropleth_mapbox(
