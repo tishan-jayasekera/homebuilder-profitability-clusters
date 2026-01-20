@@ -1195,6 +1195,10 @@ def main():
                     lead_campaign_df = seg_df.copy()
                     ref_campaign_df = seg_df.iloc[0:0].copy()
 
+                camp_events = (
+                    seg_df.groupby(campaign_col, as_index=False)
+                    .agg(Events=("lead_date", "size"))
+                )
                 camp_leads = (
                     lead_campaign_df.groupby(campaign_col, as_index=False)
                     .agg(Leads=(lead_id_col, "nunique") if lead_id_col else ("lead_date", "size"))
@@ -1216,17 +1220,19 @@ def main():
                     seg_df.groupby(campaign_col, as_index=False)
                     .agg(Spend=(spend_col, "sum") if spend_col else ("lead_date", "size"))
                 )
-                camp = (camp_leads
+                camp = (camp_events
+                        .merge(camp_leads, on=campaign_col, how="left")
                         .merge(camp_qualified, on=campaign_col, how="left")
                         .merge(camp_refs, on=campaign_col, how="left")
                         .merge(camp_spend, on=campaign_col, how="left"))
+                camp["Leads"] = camp["Leads"].fillna(0)
                 camp["Qualified_Leads"] = camp["Qualified_Leads"].fillna(0)
                 camp["Referrals"] = camp["Referrals"].fillna(0)
                 camp["CPL"] = np.where(camp["Leads"] > 0, camp["Spend"] / camp["Leads"], np.nan)
                 camp_denom = camp["Leads"] + camp["Referrals"]
                 camp["CPR"] = np.where(camp_denom > 0, camp["Spend"] / camp_denom, np.nan)
                 camp["Referral/Lead Ratio"] = np.where(camp["Qualified_Leads"] > 0, camp["Referrals"] / camp["Qualified_Leads"], np.nan)
-                camp = camp.sort_values(["Referrals", "Leads"], ascending=False).head(10)
+                camp = camp.sort_values(["Events", "Referrals", "Leads"], ascending=False).head(20)
 
                 st.markdown("**Recommended campaigns for this region**")
                 if camp.empty or camp["Leads"].sum() == 0:
