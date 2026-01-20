@@ -1056,6 +1056,59 @@ def main():
                 st.dataframe(outbound, hide_index=True, use_container_width=True)
     else:
         st.caption("Select a builder to see inbound and outbound referral relationships.")
+
+    # ========================================================================
+    # SECTION 1C: REFERRAL FLOW OVER TIME
+    # ========================================================================
+    st.markdown("""
+    <div class="section">
+        <div class="section-header">
+            <span class="section-num">1C</span>
+            <span class="section-title">Referral Flow Over Time</span>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    if st.session_state.focus_builder:
+        focus = st.session_state.focus_builder
+        events_df = data["events"]
+        mask_referral = events_df["is_referral"].fillna(False).astype(bool)
+        mask_cross_payer = (
+            events_df["MediaPayer_BuilderRegionKey"].notna() &
+            events_df["Dest_BuilderRegionKey"].notna() &
+            (events_df["MediaPayer_BuilderRegionKey"] != events_df["Dest_BuilderRegionKey"])
+        )
+        inbound = events_df[
+            (mask_referral | mask_cross_payer) &
+            (events_df["Dest_BuilderRegionKey"] == focus)
+        ].copy()
+        if inbound.empty:
+            st.caption("No inbound referrals in the filtered time window.")
+        else:
+            inbound["lead_date"] = pd.to_datetime(inbound["lead_date"], errors="coerce")
+            inbound = inbound.dropna(subset=["lead_date"])
+            inbound["period"] = inbound["lead_date"].dt.to_period("W").dt.start_time
+            ts = (
+                inbound.groupby("period", as_index=False)["LeadId"]
+                .nunique()
+                .rename(columns={"LeadId": "Inbound Referrals"})
+            )
+            fig = px.line(
+                ts,
+                x="period",
+                y="Inbound Referrals",
+                markers=True,
+                title=f"Inbound referrals for {focus}"
+            )
+            fig.update_layout(
+                height=320,
+                margin=dict(l=0, r=0, t=40, b=0),
+                xaxis_title=None,
+                yaxis_title="Referrals"
+            )
+            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+    else:
+        st.caption("Select a builder to see inbound referral flow over time.")
     
     # ========================================================================
     # SECTION 2: CAMPAIGN OPTIMIZATION
