@@ -502,42 +502,99 @@ def main():
                             builder_pool,
                             default=builder_pool
                         )
-                    if selected_builders:
-                        builder_region = builder_flows[builder_flows["Builder"].isin(selected_builders)].copy()
-                        builder_region = builder_region.rename(columns={"Referrals": "Builder Referrals"})
-                        map_df = map_df.merge(
-                            builder_region[["Postcode", "Builder Referrals"]],
-                            on="Postcode",
-                            how="left"
-                        )
-                        map_df = map_df[map_df["Builder Referrals"].fillna(0) > 0]
-                        primary_selected = (
-                            builder_region.groupby(["Postcode", "Builder"], as_index=False)["Builder Referrals"]
-                            .sum()
-                            .sort_values(["Postcode", "Builder Referrals"], ascending=[True, False])
-                            .drop_duplicates("Postcode")
-                            .rename(columns={"Builder": "Primary Builder"})
-                        )
-                        map_df = map_df.drop(columns=["Primary Builder"], errors="ignore").merge(
-                            primary_selected[["Postcode", "Primary Builder"]],
-                            on="Postcode",
-                            how="left"
-                        )
-                    map_df["Primary Builder"] = map_df["Primary Builder"].fillna("Unknown").astype(str)
-                    hover_cols = {c: True for c in ["Leads", "Referrals", "Campaigns", "Builder Referrals", "Builder_Count"] if c in map_df.columns}
-                    fig = px.choropleth_mapbox(
-                        map_df,
-                        geojson=geojson_filtered,
-                        locations="Postcode",
-                        featureidkey="properties.POA_CODE",
-                        color="Primary Builder",
-                        hover_data=hover_cols,
-                        mapbox_style="carto-positron",
-                        zoom=zoom,
-                        center=center,
-                        opacity=0.6,
-                        title="Marketing regions (complete coverage for selected builder)"
+                    if not selected_builders:
+                        selected_builders = builder_pool
+                    builder_region = builder_flows[builder_flows["Builder"].isin(selected_builders)].copy()
+                    builder_region = builder_region.rename(columns={"Referrals": "Builder Referrals"})
+                    map_df = map_df.merge(
+                        builder_region[["Postcode", "Builder Referrals", "Builder"]],
+                        on="Postcode",
+                        how="left"
                     )
+                    map_df = map_df[map_df["Builder Referrals"].fillna(0) > 0]
+                    primary_selected = (
+                        builder_region.groupby(["Postcode", "Builder"], as_index=False)["Builder Referrals"]
+                        .sum()
+                        .sort_values(["Postcode", "Builder Referrals"], ascending=[True, False])
+                        .drop_duplicates("Postcode")
+                        .rename(columns={"Builder": "Primary Builder"})
+                    )
+                    map_df = map_df.drop(columns=["Primary Builder"], errors="ignore").merge(
+                        primary_selected[["Postcode", "Primary Builder"]],
+                        on="Postcode",
+                        how="left"
+                    )
+                    overlap_selected = (
+                        builder_region.groupby("Postcode", as_index=False)["Builder"]
+                        .nunique()
+                        .rename(columns={"Builder": "Builder_Count"})
+                    )
+                    map_df = map_df.drop(columns=["Builder_Count"], errors="ignore").merge(
+                        overlap_selected,
+                        on="Postcode",
+                        how="left"
+                    )
+                    map_df["Primary Builder"] = map_df["Primary Builder"].fillna("Unknown").astype(str)
+
+                    def overlap_bucket(val):
+                        if val <= 1:
+                            return "1 builder"
+                        if val <= 3:
+                            return "2-3 builders"
+                        if val <= 5:
+                            return "4-5 builders"
+                        return "6+ builders"
+
+                    map_df["Overlap Bin"] = map_df["Builder_Count"].fillna(0).astype(int).map(overlap_bucket)
+
+                    c1, c2 = st.columns(2)
+                    hover_cols = {c: True for c in ["Leads", "Referrals", "Campaigns", "Builder Referrals", "Builder_Count"] if c in map_df.columns}
+                    with c1:
+                        fig_builders = px.choropleth_mapbox(
+                            map_df,
+                            geojson=geojson_filtered,
+                            locations="Postcode",
+                            featureidkey="properties.POA_CODE",
+                            color="Primary Builder",
+                            hover_data=hover_cols,
+                            mapbox_style="carto-positron",
+                            zoom=zoom,
+                            center=center,
+                            opacity=0.6,
+                            title="Builder regions (selected builders)"
+                        )
+                        fig_builders.update_layout(margin=dict(l=0, r=0, t=40, b=0))
+                        st.plotly_chart(
+                            fig_builders,
+                            use_container_width=True,
+                            config={"displayModeBar": True, "scrollZoom": True}
+                        )
+                    with c2:
+                        fig_overlap = px.choropleth_mapbox(
+                            map_df,
+                            geojson=geojson_filtered,
+                            locations="Postcode",
+                            featureidkey="properties.POA_CODE",
+                            color="Overlap Bin",
+                            color_discrete_map={
+                                "1 builder": "#dbeafe",
+                                "2-3 builders": "#93c5fd",
+                                "4-5 builders": "#60a5fa",
+                                "6+ builders": "#2563eb"
+                            },
+                            hover_data=hover_cols,
+                            mapbox_style="carto-positron",
+                            zoom=zoom,
+                            center=center,
+                            opacity=0.6,
+                            title="Overlap intensity (shared postcodes)"
+                        )
+                        fig_overlap.update_layout(margin=dict(l=0, r=0, t=40, b=0))
+                        st.plotly_chart(
+                            fig_overlap,
+                            use_container_width=True,
+                            config={"displayModeBar": True, "scrollZoom": True}
+                        )
                     overlap_hotspots = map_df[map_df["Builder_Count"] >= 2].copy()
                     if not overlap_hotspots.empty:
                         st.markdown("**Overlap hotspots (multiple builders in same postcode)**")
