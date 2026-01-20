@@ -825,6 +825,8 @@ def main():
                 selected = st.multiselect(label, sorted(options), default=sorted(options))
             if selected:
                 seg_df = seg_df[seg_df[col_name].astype(str).isin(selected)]
+                if seg_df.empty:
+                    st.warning(f"No matches after filtering {label}.")
 
         apply_filter(finance_col, "Finance Status", 0)
         apply_filter(timeframe_col, "Timeframe", 1)
@@ -837,12 +839,16 @@ def main():
                 house_sel = st.multiselect("House type", sorted(options), default=sorted(options)) if options else []
                 if house_sel:
                     seg_df = seg_df[seg_df[house_col].astype(str).isin(house_sel)]
+                    if seg_df.empty:
+                        st.warning("No matches after filtering House type.")
         with f_cols2[1]:
             if beds_col and beds_col in seg_df.columns:
                 options = seg_df[beds_col].dropna().astype(str).unique().tolist()
                 bed_sel = st.multiselect("Bedrooms", sorted(options), default=sorted(options)) if options else []
                 if bed_sel:
                     seg_df = seg_df[seg_df[beds_col].astype(str).isin(bed_sel)]
+                    if seg_df.empty:
+                        st.warning("No matches after filtering Bedrooms.")
         with f_cols2[2]:
             if budget_col and budget_col in seg_df.columns:
                 budget_vals = pd.to_numeric(seg_df[budget_col], errors="coerce").dropna()
@@ -855,9 +861,11 @@ def main():
                         seg_df = seg_df[
                             pd.to_numeric(seg_df[budget_col], errors="coerce").between(b_range[0], b_range[1])
                         ]
+                        if seg_df.empty:
+                            st.warning("No matches after filtering Budget range.")
 
         if seg_df.empty:
-            st.caption("No leads match the selected filters.")
+            st.caption("No leads match the selected filters. Clear some filters to continue.")
         else:
             seg_df["lead_date"] = pd.to_datetime(seg_df["lead_date"], errors="coerce")
             seg_df = seg_df.dropna(subset=["lead_date"])
