@@ -268,20 +268,27 @@ def main():
                 metric_bins = pd.qcut(
                     metric_series,
                     q=5,
-                    labels=["Very Low", "Low", "Mid", "High", "Very High"],
+                    labels=False,
                     duplicates="drop"
                 )
+                labels = ["Very Low", "Low", "Mid", "High", "Very High"]
             except ValueError:
                 metric_bins = pd.qcut(
                     metric_series,
                     q=3,
-                    labels=["Low", "Mid", "High"],
+                    labels=False,
                     duplicates="drop"
                 )
+                labels = ["Low", "Mid", "High"]
             if metric_bins.isna().all():
                 postcode_rollup["Metric Bin"] = "Mid"
             else:
-                postcode_rollup["Metric Bin"] = metric_bins.astype(str)
+                metric_bins = metric_bins.astype("Int64")
+                max_bin = int(metric_bins.max()) if metric_bins.max() is not pd.NA else 0
+                safe_labels = labels[: max_bin + 1]
+                postcode_rollup["Metric Bin"] = metric_bins.map(
+                    lambda x: safe_labels[int(x)] if pd.notna(x) and int(x) < len(safe_labels) else "Mid"
+                )
         fig = px.choropleth_mapbox(
             postcode_rollup,
             geojson=geojson_filtered,
