@@ -1085,32 +1085,77 @@ def main():
         if inbound.empty:
             st.caption("No inbound referrals in the filtered time window.")
         else:
+            stack_by = st.radio(
+                "Stack by",
+                ["Source Builder", "Campaign"],
+                horizontal=True,
+                label_visibility="collapsed"
+            )
             inbound["lead_date"] = pd.to_datetime(inbound["lead_date"], errors="coerce")
             inbound = inbound.dropna(subset=["lead_date"])
             inbound["period"] = inbound["lead_date"].dt.to_period("W").dt.start_time
-            ts = (
-                inbound.groupby(["period", "MediaPayer_BuilderRegionKey"], as_index=False)["LeadId"]
-                .nunique()
-                .rename(columns={
-                    "LeadId": "Inbound Referrals",
-                    "MediaPayer_BuilderRegionKey": "Source Builder"
-                })
-            )
-            fig = px.bar(
-                ts,
-                x="period",
-                y="Inbound Referrals",
-                color="Source Builder",
-                title=f"Inbound referrals by source for {focus}",
-                barmode="stack"
-            )
-            fig.update_layout(
-                height=320,
-                margin=dict(l=0, r=0, t=40, b=0),
-                xaxis_title=None,
-                yaxis_title="Referrals"
-            )
-            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+            if stack_by == "Campaign":
+                campaign_col = next(
+                    (c for c in ["utm_campaign", "utm_key", "ad_key"] if c in inbound.columns),
+                    None
+                )
+                if not campaign_col:
+                    st.caption("No campaign fields found (utm_campaign, utm_key, ad_key).")
+                else:
+                    inbound["Campaign"] = inbound[campaign_col].fillna("Unknown")
+                    ts = (
+                        inbound.groupby(["period", "Campaign"], as_index=False)["LeadId"]
+                        .nunique()
+                        .rename(columns={"LeadId": "Inbound Referrals"})
+                    )
+                    totals = ts.groupby("Campaign", as_index=False)["Inbound Referrals"].sum()
+                    top_campaigns = totals.nlargest(12, "Inbound Referrals")["Campaign"]
+                    ts["Campaign"] = np.where(
+                        ts["Campaign"].isin(top_campaigns), ts["Campaign"], "Other"
+                    )
+                    ts = (
+                        ts.groupby(["period", "Campaign"], as_index=False)["Inbound Referrals"]
+                        .sum()
+                    )
+                    fig = px.bar(
+                        ts,
+                        x="period",
+                        y="Inbound Referrals",
+                        color="Campaign",
+                        title=f"Inbound referrals by campaign for {focus}",
+                        barmode="stack"
+                    )
+                    fig.update_layout(
+                        height=320,
+                        margin=dict(l=0, r=0, t=40, b=0),
+                        xaxis_title=None,
+                        yaxis_title="Referrals"
+                    )
+                    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+            else:
+                ts = (
+                    inbound.groupby(["period", "MediaPayer_BuilderRegionKey"], as_index=False)["LeadId"]
+                    .nunique()
+                    .rename(columns={
+                        "LeadId": "Inbound Referrals",
+                        "MediaPayer_BuilderRegionKey": "Source Builder"
+                    })
+                )
+                fig = px.bar(
+                    ts,
+                    x="period",
+                    y="Inbound Referrals",
+                    color="Source Builder",
+                    title=f"Inbound referrals by source for {focus}",
+                    barmode="stack"
+                )
+                fig.update_layout(
+                    height=320,
+                    margin=dict(l=0, r=0, t=40, b=0),
+                    xaxis_title=None,
+                    yaxis_title="Referrals"
+                )
+                st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
     else:
         st.caption("Select a builder to see inbound referral flow over time.")
     
