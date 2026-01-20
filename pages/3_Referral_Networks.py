@@ -955,6 +955,49 @@ def main():
     with col2:
         # Builder analysis
         if st.session_state.focus_builder:
+            focus = st.session_state.focus_builder
+            sf_row = sf[sf["BuilderRegionKey"] == focus] if not sf.empty else pd.DataFrame()
+            lead_target = float(sf_row["LeadTarget"].iloc[0]) if not sf_row.empty and "LeadTarget" in sf_row.columns else 0
+            actual_refs = float(sf_row["Actual_Referrals"].iloc[0]) if not sf_row.empty and "Actual_Referrals" in sf_row.columns else 0
+            pct_target = actual_refs / lead_target if lead_target > 0 else 0
+
+            events_df = data["events"]
+            mask_referral = events_df["is_referral"].fillna(False).astype(bool)
+            mask_cross_payer = (
+                events_df["MediaPayer_BuilderRegionKey"].notna() &
+                events_df["Dest_BuilderRegionKey"].notna() &
+                (events_df["MediaPayer_BuilderRegionKey"] != events_df["Dest_BuilderRegionKey"])
+            )
+            inbound = events_df[
+                (mask_referral | mask_cross_payer) &
+                (events_df["Dest_BuilderRegionKey"] == focus)
+            ].copy()
+            inbound["lead_date"] = pd.to_datetime(inbound["lead_date"], errors="coerce")
+            inbound = inbound.dropna(subset=["lead_date"])
+            max_date = inbound["lead_date"].max() if not inbound.empty else None
+
+            def avg_refs(days):
+                if max_date is None:
+                    return 0.0
+                start = max_date - pd.Timedelta(days=days)
+                count = inbound[inbound["lead_date"] >= start]["LeadId"].nunique()
+                return count / days if days > 0 else 0.0
+
+            avg_2 = avg_refs(2)
+            avg_7 = avg_refs(7)
+            avg_14 = avg_refs(14)
+
+            st.markdown(f"""
+            <div class="kpi-row">
+                <div class="kpi"><div class="kpi-label">Referrals Received</div><div class="kpi-value">{actual_refs:,.0f}</div></div>
+                <div class="kpi"><div class="kpi-label">Lead Target</div><div class="kpi-value">{lead_target:,.0f}</div></div>
+                <div class="kpi"><div class="kpi-label">% Target Achieved</div><div class="kpi-value">{pct_target:.0%}</div></div>
+                <div class="kpi"><div class="kpi-label">Avg / Day (2d)</div><div class="kpi-value">{avg_2:,.1f}</div></div>
+                <div class="kpi"><div class="kpi-label">Avg / Day (7d)</div><div class="kpi-value">{avg_7:,.1f}</div></div>
+                <div class="kpi"><div class="kpi-label">Avg / Day (14d)</div><div class="kpi-value">{avg_14:,.1f}</div></div>
+            </div>
+            """, unsafe_allow_html=True)
+
             analysis = optimizer.analyze_target(st.session_state.focus_builder)
             
             st.markdown(f"""
