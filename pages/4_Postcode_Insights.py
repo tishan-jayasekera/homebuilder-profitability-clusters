@@ -975,6 +975,8 @@ def main():
             else:
                 seg_leads = seg_df
             lead_count = seg_leads[lead_id_col].nunique() if lead_id_col else len(seg_leads)
+            lead_events = len(seg_leads)
+            total_events = len(seg_df)
             spend_total = seg_df[spend_col].sum() if spend_col else 0
             cpl = spend_total / lead_count if lead_count > 0 else 0
 
@@ -983,7 +985,7 @@ def main():
                 st.markdown("**Forecast inputs**")
                 horizon_days = st.slider("Forecast horizon (days)", 7, 90, 30, step=1)
                 planned_spend = st.number_input("Planned spend ($)", min_value=0.0, value=5000.0, step=500.0)
-                target_leads = st.number_input("Target leads", min_value=0.0, value=100.0, step=10.0)
+                target_events = st.number_input("Target events", min_value=0.0, value=100.0, step=10.0)
                 boost_spend = st.number_input(
                     "Stretch spend ($)",
                     min_value=0.0,
@@ -1040,46 +1042,37 @@ def main():
             end_date = seg_df["lead_date"].max()
             recent_mask = seg_df["lead_date"] >= (end_date - pd.Timedelta(days=14))
             prev_mask = (seg_df["lead_date"] < (end_date - pd.Timedelta(days=14))) & (seg_df["lead_date"] >= (end_date - pd.Timedelta(days=28)))
-            if ref_flag_col in seg_df.columns:
-                recent_leads_df = seg_df[recent_mask & (seg_df[ref_flag_col] == False)]
-                prev_leads_df = seg_df[prev_mask & (seg_df[ref_flag_col] == False)]
-            else:
-                recent_leads_df = seg_df[recent_mask]
-                prev_leads_df = seg_df[prev_mask]
-            recent_leads = recent_leads_df[lead_id_col].nunique() if lead_id_col else len(recent_leads_df)
-            prev_leads = prev_leads_df[lead_id_col].nunique() if lead_id_col else len(prev_leads_df)
-            growth = (recent_leads - prev_leads) / prev_leads if prev_leads > 0 else 0
+            recent_events_df = seg_df[recent_mask]
+            prev_events_df = seg_df[prev_mask]
+            recent_events = len(recent_events_df)
+            prev_events = len(prev_events_df)
+            growth = (recent_events - prev_events) / prev_events if prev_events > 0 else 0
             growth = float(np.clip(growth, -0.5, 0.5))
-            pace = recent_leads / 14 if recent_leads > 0 else 0
+            pace = recent_events / 14 if recent_events > 0 else 0
             recent_7 = seg_df["lead_date"] >= (end_date - pd.Timedelta(days=7))
             recent_28 = seg_df["lead_date"] >= (end_date - pd.Timedelta(days=28))
-            if ref_flag_col in seg_df.columns:
-                lead_mask = seg_df[ref_flag_col] == False
-                recent_7_df = seg_df[recent_7 & lead_mask]
-                recent_28_df = seg_df[recent_28 & lead_mask]
-            else:
-                recent_7_df = seg_df[recent_7]
-                recent_28_df = seg_df[recent_28]
-            pace_7 = (recent_7_df[lead_id_col].nunique() if lead_id_col else len(recent_7_df)) / 7 if not recent_7_df.empty else 0
+            recent_7_df = seg_df[recent_7]
+            recent_28_df = seg_df[recent_28]
+            pace_7 = len(recent_7_df) / 7 if not recent_7_df.empty else 0
             pace_14 = pace
-            pace_28 = (recent_28_df[lead_id_col].nunique() if lead_id_col else len(recent_28_df)) / 28 if not recent_28_df.empty else 0
+            pace_28 = len(recent_28_df) / 28 if not recent_28_df.empty else 0
             capacity_pace = pace * (1 + growth) * horizon_days
             capacity_spend = planned_spend / cpr_forecast if cpr_forecast and cpr_forecast > 0 else 0
             capacity = min(capacity_spend, capacity_pace) if capacity_pace > 0 else capacity_spend
             binding = "Pace-limited" if capacity_pace < capacity_spend else "Spend-limited"
-            required_spend = target_leads * (cpr_forecast if cpr_forecast and cpr_forecast > 0 else cpl_forecast) if target_leads > 0 else 0
+            required_spend = target_events * (cpr_forecast if cpr_forecast and cpr_forecast > 0 else cpl_forecast) if target_events > 0 else 0
             boost_capacity_spend = boost_spend / cpr_forecast if cpr_forecast and cpr_forecast > 0 else 0
             boost_capacity = min(boost_capacity_spend, capacity_pace) if capacity_pace > 0 else boost_capacity_spend
 
             with output_col:
                 st.markdown(f"""
                 <div class="kpi-row">
-                    <div class="kpi"><div class="kpi-label">Region Leads</div><div class="kpi-value">{lead_count:,.0f}</div></div>
+                    <div class="kpi"><div class="kpi-label">Region Events</div><div class="kpi-value">{total_events:,.0f}</div></div>
                     <div class="kpi"><div class="kpi-label">Current CPR</div><div class="kpi-value">${(current_cpr if current_cpr == current_cpr else 0):,.0f}</div></div>
                     <div class="kpi"><div class="kpi-label">Forecast CPR</div><div class="kpi-value">${(cpr_forecast if cpr_forecast == cpr_forecast else 0):,.0f}</div></div>
-                    <div class="kpi"><div class="kpi-label">Capacity (Spend)</div><div class="kpi-value">{capacity_spend:,.0f} leads</div></div>
-                    <div class="kpi"><div class="kpi-label">Capacity (Pace)</div><div class="kpi-value">{capacity_pace:,.0f} leads</div></div>
-                    <div class="kpi"><div class="kpi-label">Recommended Cap</div><div class="kpi-value">{capacity:,.0f} leads</div></div>
+                    <div class="kpi"><div class="kpi-label">Capacity (Spend)</div><div class="kpi-value">{capacity_spend:,.0f} events</div></div>
+                    <div class="kpi"><div class="kpi-label">Capacity (Pace)</div><div class="kpi-value">{capacity_pace:,.0f} events</div></div>
+                    <div class="kpi"><div class="kpi-label">Recommended Cap</div><div class="kpi-value">{capacity:,.0f} events</div></div>
                 </div>
                 """, unsafe_allow_html=True)
                 st.markdown(f"""
@@ -1089,32 +1082,33 @@ def main():
                         <b>Binding</b> shows what limits delivery right now: pace‑limited means the region isn’t producing
                         fast enough; spend‑limited means budget is the main constraint. <b>Recommended cap</b> is the
                         smaller of spend capacity and pace capacity, so you don’t over‑allocate into thin supply.
+                        <b>Events</b> are total activity (leads + referrals) in the selected region.
                     </div>
                 </div>
                 """, unsafe_allow_html=True)
                 st.caption(f"Binding constraint: {binding}")
-                st.markdown(f"**Spend to hit target:** ${required_spend:,.0f} for {target_leads:,.0f} leads")
+                st.markdown(f"**Spend to hit target:** ${required_spend:,.0f} for {target_events:,.0f} events")
 
                 st.markdown("**Horizon impact on capacity**")
                 if pace_14 <= 0:
                     st.caption("Not enough recent lead activity to estimate pace-based capacity.")
                 else:
                     horizon_table = pd.DataFrame([
-                        {"Horizon (days)": 7, "Pace Capacity (leads)": pace * (1 + growth) * 7},
-                        {"Horizon (days)": 30, "Pace Capacity (leads)": pace * (1 + growth) * 30},
-                        {"Horizon (days)": 60, "Pace Capacity (leads)": pace * (1 + growth) * 60},
-                        {"Horizon (days)": horizon_days, "Pace Capacity (leads)": capacity_pace}
+                        {"Horizon (days)": 7, "Pace Capacity (events)": pace * (1 + growth) * 7},
+                        {"Horizon (days)": 30, "Pace Capacity (events)": pace * (1 + growth) * 30},
+                        {"Horizon (days)": 60, "Pace Capacity (events)": pace * (1 + growth) * 60},
+                        {"Horizon (days)": horizon_days, "Pace Capacity (events)": capacity_pace}
                     ])
                     st.dataframe(horizon_table, hide_index=True, use_container_width=True)
 
                     horizon_fig = go.Figure()
                     horizon_fig.add_trace(go.Scatter(
                         x=horizon_table["Horizon (days)"],
-                        y=horizon_table["Pace Capacity (leads)"],
+                        y=horizon_table["Pace Capacity (events)"],
                         mode="lines+markers",
                         name="Pace capacity"
                     ))
-                    horizon_fig.update_layout(height=220, margin=dict(l=0, r=0, t=40, b=0), yaxis_title="Leads", title="Capacity grows with the forecast horizon")
+                    horizon_fig.update_layout(height=220, margin=dict(l=0, r=0, t=40, b=0), yaxis_title="Events", title="Capacity grows with the forecast horizon")
                     st.plotly_chart(horizon_fig, use_container_width=True, config={"displayModeBar": False})
 
                 if not ts.empty and (ts["CPL"].notna().any() or ts["CPR"].notna().any()):
@@ -1172,12 +1166,12 @@ def main():
                         x=["Last 7d", "Last 14d", "Last 28d"],
                         y=[pace_7, pace_14, pace_28],
                         marker_color=["#60a5fa", "#3b82f6", "#1d4ed8"],
-                        name="Leads per day"
+                        name="Events per day"
                     ))
-                    pace_fig.update_layout(height=220, margin=dict(l=0, r=0, t=40, b=0), yaxis_title="Leads / day", title="Recent delivery pace")
+                    pace_fig.update_layout(height=220, margin=dict(l=0, r=0, t=40, b=0), yaxis_title="Events / day", title="Recent delivery pace")
                     st.plotly_chart(pace_fig, use_container_width=True, config={"displayModeBar": False})
                 else:
-                    st.caption("No recent lead activity to show pace.")
+                    st.caption("No recent activity to show pace.")
 
                 scenario = pd.DataFrame([
                     {"Scenario": "Planned", "Spend": planned_spend, "Capacity (Spend)": capacity_spend, "Recommended Cap": capacity, "Binding": binding},
