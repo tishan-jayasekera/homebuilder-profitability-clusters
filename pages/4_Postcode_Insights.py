@@ -824,10 +824,13 @@ def main():
                 budget_vals = pd.to_numeric(seg_df[budget_col], errors="coerce").dropna()
                 if not budget_vals.empty:
                     min_b, max_b = float(budget_vals.min()), float(budget_vals.max())
-                    b_range = st.slider("Budget range", min_b, max_b, (min_b, max_b))
-                    seg_df = seg_df[
-                        pd.to_numeric(seg_df[budget_col], errors="coerce").between(b_range[0], b_range[1])
-                    ]
+                    if min_b == max_b:
+                        st.caption("Budget range: single value")
+                    else:
+                        b_range = st.slider("Budget range", min_b, max_b, (min_b, max_b))
+                        seg_df = seg_df[
+                            pd.to_numeric(seg_df[budget_col], errors="coerce").between(b_range[0], b_range[1])
+                        ]
 
         if seg_df.empty:
             st.caption("No leads match the selected filters.")
@@ -955,7 +958,8 @@ def main():
                     )
                 )
                 camp["CPL"] = np.where(camp["Leads"] > 0, camp["Spend"] / camp["Leads"], np.nan)
-                camp["CPR"] = np.where(camp["Referrals"] > 0, camp["Spend"] / camp["Referrals"], np.nan)
+                camp_denom = camp["Leads"] + camp["Referrals"]
+                camp["CPR"] = np.where(camp_denom > 0, camp["Spend"] / camp_denom, np.nan)
                 camp = camp.sort_values(["Referrals", "Leads"], ascending=False).head(10)
 
                 st.markdown("**Recommended campaigns for this region**")
