@@ -246,6 +246,7 @@ def main():
             group = group[group["State"].isin(state_filter)]
     group["Qualified_Lead_Rate"] = np.where(group["Leads"] > 0, group["Qualified_Leads"] / group["Leads"], 0)
     group["Referral_Lead_Ratio"] = np.where(group["Qualified_Leads"] > 0, group["Referrals"] / group["Qualified_Leads"], 0)
+    group["Total_Events"] = group["Leads"] + group["Referrals"]
     denom = group["Leads"] + group["Qualified_Leads"]
     group["CPR"] = np.where(denom > 0, group["Media_Spend"] / denom, np.nan)
     if campaign_col:
@@ -322,15 +323,14 @@ def main():
         )
         map_metric = st.radio(
             "Color by",
-            ["Qualified/Lead Rate", "Referral/Lead Ratio", "Opportunity Score", "Leads", "Referrals"],
+            ["Opportunity Score", "Total Events", "Leads", "Referrals"],
             horizontal=True,
             label_visibility="collapsed",
             key="postcode_map_metric"
         )
         metric_map = {
-            "Qualified/Lead Rate": "Qualified_Lead_Rate",
-            "Referral/Lead Ratio": "Referral_Lead_Ratio",
             "Opportunity Score": "Opportunity_Score",
+            "Total Events": "Total_Events",
             "Leads": "Leads",
             "Referrals": "Referrals"
         }
@@ -356,6 +356,7 @@ def main():
                     Leads=("Leads", "sum"),
                     Qualified_Leads=("Qualified_Leads", "sum"),
                     Referrals=("Referrals", "sum"),
+                    Total_Events=("Total_Events", "sum"),
                     Media_Spend=("Media_Spend", "sum"),
                     Campaigns=("Campaigns", "sum"),
                     Qualified_Lead_Rate=("Qualified_Lead_Rate", "mean"),
@@ -897,6 +898,8 @@ def main():
             cpl_forecast = ts["CPL"].tail(lookback).mean() if lookback > 0 else cpl
             cpl_forecast = cpl_forecast if cpl_forecast and cpl_forecast > 0 else cpl
             cpl_std = ts["CPL"].tail(lookback).std() if lookback > 1 else 0
+            cpr_forecast = ts["CPR"].tail(lookback).mean() if lookback > 0 else np.nan
+            current_cpr = ts["CPR"].tail(1).iloc[0] if not ts["CPR"].dropna().empty else np.nan
 
             end_date = seg_df["lead_date"].max()
             recent_mask = seg_df["lead_date"] >= (end_date - pd.Timedelta(days=14))
@@ -925,19 +928,19 @@ def main():
             pace_14 = pace
             pace_28 = (recent_28_df[lead_id_col].nunique() if lead_id_col else len(recent_28_df)) / 28 if not recent_28_df.empty else 0
             capacity_pace = pace * (1 + growth) * horizon_days
-            capacity_spend = planned_spend / cpl_forecast if cpl_forecast > 0 else 0
+            capacity_spend = planned_spend / cpr_forecast if cpr_forecast and cpr_forecast > 0 else 0
             capacity = min(capacity_spend, capacity_pace) if capacity_pace > 0 else capacity_spend
             binding = "Pace-limited" if capacity_pace < capacity_spend else "Spend-limited"
-            required_spend = target_leads * cpl_forecast if cpl_forecast > 0 else 0
-            boost_capacity_spend = boost_spend / cpl_forecast if cpl_forecast > 0 else 0
+            required_spend = target_leads * (cpr_forecast if cpr_forecast and cpr_forecast > 0 else cpl_forecast) if target_leads > 0 else 0
+            boost_capacity_spend = boost_spend / cpr_forecast if cpr_forecast and cpr_forecast > 0 else 0
             boost_capacity = min(boost_capacity_spend, capacity_pace) if capacity_pace > 0 else boost_capacity_spend
 
             with output_col:
                 st.markdown(f"""
                 <div class="kpi-row">
                     <div class="kpi"><div class="kpi-label">Region Leads</div><div class="kpi-value">{lead_count:,.0f}</div></div>
-                    <div class="kpi"><div class="kpi-label">Current CPL</div><div class="kpi-value">${cpl:,.0f}</div></div>
-                    <div class="kpi"><div class="kpi-label">Forecast CPL</div><div class="kpi-value">${cpl_forecast:,.0f}</div></div>
+                    <div class="kpi"><div class="kpi-label">Current CPR</div><div class="kpi-value">${(current_cpr if current_cpr == current_cpr else 0):,.0f}</div></div>
+                    <div class="kpi"><div class="kpi-label">Forecast CPR</div><div class="kpi-value">${(cpr_forecast if cpr_forecast == cpr_forecast else 0):,.0f}</div></div>
                     <div class="kpi"><div class="kpi-label">Capacity (Spend)</div><div class="kpi-value">{capacity_spend:,.0f} leads</div></div>
                     <div class="kpi"><div class="kpi-label">Capacity (Pace)</div><div class="kpi-value">{capacity_pace:,.0f} leads</div></div>
                     <div class="kpi"><div class="kpi-label">Recommended Cap</div><div class="kpi-value">{capacity:,.0f} leads</div></div>
@@ -992,13 +995,14 @@ def main():
                         name="Actual CPR",
                         line=dict(dash="dot")
                     ))
-                    fig_ts.add_trace(go.Scatter(
-                        x=ts["period"],
-                        y=[cpl_forecast] * len(ts),
-                        mode="lines",
-                        name="Forecast CPL",
-                        line=dict(dash="dash")
-                    ))
+                    if cpr_forecast and cpr_forecast > 0:
+                        fig_ts.add_trace(go.Scatter(
+                            x=ts["period"],
+                            y=[cpr_forecast] * len(ts),
+                            mode="lines",
+                            name="Forecast CPR",
+                            line=dict(dash="dash")
+                        ))
                     fig_ts.add_trace(go.Scatter(
                         x=ts["period"],
                         y=[high] * len(ts),
