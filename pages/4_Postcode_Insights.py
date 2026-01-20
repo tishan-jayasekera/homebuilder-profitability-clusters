@@ -618,7 +618,7 @@ def main():
                         opacity=0.6,
                         title="Marketing regions (dominant referral-serving builder)"
                     )
-            if not map_df.empty:
+            if not map_df.empty and "fig" in locals():
                 fig.update_layout(
                     height=560,
                     margin=dict(l=0, r=0, t=40, b=0),
