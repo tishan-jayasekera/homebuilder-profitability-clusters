@@ -1383,9 +1383,10 @@ def main():
                         legend_title=label
                     )
                     fig.update_yaxes(tickformat=".0%")
+                    fig.update_traces(marker_line_width=0.4, marker_line_color="white")
                     return fig
 
-                palette = ["#2563eb", "#0ea5e9", "#6366f1", "#10b981", "#f97316", "#ef4444", "#14b8a6", "#f59e0b"]
+                palette = ["#0f172a", "#2563eb", "#0ea5e9", "#14b8a6", "#22c55e", "#f59e0b", "#f97316", "#ef4444", "#a855f7", "#64748b"]
                 comp_tabs = st.tabs([
                     "Finance Status",
                     "Timeframe",
