@@ -1330,6 +1330,22 @@ def main():
             if comp_df.empty:
                 st.caption("No events for the selected state.")
             else:
+                state_events = len(comp_df)
+                state_leads = (~comp_df["is_referral_bool"]).sum()
+                state_refs = comp_df["is_referral_bool"].sum()
+                state_cpr = comp_df["_event_spend"].sum() / max(1, state_events)
+                state_ref_rate = state_refs / max(1, state_leads)
+
+                st.markdown(f"""
+                <div class="kpi-row">
+                    <div class="kpi"><div class="kpi-label">Events</div><div class="kpi-value">{state_events:,.0f}</div></div>
+                    <div class="kpi"><div class="kpi-label">Leads</div><div class="kpi-value">{state_leads:,.0f}</div></div>
+                    <div class="kpi"><div class="kpi-label">Referrals</div><div class="kpi-value">{state_refs:,.0f}</div></div>
+                    <div class="kpi"><div class="kpi-label">Referral Rate</div><div class="kpi-value">{state_ref_rate:.0%}</div></div>
+                    <div class="kpi"><div class="kpi-label">Avg CPR</div><div class="kpi-value">${state_cpr:,.0f}</div></div>
+                </div>
+                """, unsafe_allow_html=True)
+
                 finance_col = _find_col(comp_df.columns, ["Finance Status"])
                 timeframe_col = _find_col(comp_df.columns, ["Timeframe"])
                 land_col = _find_col(comp_df.columns, ["Do you have land"])
@@ -1358,52 +1374,72 @@ def main():
                     bins = pd.cut(values, bins=quantiles, include_lowest=True)
                     return composition_table(bins.astype(str), "Budget range")
 
+                def comp_chart(df_in, label, color):
+                    if df_in.empty:
+                        return None
+                    df_top = df_in.sort_values("Events", ascending=False).head(6).copy()
+                    if len(df_in) > 6:
+                        other = pd.DataFrame({
+                            label: ["Other"],
+                            "Events": [df_in["Events"].sum() - df_top["Events"].sum()],
+                            "Share": [df_in["Share"].sum() - df_top["Share"].sum()]
+                        })
+                        df_top = pd.concat([df_top, other], ignore_index=True)
+                    fig = px.bar(
+                        df_top,
+                        x="Share",
+                        y=label,
+                        orientation="h",
+                        text=df_top["Share"].map(lambda v: f"{v:.0%}"),
+                        color_discrete_sequence=[color]
+                    )
+                    fig.update_layout(
+                        height=260,
+                        margin=dict(l=0, r=0, t=30, b=0),
+                        xaxis_title="Share of events",
+                        yaxis_title=None,
+                        showlegend=False
+                    )
+                    fig.update_xaxes(tickformat=".0%")
+                    fig.update_traces(textposition="outside", cliponaxis=False, hovertemplate="%{y}<br>Events: %{customdata[0]:,.0f}<br>Share: %{x:.0%}")
+                    fig.data[0].customdata = np.stack([df_top["Events"]], axis=-1)
+                    return fig
+
+                palette = ["#2563eb", "#0ea5e9", "#6366f1", "#10b981", "#f97316", "#ef4444"]
                 c1, c2, c3 = st.columns(3)
                 with c1:
                     if finance_col:
                         st.markdown("**Finance status**")
-                        st.dataframe(
-                            composition_table(comp_df[finance_col], "Finance Status"),
-                            hide_index=True,
-                            use_container_width=True
-                        )
+                        fig = comp_chart(composition_table(comp_df[finance_col], "Finance Status"), "Finance Status", palette[0])
+                        if fig:
+                            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
                     if land_col:
                         st.markdown("**Land status**")
-                        st.dataframe(
-                            composition_table(comp_df[land_col], "Do you have land"),
-                            hide_index=True,
-                            use_container_width=True
-                        )
+                        fig = comp_chart(composition_table(comp_df[land_col], "Do you have land"), "Do you have land", palette[1])
+                        if fig:
+                            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
                 with c2:
                     if timeframe_col:
                         st.markdown("**Timeframe**")
-                        st.dataframe(
-                            composition_table(comp_df[timeframe_col], "Timeframe"),
-                            hide_index=True,
-                            use_container_width=True
-                        )
+                        fig = comp_chart(composition_table(comp_df[timeframe_col], "Timeframe"), "Timeframe", palette[2])
+                        if fig:
+                            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
                     if beds_col:
                         st.markdown("**Bedrooms**")
-                        st.dataframe(
-                            composition_table(comp_df[beds_col], "Bedrooms"),
-                            hide_index=True,
-                            use_container_width=True
-                        )
+                        fig = comp_chart(composition_table(comp_df[beds_col], "Bedrooms"), "Bedrooms", palette[3])
+                        if fig:
+                            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
                 with c3:
                     if house_col:
                         st.markdown("**House type**")
-                        st.dataframe(
-                            composition_table(comp_df[house_col], "House type"),
-                            hide_index=True,
-                            use_container_width=True
-                        )
+                        fig = comp_chart(composition_table(comp_df[house_col], "House type"), "House type", palette[4])
+                        if fig:
+                            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
                     if budget_col:
                         st.markdown("**Budget range**")
-                        st.dataframe(
-                            budget_bins(comp_df[budget_col]),
-                            hide_index=True,
-                            use_container_width=True
-                        )
+                        fig = comp_chart(budget_bins(comp_df[budget_col]), "Budget range", palette[5])
+                        if fig:
+                            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
             conv_median = group["Referral_Rate"].median() if group["Referral_Rate"].notna().any() else 0
             lead_median = group["Leads"].median() if group["Leads"].notna().any() else 0
