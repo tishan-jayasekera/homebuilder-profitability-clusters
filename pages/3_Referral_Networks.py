@@ -1089,16 +1089,20 @@ def main():
             inbound = inbound.dropna(subset=["lead_date"])
             inbound["period"] = inbound["lead_date"].dt.to_period("W").dt.start_time
             ts = (
-                inbound.groupby("period", as_index=False)["LeadId"]
+                inbound.groupby(["period", "MediaPayer_BuilderRegionKey"], as_index=False)["LeadId"]
                 .nunique()
-                .rename(columns={"LeadId": "Inbound Referrals"})
+                .rename(columns={
+                    "LeadId": "Inbound Referrals",
+                    "MediaPayer_BuilderRegionKey": "Source Builder"
+                })
             )
-            fig = px.line(
+            fig = px.bar(
                 ts,
                 x="period",
                 y="Inbound Referrals",
-                markers=True,
-                title=f"Inbound referrals for {focus}"
+                color="Source Builder",
+                title=f"Inbound referrals by source for {focus}",
+                barmode="stack"
             )
             fig.update_layout(
                 height=320,
