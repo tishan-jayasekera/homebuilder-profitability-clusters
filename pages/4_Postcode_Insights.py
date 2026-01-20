@@ -6,6 +6,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.express as px
+import json
 import sys
 from pathlib import Path
 
@@ -62,6 +63,27 @@ def _find_col(columns, candidates):
     return None
 
 
+@st.cache_data(show_spinner=False)
+def load_postcode_geo():
+    geo_path = Path("data/au-postcodes.geojson")
+    if not geo_path.exists():
+        return None
+    with geo_path.open() as f:
+        return json.load(f)
+
+
+@st.cache_data(show_spinner=False)
+def load_postcode_meta():
+    meta_path = Path("data/PostcodeData-final.txt")
+    if not meta_path.exists():
+        return None
+    df = pd.read_csv(meta_path)
+    df["Postcode"] = df["Postcode"].astype(str).str.zfill(4)
+    df["Suburb"] = df["Suburb"].astype(str).str.strip().str.upper()
+    df["State"] = df["State"].astype(str).str.strip().str.upper()
+    return df[["Postcode", "Suburb", "State", "Lat", "Lng"]]
+
+
 def main():
     events = load_data()
     if events is None:
@@ -75,6 +97,9 @@ def main():
         st.error("Missing required columns: Postcode and Suburb.")
         return
 
+    geojson_data = load_postcode_geo()
+    postcode_meta = load_postcode_meta()
+
     # Sidebar filters
     with st.sidebar:
         st.markdown("### Filters")
@@ -82,6 +107,11 @@ def main():
         min_d, max_d = dates.min().date(), dates.max().date()
         date_range = st.date_input("Date Range", value=(min_d, max_d))
         min_leads = st.slider("Min leads per postcode", 1, 100, 10, step=1)
+        if postcode_meta is not None and not postcode_meta.empty:
+            state_options = sorted(postcode_meta["State"].unique().tolist())
+            state_filter = st.multiselect("State/Region", state_options, default=state_options)
+        else:
+            state_filter = []
 
     if isinstance(date_range, (list, tuple)) and len(date_range) == 2 and all(date_range):
         start_d, end_d = date_range[0], date_range[1]
@@ -92,8 +122,9 @@ def main():
     df = df[(df['lead_date'] >= pd.Timestamp(start_d)) & (df['lead_date'] <= pd.Timestamp(end_d))]
 
     df[postcode_col] = df[postcode_col].astype(str).str.strip().replace({"nan": np.nan, "": np.nan})
-    df[postcode_col] = df[postcode_col].str.replace(r"\.0$", "", regex=True)
+    df[postcode_col] = df[postcode_col].str.replace(r"\.0$", "", regex=True).str.zfill(4)
     df[suburb_col] = df[suburb_col].astype(str).str.strip().replace({"nan": np.nan, "": np.nan})
+    df[suburb_col] = df[suburb_col].str.upper()
     df = df.dropna(subset=[postcode_col, suburb_col])
 
     if df.empty:
@@ -128,6 +159,15 @@ def main():
         group["Campaigns"] = 0
 
     group = group[group["Leads"] >= min_leads].copy()
+    if postcode_meta is not None and not postcode_meta.empty:
+        group = group.merge(
+            postcode_meta,
+            left_on=[postcode_col, suburb_col],
+            right_on=["Postcode", "Suburb"],
+            how="left"
+        )
+        if state_filter:
+            group = group[group["State"].isin(state_filter)]
     group["Conversion_Rate"] = np.where(group["Leads"] > 0, group["Referrals"] / group["Leads"], 0)
     group["CPR"] = np.where(group["Referrals"] > 0, group["Media_Spend"] / group["Referrals"], np.nan)
     if campaign_col:
@@ -150,28 +190,80 @@ def main():
     <div class="section">
         <div class="section-header">
             <span class="section-num">1</span>
-            <span class="section-title">Conversion vs Campaign Density</span>
+            <span class="section-title">Australia Postcode Opportunity Map</span>
         </div>
     </div>
     """, unsafe_allow_html=True)
 
-    scatter = group.rename(columns={
-        postcode_col: "Postcode",
-        suburb_col: "Suburb"
-    })
-    scatter["Label"] = scatter["Postcode"] + " • " + scatter["Suburb"]
-    fig = px.scatter(
-        scatter,
-        x="Leads",
-        y="Conversion_Rate",
-        size="Campaigns",
-        color="Campaigns",
-        hover_name="Label",
-        hover_data={"Leads": True, "Referrals": True, "Campaigns": True, "CPR": True},
-        title="Leads vs Conversion Rate (size/color = campaign density)"
+    map_metric = st.radio(
+        "Color by",
+        ["Conversion Rate", "Opportunity Score", "Leads", "Referrals"],
+        horizontal=True,
+        label_visibility="collapsed",
+        key="postcode_map_metric"
     )
-    fig.update_layout(height=380, margin=dict(l=0, r=0, t=40, b=0), yaxis_tickformat=".0%")
-    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+    metric_map = {
+        "Conversion Rate": "Conversion_Rate",
+        "Opportunity Score": "Opportunity_Score",
+        "Leads": "Leads",
+        "Referrals": "Referrals"
+    }
+    metric_col = metric_map[map_metric]
+
+    if geojson_data and not group.empty:
+        if "Lat" in group.columns and "Lng" in group.columns and group["Lat"].notna().any():
+            center = {"lat": float(group["Lat"].mean()), "lon": float(group["Lng"].mean())}
+            zoom = 5 if state_filter else 3
+        else:
+            center = {"lat": -25.5, "lon": 134.0}
+            zoom = 3
+        postcode_rollup = (
+            group.groupby("Postcode", as_index=False)
+            .agg(
+                Leads=("Leads", "sum"),
+                Referrals=("Referrals", "sum"),
+                Media_Spend=("Media_Spend", "sum"),
+                Campaigns=("Campaigns", "sum"),
+                Conversion_Rate=("Conversion_Rate", "mean"),
+                Opportunity_Score=("Opportunity_Score", "sum")
+            )
+        )
+        postcode_rollup["Postcode"] = (
+            postcode_rollup["Postcode"]
+            .astype(str)
+            .str.strip()
+            .replace({"nan": np.nan})
+            .str.zfill(4)
+        )
+        postcode_rollup = postcode_rollup.dropna(subset=["Postcode"])
+        postcode_rollup["CPR"] = np.where(
+            postcode_rollup["Referrals"] > 0,
+            postcode_rollup["Media_Spend"] / postcode_rollup["Referrals"],
+            np.nan
+        )
+        fig = px.choropleth_mapbox(
+            postcode_rollup,
+            geojson=geojson_data,
+            locations="Postcode",
+            featureidkey="properties.POA_CODE",
+            color=metric_col,
+            color_continuous_scale="Viridis",
+            hover_data={
+                "Leads": True,
+                "Referrals": True,
+                "Campaigns": True,
+                "CPR": True
+            },
+            mapbox_style="carto-positron",
+            zoom=zoom,
+            center=center,
+            opacity=0.6,
+            title="Postcode performance (select a state to focus)"
+        )
+        fig.update_layout(height=520, margin=dict(l=0, r=0, t=40, b=0))
+        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+    else:
+        st.caption("Postcode geojson or joined metrics unavailable for mapping.")
 
     # Section 2: Opportunity ranking
     st.markdown("""
@@ -213,6 +305,15 @@ def main():
         hide_index=True,
         use_container_width=True
     )
+
+    if not group.empty:
+        st.markdown("**Suburbs in selected regions**")
+        suburb_list = (
+            group[["Postcode", "Suburb", "Leads", "Referrals", "Conversion_Rate", "Campaigns"]]
+            .sort_values(["Postcode", "Suburb"])
+            .head(200)
+        )
+        st.dataframe(suburb_list, hide_index=True, use_container_width=True)
 
     # Section 3: Creative guidance
     st.markdown("""
