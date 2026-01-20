@@ -191,13 +191,14 @@ def main():
     lead_id_col = "LeadId" if "LeadId" in df.columns else None
     is_referral = df["is_referral"].fillna(False).astype(bool) if "is_referral" in df.columns else pd.Series(False, index=df.index)
 
-    group = df.groupby([postcode_col, suburb_col], as_index=False).agg(
-        Leads=(lead_id_col, "nunique") if lead_id_col else (postcode_col, "size"),
-        Media_Spend=(spend_col, "sum") if spend_col else (postcode_col, "size"),
-        Campaigns=(campaign_col, "nunique") if campaign_col else (postcode_col, "size")
-    )
     if "is_referral" in df.columns:
+        lead_df = df[df["is_referral"].fillna(False).astype(bool) == False].copy()
         refs_df = df[df["is_referral"].fillna(False).astype(bool)].copy()
+        group = lead_df.groupby([postcode_col, suburb_col], as_index=False).agg(
+            Leads=(lead_id_col, "nunique") if lead_id_col else (postcode_col, "size"),
+            Media_Spend=(spend_col, "sum") if spend_col else (postcode_col, "size"),
+            Campaigns=(campaign_col, "nunique") if campaign_col else (postcode_col, "size")
+        )
         if lead_id_col:
             qualified = (
                 refs_df.groupby([postcode_col, suburb_col])[lead_id_col]
@@ -219,6 +220,11 @@ def main():
         group = group.merge(qualified, on=[postcode_col, suburb_col], how="left")
         group = group.merge(referrals, on=[postcode_col, suburb_col], how="left")
     else:
+        group = df.groupby([postcode_col, suburb_col], as_index=False).agg(
+            Leads=(lead_id_col, "nunique") if lead_id_col else (postcode_col, "size"),
+            Media_Spend=(spend_col, "sum") if spend_col else (postcode_col, "size"),
+            Campaigns=(campaign_col, "nunique") if campaign_col else (postcode_col, "size")
+        )
         group["Qualified_Leads"] = 0
         group["Referrals"] = 0
     group["Qualified_Leads"] = group["Qualified_Leads"].fillna(0)
@@ -837,7 +843,11 @@ def main():
         else:
             seg_df["lead_date"] = pd.to_datetime(seg_df["lead_date"], errors="coerce")
             seg_df = seg_df.dropna(subset=["lead_date"])
-            lead_count = seg_df[lead_id_col].nunique() if lead_id_col else len(seg_df)
+            if "is_referral" in seg_df.columns:
+                seg_leads = seg_df[seg_df["is_referral"].fillna(False).astype(bool) == False]
+            else:
+                seg_leads = seg_df
+            lead_count = seg_leads[lead_id_col].nunique() if lead_id_col else len(seg_leads)
             spend_total = seg_df[spend_col].sum() if spend_col else 0
             cpl = spend_total / lead_count if lead_count > 0 else 0
 
@@ -857,8 +867,12 @@ def main():
                 period_freq = "W" if ts_freq == "Weekly" else "M"
                 lookback_periods = st.slider("CPL lookback periods", 2, 12, 6, step=1)
 
+            if "is_referral" in seg_df.columns:
+                lead_ts = seg_df[seg_df["is_referral"].fillna(False).astype(bool) == False].copy()
+            else:
+                lead_ts = seg_df.copy()
             ts = (
-                seg_df.assign(period=seg_df["lead_date"].dt.to_period(period_freq).dt.start_time)
+                lead_ts.assign(period=lead_ts["lead_date"].dt.to_period(period_freq).dt.start_time)
                 .groupby("period", as_index=False)
                 .agg(
                     Leads=(lead_id_col, "nunique") if lead_id_col else ("lead_date", "size"),
@@ -886,16 +900,29 @@ def main():
             end_date = seg_df["lead_date"].max()
             recent_mask = seg_df["lead_date"] >= (end_date - pd.Timedelta(days=14))
             prev_mask = (seg_df["lead_date"] < (end_date - pd.Timedelta(days=14))) & (seg_df["lead_date"] >= (end_date - pd.Timedelta(days=28)))
-            recent_leads = seg_df[recent_mask][lead_id_col].nunique() if lead_id_col else recent_mask.sum()
-            prev_leads = seg_df[prev_mask][lead_id_col].nunique() if lead_id_col else prev_mask.sum()
+            if "is_referral" in seg_df.columns:
+                recent_leads_df = seg_df[recent_mask & (seg_df["is_referral"].fillna(False).astype(bool) == False)]
+                prev_leads_df = seg_df[prev_mask & (seg_df["is_referral"].fillna(False).astype(bool) == False)]
+            else:
+                recent_leads_df = seg_df[recent_mask]
+                prev_leads_df = seg_df[prev_mask]
+            recent_leads = recent_leads_df[lead_id_col].nunique() if lead_id_col else len(recent_leads_df)
+            prev_leads = prev_leads_df[lead_id_col].nunique() if lead_id_col else len(prev_leads_df)
             growth = (recent_leads - prev_leads) / prev_leads if prev_leads > 0 else 0
             growth = float(np.clip(growth, -0.5, 0.5))
             pace = recent_leads / 14 if recent_leads > 0 else 0
             recent_7 = seg_df["lead_date"] >= (end_date - pd.Timedelta(days=7))
             recent_28 = seg_df["lead_date"] >= (end_date - pd.Timedelta(days=28))
-            pace_7 = (seg_df[recent_7][lead_id_col].nunique() if lead_id_col else recent_7.sum()) / 7 if recent_7.any() else 0
+            if "is_referral" in seg_df.columns:
+                lead_mask = seg_df["is_referral"].fillna(False).astype(bool) == False
+                recent_7_df = seg_df[recent_7 & lead_mask]
+                recent_28_df = seg_df[recent_28 & lead_mask]
+            else:
+                recent_7_df = seg_df[recent_7]
+                recent_28_df = seg_df[recent_28]
+            pace_7 = (recent_7_df[lead_id_col].nunique() if lead_id_col else len(recent_7_df)) / 7 if not recent_7_df.empty else 0
             pace_14 = pace
-            pace_28 = (seg_df[recent_28][lead_id_col].nunique() if lead_id_col else recent_28.sum()) / 28 if recent_28.any() else 0
+            pace_28 = (recent_28_df[lead_id_col].nunique() if lead_id_col else len(recent_28_df)) / 28 if not recent_28_df.empty else 0
             capacity_pace = pace * (1 + growth) * horizon_days
             capacity_spend = planned_spend / cpl_forecast if cpl_forecast > 0 else 0
             capacity = min(capacity_spend, capacity_pace) if capacity_pace > 0 else capacity_spend
@@ -1009,16 +1036,30 @@ def main():
                 st.dataframe(scenario, hide_index=True, use_container_width=True)
 
             if campaign_col:
-                mask_referral = seg_df["is_referral"].fillna(False).astype(bool) if "is_referral" in seg_df.columns else pd.Series(False, index=seg_df.index)
-                campaign_df = seg_df[mask_referral].copy() if mask_referral.any() else seg_df.copy()
-                camp = (
-                    campaign_df.groupby(campaign_col, as_index=False)
-                    .agg(
-                        Leads=(lead_id_col, "nunique") if lead_id_col else ("lead_date", "size"),
-                        Referrals=("is_referral", "sum") if "is_referral" in campaign_df.columns else ("lead_date", "size"),
-                        Spend=(spend_col, "sum") if spend_col else ("lead_date", "size")
-                    )
+                if "is_referral" in seg_df.columns:
+                    lead_campaign_df = seg_df[seg_df["is_referral"].fillna(False).astype(bool) == False].copy()
+                    ref_campaign_df = seg_df[seg_df["is_referral"].fillna(False).astype(bool)].copy()
+                else:
+                    lead_campaign_df = seg_df.copy()
+                    ref_campaign_df = seg_df.iloc[0:0].copy()
+
+                camp_leads = (
+                    lead_campaign_df.groupby(campaign_col, as_index=False)
+                    .agg(Leads=(lead_id_col, "nunique") if lead_id_col else ("lead_date", "size"))
                 )
+                if not ref_campaign_df.empty:
+                    camp_refs = (
+                        ref_campaign_df.groupby(campaign_col, as_index=False)
+                        .agg(Referrals=(lead_id_col, "nunique") if lead_id_col else ("lead_date", "size"))
+                    )
+                else:
+                    camp_refs = pd.DataFrame(columns=[campaign_col, "Referrals"])
+                camp_spend = (
+                    seg_df.groupby(campaign_col, as_index=False)
+                    .agg(Spend=(spend_col, "sum") if spend_col else ("lead_date", "size"))
+                )
+                camp = camp_leads.merge(camp_refs, on=campaign_col, how="left").merge(camp_spend, on=campaign_col, how="left")
+                camp["Referrals"] = camp["Referrals"].fillna(0)
                 camp["CPL"] = np.where(camp["Leads"] > 0, camp["Spend"] / camp["Leads"], np.nan)
                 camp_denom = camp["Leads"] + camp["Referrals"]
                 camp["CPR"] = np.where(camp_denom > 0, camp["Spend"] / camp_denom, np.nan)
