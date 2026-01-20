@@ -144,7 +144,7 @@ def main():
             start_d, end_d = date_range[0], date_range[1]
         else:
             start_d, end_d = min_d, max_d
-        min_leads = st.slider("Min leads per postcode", 1, 100, 10, step=1)
+        min_leads = st.slider("Min leads per postcode", 1, 100, 1, step=1)
         zone_method = st.radio(
             "Zone thresholds",
             ["Median-based", "Target-based"],
@@ -854,29 +854,29 @@ def main():
                 ["Postcode", "Suburb"],
                 horizontal=True
             )
-        if region_level == "Postcode":
-            region_options = sorted(group["Postcode"].dropna().astype(str).unique().tolist())
-            region_value = st.selectbox("Select postcode", region_options)
-            region_df = df[df[postcode_col].astype(str).str.zfill(4) == str(region_value).zfill(4)].copy()
-        else:
-            region_map = (
-                group[["Postcode", "Suburb"]]
-                .dropna()
-                .drop_duplicates()
-            )
-            region_map["Label"] = region_map["Suburb"] + " (" + region_map["Postcode"] + ")"
-            region_options = region_map["Label"].sort_values().tolist()
-            region_value = st.selectbox("Select suburb", region_options)
-            selected = region_map[region_map["Label"] == region_value]
-            if not selected.empty:
-                sel_postcode = selected["Postcode"].iloc[0]
-                sel_suburb = selected["Suburb"].iloc[0]
-                region_df = df[
-                    (df[postcode_col].astype(str).str.zfill(4) == str(sel_postcode).zfill(4)) &
-                    (df[suburb_col].str.upper() == str(sel_suburb).upper())
-                ].copy()
+            if region_level == "Postcode":
+                region_options = sorted(group["Postcode"].dropna().astype(str).unique().tolist())
+                region_value = st.selectbox("Select postcode", region_options)
+                region_df = df[df[postcode_col].astype(str).str.zfill(4) == str(region_value).zfill(4)].copy()
             else:
-                region_df = df.iloc[0:0].copy()
+                region_map = (
+                    group[["Postcode", "Suburb"]]
+                    .dropna()
+                    .drop_duplicates()
+                )
+                region_map["Label"] = region_map["Suburb"] + " (" + region_map["Postcode"] + ")"
+                region_options = region_map["Label"].sort_values().tolist()
+                region_value = st.selectbox("Select suburb", region_options)
+                selected = region_map[region_map["Label"] == region_value]
+                if not selected.empty:
+                    sel_postcode = selected["Postcode"].iloc[0]
+                    sel_suburb = selected["Suburb"].iloc[0]
+                    region_df = df[
+                        (df[postcode_col].astype(str).str.zfill(4) == str(sel_postcode).zfill(4)) &
+                        (df[suburb_col].str.upper() == str(sel_suburb).upper())
+                    ].copy()
+                else:
+                    region_df = df.iloc[0:0].copy()
 
         budget_col = _find_col(df.columns, ["Budget"])
         finance_col = _find_col(df.columns, ["Finance Status"])
@@ -885,62 +885,66 @@ def main():
         house_col = _find_col(df.columns, ["House type"])
         beds_col = _find_col(df.columns, ["IBN_Bedrooms"])
 
-        st.markdown("**Targeting filters**")
-        f_cols = st.columns(3)
-        base_df = region_df.copy()
-        seg_df = region_df.copy()
+        if group.empty:
+            seg_df = df.iloc[0:0].copy()
+        else:
+            st.markdown("**Targeting filters**")
+            f_cols = st.columns(3)
+            base_df = region_df.copy()
+            seg_df = region_df.copy()
 
-        def apply_filter(col_name, label, col_idx):
-            nonlocal seg_df
-            if not col_name or col_name not in seg_df.columns:
-                return
-            options = base_df[col_name].dropna().astype(str).unique().tolist()
-            if not options:
-                return
-            with f_cols[col_idx]:
-                selected = st.multiselect(label, sorted(options), default=sorted(options))
-            if selected:
-                seg_df = seg_df[seg_df[col_name].astype(str).isin(selected)]
-                if seg_df.empty:
-                    st.caption(f"No matches after filtering {label}.")
-
-        apply_filter(finance_col, "Finance Status", 0)
-        apply_filter(timeframe_col, "Timeframe", 1)
-        apply_filter(land_col, "Do you have land", 2)
-
-        f_cols2 = st.columns(3)
-        with f_cols2[0]:
-            if house_col and house_col in seg_df.columns:
-                options = base_df[house_col].dropna().astype(str).unique().tolist()
-                house_sel = st.multiselect("House type", sorted(options), default=sorted(options)) if options else []
-                if house_sel:
-                    seg_df = seg_df[seg_df[house_col].astype(str).isin(house_sel)]
+        if not group.empty:
+            def apply_filter(col_name, label, col_idx):
+                nonlocal seg_df
+                if not col_name or col_name not in seg_df.columns:
+                    return
+                options = base_df[col_name].dropna().astype(str).unique().tolist()
+                if not options:
+                    return
+                with f_cols[col_idx]:
+                    selected = st.multiselect(label, sorted(options), default=sorted(options))
+                if selected:
+                    seg_df = seg_df[seg_df[col_name].astype(str).isin(selected)]
                     if seg_df.empty:
-                        st.caption("No matches after filtering House type.")
-        with f_cols2[1]:
-            if beds_col and beds_col in seg_df.columns:
-                options = base_df[beds_col].dropna().astype(str).unique().tolist()
-                bed_sel = st.multiselect("Bedrooms", sorted(options), default=sorted(options)) if options else []
-                if bed_sel:
-                    seg_df = seg_df[seg_df[beds_col].astype(str).isin(bed_sel)]
-                    if seg_df.empty:
-                        st.caption("No matches after filtering Bedrooms.")
-        with f_cols2[2]:
-            if budget_col and budget_col in seg_df.columns:
-                budget_vals = pd.to_numeric(base_df[budget_col], errors="coerce").dropna()
-                if not budget_vals.empty:
-                    min_b, max_b = float(budget_vals.min()), float(budget_vals.max())
-                    if min_b == max_b:
-                        st.caption("Budget range: single value")
-                    else:
-                        b_range = st.slider("Budget range", min_b, max_b, (min_b, max_b))
-                        seg_df = seg_df[
-                            pd.to_numeric(seg_df[budget_col], errors="coerce").between(b_range[0], b_range[1])
-                        ]
+                        st.caption(f"No matches after filtering {label}.")
+
+            apply_filter(finance_col, "Finance Status", 0)
+            apply_filter(timeframe_col, "Timeframe", 1)
+            apply_filter(land_col, "Do you have land", 2)
+
+            f_cols2 = st.columns(3)
+            with f_cols2[0]:
+                if house_col and house_col in seg_df.columns:
+                    options = base_df[house_col].dropna().astype(str).unique().tolist()
+                    house_sel = st.multiselect("House type", sorted(options), default=sorted(options)) if options else []
+                    if house_sel:
+                        seg_df = seg_df[seg_df[house_col].astype(str).isin(house_sel)]
                         if seg_df.empty:
-                            st.caption("No matches after filtering Budget range.")
+                            st.caption("No matches after filtering House type.")
+            with f_cols2[1]:
+                if beds_col and beds_col in seg_df.columns:
+                    options = base_df[beds_col].dropna().astype(str).unique().tolist()
+                    bed_sel = st.multiselect("Bedrooms", sorted(options), default=sorted(options)) if options else []
+                    if bed_sel:
+                        seg_df = seg_df[seg_df[beds_col].astype(str).isin(bed_sel)]
+                        if seg_df.empty:
+                            st.caption("No matches after filtering Bedrooms.")
+            with f_cols2[2]:
+                if budget_col and budget_col in seg_df.columns:
+                    budget_vals = pd.to_numeric(base_df[budget_col], errors="coerce").dropna()
+                    if not budget_vals.empty:
+                        min_b, max_b = float(budget_vals.min()), float(budget_vals.max())
+                        if min_b == max_b:
+                            st.caption("Budget range: single value")
+                        else:
+                            b_range = st.slider("Budget range", min_b, max_b, (min_b, max_b))
+                            seg_df = seg_df[
+                                pd.to_numeric(seg_df[budget_col], errors="coerce").between(b_range[0], b_range[1])
+                            ]
+                            if seg_df.empty:
+                                st.caption("No matches after filtering Budget range.")
 
-        if seg_df.empty:
+        if group.empty or seg_df.empty:
             st.caption("No leads match the selected filters. Clear some filters to continue.")
         else:
             seg_df["lead_date"] = pd.to_datetime(seg_df["lead_date"], errors="coerce")
@@ -969,6 +973,8 @@ def main():
                 period_freq = "W" if ts_freq == "Weekly" else "M"
                 lookback_periods = st.slider("CPL lookback periods", 2, 12, 6, step=1)
 
+            period_col = seg_df["lead_date"].dt.to_period(period_freq).dt.start_time
+            periods = pd.DataFrame({"period": period_col}).dropna().drop_duplicates()
             if "is_referral" in seg_df.columns:
                 lead_ts = seg_df[seg_df["is_referral"].fillna(False).astype(bool) == False].copy()
             else:
@@ -977,24 +983,30 @@ def main():
                 lead_ts.assign(period=lead_ts["lead_date"].dt.to_period(period_freq).dt.start_time)
                 .groupby("period", as_index=False)
                 .agg(Leads=(lead_id_col, "nunique") if lead_id_col else ("lead_date", "size"))
-                .sort_values("period")
             )
             ts_spend = (
                 seg_df.assign(period=seg_df["lead_date"].dt.to_period(period_freq).dt.start_time)
                 .groupby("period", as_index=False)
                 .agg(Spend=(spend_col, "sum") if spend_col else ("lead_date", "size"))
             )
-            ts = ts_leads.merge(ts_spend, on="period", how="left")
-            ts["CPL"] = np.where(ts["Leads"] > 0, ts["Spend"] / ts["Leads"], np.nan)
             if "is_referral" in seg_df.columns:
+                qualified_df = seg_df[seg_df["is_referral"] == True].copy()
                 qualified_ts = (
-                    seg_df[seg_df["is_referral"] == True]
-                    .assign(period=seg_df["lead_date"].dt.to_period(period_freq).dt.start_time)
+                    qualified_df.assign(period=qualified_df["lead_date"].dt.to_period(period_freq).dt.start_time)
                     .groupby("period", as_index=False)
                     .agg(Qualified_Leads=(lead_id_col, "nunique") if lead_id_col else ("lead_date", "size"))
                 )
-                ts = ts.merge(qualified_ts, on="period", how="left")
-            ts["Qualified_Leads"] = ts.get("Qualified_Leads", 0).fillna(0)
+            else:
+                qualified_ts = pd.DataFrame(columns=["period", "Qualified_Leads"])
+            ts = (periods
+                  .merge(ts_leads, on="period", how="left")
+                  .merge(ts_spend, on="period", how="left")
+                  .merge(qualified_ts, on="period", how="left"))
+            ts["Leads"] = ts["Leads"].fillna(0)
+            ts["Spend"] = ts["Spend"].fillna(0)
+            ts["Qualified_Leads"] = ts["Qualified_Leads"].fillna(0)
+            ts = ts.sort_values("period")
+            ts["CPL"] = np.where(ts["Leads"] > 0, ts["Spend"] / ts["Leads"], np.nan)
             denom_ts = ts["Leads"] + ts["Qualified_Leads"]
             ts["CPR"] = np.where(denom_ts > 0, ts["Spend"] / denom_ts, np.nan)
             lookback = min(lookback_periods, len(ts))
@@ -1062,42 +1074,47 @@ def main():
                 st.caption(f"Binding constraint: {binding}")
                 st.markdown(f"**Spend to hit target:** ${required_spend:,.0f} for {target_leads:,.0f} leads")
 
-                horizon_table = pd.DataFrame([
-                    {"Horizon (days)": 7, "Pace Capacity (leads)": pace * (1 + growth) * 7},
-                    {"Horizon (days)": 30, "Pace Capacity (leads)": pace * (1 + growth) * 30},
-                    {"Horizon (days)": 60, "Pace Capacity (leads)": pace * (1 + growth) * 60},
-                    {"Horizon (days)": horizon_days, "Pace Capacity (leads)": capacity_pace}
-                ])
                 st.markdown("**Horizon impact on capacity**")
-                st.dataframe(horizon_table, hide_index=True, use_container_width=True)
+                if pace_14 <= 0:
+                    st.caption("Not enough recent lead activity to estimate pace-based capacity.")
+                else:
+                    horizon_table = pd.DataFrame([
+                        {"Horizon (days)": 7, "Pace Capacity (leads)": pace * (1 + growth) * 7},
+                        {"Horizon (days)": 30, "Pace Capacity (leads)": pace * (1 + growth) * 30},
+                        {"Horizon (days)": 60, "Pace Capacity (leads)": pace * (1 + growth) * 60},
+                        {"Horizon (days)": horizon_days, "Pace Capacity (leads)": capacity_pace}
+                    ])
+                    st.dataframe(horizon_table, hide_index=True, use_container_width=True)
 
-                horizon_fig = go.Figure()
-                horizon_fig.add_trace(go.Scatter(
-                    x=horizon_table["Horizon (days)"],
-                    y=horizon_table["Pace Capacity (leads)"],
-                    mode="lines+markers",
-                    name="Pace capacity"
-                ))
-                horizon_fig.update_layout(height=220, margin=dict(l=0, r=0, t=40, b=0), yaxis_title="Leads", title="Capacity grows with the forecast horizon")
-                st.plotly_chart(horizon_fig, use_container_width=True, config={"displayModeBar": False})
+                    horizon_fig = go.Figure()
+                    horizon_fig.add_trace(go.Scatter(
+                        x=horizon_table["Horizon (days)"],
+                        y=horizon_table["Pace Capacity (leads)"],
+                        mode="lines+markers",
+                        name="Pace capacity"
+                    ))
+                    horizon_fig.update_layout(height=220, margin=dict(l=0, r=0, t=40, b=0), yaxis_title="Leads", title="Capacity grows with the forecast horizon")
+                    st.plotly_chart(horizon_fig, use_container_width=True, config={"displayModeBar": False})
 
                 if not ts.empty and (ts["CPL"].notna().any() or ts["CPR"].notna().any()):
                     low = max(cpl_forecast - (cpl_std or 0), 0)
                     high = cpl_forecast + (cpl_std or 0)
                     fig_ts = go.Figure()
-                    fig_ts.add_trace(go.Scatter(
-                        x=ts["period"],
-                        y=ts["CPL"],
-                        mode="lines+markers",
-                        name="Actual CPL"
-                    ))
-                    fig_ts.add_trace(go.Scatter(
-                        x=ts["period"],
-                        y=ts["CPR"],
-                        mode="lines+markers",
-                        name="Actual CPR",
-                        line=dict(dash="dot")
-                    ))
+                    if ts["CPL"].notna().any():
+                        fig_ts.add_trace(go.Scatter(
+                            x=ts["period"],
+                            y=ts["CPL"],
+                            mode="lines+markers",
+                            name="Actual CPL"
+                        ))
+                    if ts["CPR"].notna().any():
+                        fig_ts.add_trace(go.Scatter(
+                            x=ts["period"],
+                            y=ts["CPR"],
+                            mode="lines+markers",
+                            name="Actual CPR",
+                            line=dict(dash="dot")
+                        ))
                     if cpr_forecast and cpr_forecast > 0:
                         fig_ts.add_trace(go.Scatter(
                             x=ts["period"],
