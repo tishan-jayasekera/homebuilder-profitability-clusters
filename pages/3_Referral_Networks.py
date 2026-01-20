@@ -570,6 +570,8 @@ if 'optimization_result' not in st.session_state:
     st.session_state.optimization_result = None
 if 'excluded_builders' not in st.session_state:
     st.session_state.excluded_builders = []
+if 'load_critical_targets' not in st.session_state:
+    st.session_state.load_critical_targets = False
 
 # ============================================================================
 # DATA LOADING
@@ -857,6 +859,8 @@ def main():
         
         st.markdown("---")
         st.markdown("### Campaign Targets")
+        if st.button("⚠️ Load Critical Targets", use_container_width=True):
+            st.session_state.load_critical_targets = True
         if st.session_state.targets:
             for t in st.session_state.targets:
                 c1, c2 = st.columns([4, 1])
@@ -883,6 +887,15 @@ def main():
     G = data['graph']
     bm = data['builder_master']
     sf = data['shortfalls']
+
+    if st.session_state.load_critical_targets and not sf.empty:
+        critical = sf[sf["Risk_Score"] > 50].copy()
+        if critical.empty and "Projected_Shortfall" in sf.columns:
+            critical = sf.sort_values("Projected_Shortfall", ascending=False).head(5)
+        st.session_state.targets = critical["BuilderRegionKey"].dropna().unique().tolist()
+        st.session_state.optimization_result = None
+        st.session_state.load_critical_targets = False
+        st.rerun()
     
     # Initialize optimizer
     optimizer = NetworkOptimizer(data['events'], G, bm, sf, data['leverage'])
