@@ -558,11 +558,11 @@ def main():
                         metric_vals = pd.to_numeric(map_df[metric_col], errors="coerce").fillna(0)
                         max_val = metric_vals.max()
                         color_map = {
-                            "Very Low": [236, 243, 233],
-                            "Low": [200, 219, 198],
-                            "Mid": [168, 197, 167],
-                            "High": [124, 168, 124],
-                            "Very High": [83, 129, 84]
+                            "Very Low": [235, 248, 229],
+                            "Low": [190, 230, 182],
+                            "Mid": [121, 199, 122],
+                            "High": [53, 164, 87],
+                            "Very High": [0, 122, 62]
                         }
                         metric_lookup = map_df.set_index("Postcode")[metric_col].to_dict()
                         bin_lookup = map_df.set_index("Postcode")["Metric Bin"].to_dict()
@@ -617,11 +617,11 @@ def main():
                         featureidkey="properties.POA_CODE",
                         color="Metric Bin",
                         color_discrete_map={
-                            "Very Low": "#ecf3e9",
-                            "Low": "#c8dbc6",
-                            "Mid": "#a8c5a7",
-                            "High": "#7ca87c",
-                            "Very High": "#537f54"
+                            "Very Low": "#ebf8e5",
+                            "Low": "#bee6b6",
+                            "Mid": "#79c77a",
+                            "High": "#35a457",
+                            "Very High": "#007a3e"
                         },
                         hover_data=hover_cols,
                         mapbox_style="carto-positron",
