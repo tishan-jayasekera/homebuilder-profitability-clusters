@@ -296,13 +296,25 @@ def main():
                 )
                 primary = primary.drop_duplicates("Postcode")
                 primary = primary.rename(columns={"Builder": "Primary Builder"})
-                map_df = postcode_rollup.merge(primary[["Postcode", "Primary Builder", "Referrals"]], on="Postcode", how="left")
+                map_df = postcode_rollup.merge(
+                    primary[["Postcode", "Primary Builder", "Referrals"]],
+                    on="Postcode",
+                    how="left",
+                    suffixes=("_metric", "_primary")
+                )
             else:
                 map_df = postcode_rollup.copy()
                 map_df["Primary Builder"] = "Unknown"
         else:
             map_df = postcode_rollup.copy()
             map_df["Primary Builder"] = None
+
+        if "Referrals" not in map_df.columns and "Referrals_metric" in map_df.columns:
+            map_df = map_df.rename(columns={"Referrals_metric": "Referrals"})
+        if "Campaigns" not in map_df.columns and "Campaigns" in postcode_rollup.columns:
+            map_df["Campaigns"] = postcode_rollup["Campaigns"]
+        if "Leads" not in map_df.columns and "Leads" in postcode_rollup.columns:
+            map_df["Leads"] = postcode_rollup["Leads"]
 
         if map_df.empty:
             st.caption("No postcode data available for the selected filters.")
@@ -336,6 +348,7 @@ def main():
                     map_df["Metric Bin"] = metric_bins.map(
                         lambda x: safe_labels[int(x)] if pd.notna(x) and int(x) < len(safe_labels) else "Mid"
                     )
+            hover_cols = {c: True for c in ["Leads", "Referrals", "Campaigns", "CPR"] if c in map_df.columns}
             fig = px.choropleth_mapbox(
                 map_df,
                 geojson=geojson_filtered,
@@ -349,12 +362,7 @@ def main():
                     "High": "#38bdf8",
                     "Very High": "#0284c7"
                 },
-                hover_data={
-                    "Leads": True,
-                    "Referrals": True,
-                    "Campaigns": True,
-                    "CPR": True
-                },
+                hover_data=hover_cols,
                 mapbox_style="carto-positron",
                 zoom=zoom,
                 center=center,
@@ -365,17 +373,14 @@ def main():
             if "Primary Builder" not in map_df.columns or map_df["Primary Builder"].isna().all():
                 map_df["Primary Builder"] = "Unknown"
             map_df["Primary Builder"] = map_df["Primary Builder"].fillna("Unknown").astype(str)
+            hover_cols = {c: True for c in ["Leads", "Referrals", "Campaigns"] if c in map_df.columns}
             fig = px.choropleth_mapbox(
                 map_df,
                 geojson=geojson_filtered,
                 locations="Postcode",
                 featureidkey="properties.POA_CODE",
                 color="Primary Builder",
-                hover_data={
-                    "Leads": True,
-                    "Referrals": True,
-                    "Campaigns": True
-                },
+                hover_data=hover_cols,
                 mapbox_style="carto-positron",
                 zoom=zoom,
                 center=center,
