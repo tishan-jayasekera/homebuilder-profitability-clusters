@@ -1312,14 +1312,98 @@ def main():
                         Avg_CPR=("_event_spend", lambda s: s.sum() / max(1, len(s)))
                     )
                 )
-                st.markdown("**State benchmarks**")
-                st.dataframe(
-                    state_benchmark.rename(columns={
-                        "Avg_CPR": "Avg CPR"
-                    }),
-                    hide_index=True,
-                    use_container_width=True
-                )
+            st.markdown("**State benchmarks**")
+            st.dataframe(
+                state_benchmark.rename(columns={
+                    "Avg_CPR": "Avg CPR"
+                }),
+                hide_index=True,
+                use_container_width=True
+            )
+
+            st.markdown("**Regional composition snapshot**")
+            comp_state = st.selectbox(
+                "Select a state to review composition",
+                sorted(df["State"].dropna().unique().tolist())
+            )
+            comp_df = df[df["State"] == comp_state].copy()
+            if comp_df.empty:
+                st.caption("No events for the selected state.")
+            else:
+                finance_col = _find_col(comp_df.columns, ["Finance Status"])
+                timeframe_col = _find_col(comp_df.columns, ["Timeframe"])
+                land_col = _find_col(comp_df.columns, ["Do you have land"])
+                house_col = _find_col(comp_df.columns, ["House type"])
+                beds_col = _find_col(comp_df.columns, ["IBN_Bedrooms"])
+                budget_col = _find_col(comp_df.columns, ["Budget"])
+
+                def composition_table(series, label):
+                    if series is None:
+                        return pd.DataFrame(columns=[label, "Events", "Share"])
+                    counts = series.fillna("Unknown").astype(str).value_counts(dropna=False)
+                    out = counts.reset_index()
+                    out.columns = [label, "Events"]
+                    out["Share"] = out["Events"] / max(1, out["Events"].sum())
+                    return out
+
+                def budget_bins(series):
+                    if series is None:
+                        return pd.DataFrame(columns=["Budget range", "Events", "Share"])
+                    values = pd.to_numeric(series, errors="coerce").dropna()
+                    if values.empty:
+                        return pd.DataFrame(columns=["Budget range", "Events", "Share"])
+                    quantiles = values.quantile([0, 0.25, 0.5, 0.75, 1]).unique()
+                    if len(quantiles) < 2:
+                        return pd.DataFrame(columns=["Budget range", "Events", "Share"])
+                    bins = pd.cut(values, bins=quantiles, include_lowest=True)
+                    return composition_table(bins.astype(str), "Budget range")
+
+                c1, c2, c3 = st.columns(3)
+                with c1:
+                    if finance_col:
+                        st.markdown("**Finance status**")
+                        st.dataframe(
+                            composition_table(comp_df[finance_col], "Finance Status"),
+                            hide_index=True,
+                            use_container_width=True
+                        )
+                    if land_col:
+                        st.markdown("**Land status**")
+                        st.dataframe(
+                            composition_table(comp_df[land_col], "Do you have land"),
+                            hide_index=True,
+                            use_container_width=True
+                        )
+                with c2:
+                    if timeframe_col:
+                        st.markdown("**Timeframe**")
+                        st.dataframe(
+                            composition_table(comp_df[timeframe_col], "Timeframe"),
+                            hide_index=True,
+                            use_container_width=True
+                        )
+                    if beds_col:
+                        st.markdown("**Bedrooms**")
+                        st.dataframe(
+                            composition_table(comp_df[beds_col], "Bedrooms"),
+                            hide_index=True,
+                            use_container_width=True
+                        )
+                with c3:
+                    if house_col:
+                        st.markdown("**House type**")
+                        st.dataframe(
+                            composition_table(comp_df[house_col], "House type"),
+                            hide_index=True,
+                            use_container_width=True
+                        )
+                    if budget_col:
+                        st.markdown("**Budget range**")
+                        st.dataframe(
+                            budget_bins(comp_df[budget_col]),
+                            hide_index=True,
+                            use_container_width=True
+                        )
 
             conv_median = group["Referral_Rate"].median() if group["Referral_Rate"].notna().any() else 0
             lead_median = group["Leads"].median() if group["Leads"].notna().any() else 0
