@@ -1085,6 +1085,38 @@ def main():
         if inbound.empty:
             st.caption("No inbound referrals in the filtered time window.")
         else:
+            campaign_col = next(
+                (c for c in ["utm_campaign", "utm_key", "ad_key"] if c in inbound.columns),
+                None
+            )
+            if campaign_col:
+                inbound["Campaign"] = inbound[campaign_col].fillna("Unknown")
+                inbound["MediaCost_referral_event"] = inbound.get("MediaCost_referral_event", 0).fillna(0)
+                leaderboard = (
+                    inbound.groupby("Campaign", as_index=False)
+                    .agg(
+                        Referrals=("LeadId", "nunique"),
+                        Ad_Spend=("MediaCost_referral_event", "sum")
+                    )
+                )
+                leaderboard["CPR"] = np.where(
+                    leaderboard["Referrals"] > 0,
+                    leaderboard["Ad_Spend"] / leaderboard["Referrals"],
+                    np.nan
+                )
+                leaderboard = leaderboard.sort_values("Referrals", ascending=False).head(15)
+                st.markdown("**Top campaigns (lifetime, filtered window)**")
+                st.dataframe(
+                    leaderboard.rename(columns={
+                        "Ad_Spend": "Ad Spend",
+                        "Referrals": "Referrals",
+                        "CPR": "CPR"
+                    }),
+                    hide_index=True,
+                    use_container_width=True
+                )
+            else:
+                st.caption("No campaign fields found for leaderboard (utm_campaign, utm_key, ad_key).")
             stack_by = st.radio(
                 "Stack by",
                 ["Source Builder", "Campaign"],
@@ -1095,14 +1127,9 @@ def main():
             inbound = inbound.dropna(subset=["lead_date"])
             inbound["period"] = inbound["lead_date"].dt.to_period("W").dt.start_time
             if stack_by == "Campaign":
-                campaign_col = next(
-                    (c for c in ["utm_campaign", "utm_key", "ad_key"] if c in inbound.columns),
-                    None
-                )
                 if not campaign_col:
                     st.caption("No campaign fields found (utm_campaign, utm_key, ad_key).")
                 else:
-                    inbound["Campaign"] = inbound[campaign_col].fillna("Unknown")
                     ts = (
                         inbound.groupby(["period", "Campaign"], as_index=False)["LeadId"]
                         .nunique()
