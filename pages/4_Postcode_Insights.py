@@ -211,12 +211,23 @@ def main():
     metric_col = metric_map[map_metric]
 
     if geojson_data and not group.empty:
+        active_postcodes = set(group["Postcode"].dropna().astype(str).str.zfill(4).tolist())
+        if active_postcodes:
+            geojson_filtered = {
+                "type": "FeatureCollection",
+                "features": [
+                    f for f in geojson_data.get("features", [])
+                    if f.get("properties", {}).get("POA_CODE") in active_postcodes
+                ]
+            }
+        else:
+            geojson_filtered = geojson_data
         if "Lat" in group.columns and "Lng" in group.columns and group["Lat"].notna().any():
             center = {"lat": float(group["Lat"].mean()), "lon": float(group["Lng"].mean())}
-            zoom = 5 if state_filter else 3
+            zoom = 6 if state_filter else 4
         else:
             center = {"lat": -25.5, "lon": 134.0}
-            zoom = 3
+            zoom = 4
         postcode_rollup = (
             group.groupby("Postcode", as_index=False)
             .agg(
@@ -243,7 +254,7 @@ def main():
         )
         fig = px.choropleth_mapbox(
             postcode_rollup,
-            geojson=geojson_data,
+            geojson=geojson_filtered,
             locations="Postcode",
             featureidkey="properties.POA_CODE",
             color=metric_col,
@@ -260,8 +271,17 @@ def main():
             opacity=0.6,
             title="Postcode performance (select a state to focus)"
         )
-        fig.update_layout(height=520, margin=dict(l=0, r=0, t=40, b=0))
-        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+        fig.update_layout(
+            height=560,
+            margin=dict(l=0, r=0, t=40, b=0),
+            uirevision="postcode-map",
+            mapbox=dict(fitbounds="locations")
+        )
+        st.plotly_chart(
+            fig,
+            use_container_width=True,
+            config={"displayModeBar": True, "scrollZoom": True}
+        )
     else:
         st.caption("Postcode geojson or joined metrics unavailable for mapping.")
 
