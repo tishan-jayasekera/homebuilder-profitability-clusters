@@ -550,7 +550,8 @@ def main():
                             "High": [253, 141, 60],
                             "Very High": [240, 59, 32]
                         }
-                        points["color"] = points["Metric Bin"].map(color_map).fillna([180, 180, 180])
+                        points["color"] = points["Metric Bin"].map(color_map)
+                        points["color"] = points["color"].apply(lambda v: v if isinstance(v, list) else [180, 180, 180])
                         layer = pdk.Layer(
                             "ColumnLayer",
                             data=points,
