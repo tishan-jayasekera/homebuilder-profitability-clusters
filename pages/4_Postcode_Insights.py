@@ -975,7 +975,7 @@ def main():
                 horizon_fig.update_layout(height=220, margin=dict(l=0, r=0, t=40, b=0), yaxis_title="Leads", title="Capacity grows with the forecast horizon")
                 st.plotly_chart(horizon_fig, use_container_width=True, config={"displayModeBar": False})
 
-                if not ts.empty:
+                if not ts.empty and (ts["CPL"].notna().any() or ts["CPR"].notna().any()):
                     low = max(cpl_forecast - (cpl_std or 0), 0)
                     high = cpl_forecast + (cpl_std or 0)
                     fig_ts = go.Figure()
@@ -1016,18 +1016,23 @@ def main():
                         line=dict(width=0),
                         opacity=0.2
                     ))
-                    fig_ts.update_layout(height=280, margin=dict(l=0, r=0, t=40, b=0), yaxis_title="CPL")
+                    fig_ts.update_layout(height=280, margin=dict(l=0, r=0, t=40, b=0), yaxis_title="CPL/CPR")
                     st.plotly_chart(fig_ts, use_container_width=True, config={"displayModeBar": False})
+                else:
+                    st.caption("Not enough spend/lead data to plot CPL/CPR trends for this selection.")
 
-                pace_fig = go.Figure()
-                pace_fig.add_trace(go.Bar(
-                    x=["Last 7d", "Last 14d", "Last 28d"],
-                    y=[pace_7, pace_14, pace_28],
-                    marker_color=["#60a5fa", "#3b82f6", "#1d4ed8"],
-                    name="Leads per day"
-                ))
-                pace_fig.update_layout(height=220, margin=dict(l=0, r=0, t=40, b=0), yaxis_title="Leads / day", title="Recent delivery pace")
-                st.plotly_chart(pace_fig, use_container_width=True, config={"displayModeBar": False})
+                if pace_7 > 0 or pace_14 > 0 or pace_28 > 0:
+                    pace_fig = go.Figure()
+                    pace_fig.add_trace(go.Bar(
+                        x=["Last 7d", "Last 14d", "Last 28d"],
+                        y=[pace_7, pace_14, pace_28],
+                        marker_color=["#60a5fa", "#3b82f6", "#1d4ed8"],
+                        name="Leads per day"
+                    ))
+                    pace_fig.update_layout(height=220, margin=dict(l=0, r=0, t=40, b=0), yaxis_title="Leads / day", title="Recent delivery pace")
+                    st.plotly_chart(pace_fig, use_container_width=True, config={"displayModeBar": False})
+                else:
+                    st.caption("No recent lead activity to show pace.")
 
                 scenario = pd.DataFrame([
                     {"Scenario": "Planned", "Spend": planned_spend, "Capacity (Spend)": capacity_spend, "Recommended Cap": capacity, "Binding": binding},
@@ -1078,24 +1083,26 @@ def main():
                 camp = camp.sort_values(["Referrals", "Leads"], ascending=False).head(10)
 
                 st.markdown("**Recommended campaigns for this region**")
-                st.dataframe(
-                    camp.rename(columns={campaign_col: "Campaign"}),
-                    hide_index=True,
-                    use_container_width=True
-                )
+                if camp.empty or camp["Leads"].sum() == 0:
+                    st.caption("No campaign activity for this selection.")
+                else:
+                    st.dataframe(
+                        camp.rename(columns={campaign_col: "Campaign"}),
+                        hide_index=True,
+                        use_container_width=True
+                    )
 
-                total_leads = camp["Leads"].sum()
-                total_refs = camp["Referrals"].sum()
-                top_share = camp.head(3)["Referrals"].sum() / total_refs if total_refs > 0 else 0
-                st.markdown(f"""
-                <div class="explainer">
-                    <div class="explainer-title">Justified by campaigns</div>
-                    <div class="explainer-text">
-                        The top 3 campaigns account for <b>{top_share:.0%}</b> of referral activity in this region.
-                        Forecast assumptions are grounded in these campaigns because they are driving the majority of qualified outcomes.
+                    total_refs = camp["Referrals"].sum()
+                    top_share = camp.head(3)["Referrals"].sum() / total_refs if total_refs > 0 else 0
+                    st.markdown(f"""
+                    <div class="explainer">
+                        <div class="explainer-title">Justified by campaigns</div>
+                        <div class="explainer-text">
+                            The top 3 campaigns account for <b>{top_share:.0%}</b> of referral activity in this region.
+                            Forecast assumptions are grounded in these campaigns because they are driving the majority of qualified outcomes.
+                        </div>
                     </div>
-                </div>
-                """, unsafe_allow_html=True)
+                    """, unsafe_allow_html=True)
 
                 comp_fields = [
                     (budget_col, "Budget"),
