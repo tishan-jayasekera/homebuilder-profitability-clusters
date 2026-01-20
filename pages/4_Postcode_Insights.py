@@ -304,7 +304,9 @@ def main():
             map_df = postcode_rollup.copy()
             map_df["Primary Builder"] = None
 
-        if map_mode == "Performance":
+        if map_df.empty:
+            st.caption("No postcode data available for the selected filters.")
+        elif map_mode == "Performance":
             metric_series = map_df[metric_col].fillna(0)
             if metric_series.nunique() <= 1:
                 map_df["Metric Bin"] = "Mid"
@@ -360,6 +362,9 @@ def main():
                 title="Postcode performance (select a state to focus)"
             )
         else:
+            if "Primary Builder" not in map_df.columns or map_df["Primary Builder"].isna().all():
+                map_df["Primary Builder"] = "Unknown"
+            map_df["Primary Builder"] = map_df["Primary Builder"].fillna("Unknown").astype(str)
             fig = px.choropleth_mapbox(
                 map_df,
                 geojson=geojson_filtered,
@@ -377,16 +382,19 @@ def main():
                 opacity=0.6,
                 title="Marketing regions (dominant referral-serving builder)"
             )
-        fig.update_layout(
-            height=560,
-            margin=dict(l=0, r=0, t=40, b=0),
-            uirevision="postcode-map"
-        )
-        st.plotly_chart(
-            fig,
-            use_container_width=True,
-            config={"displayModeBar": True, "scrollZoom": True}
-        )
+        if map_df.empty:
+            pass
+        else:
+            fig.update_layout(
+                height=560,
+                margin=dict(l=0, r=0, t=40, b=0),
+                uirevision="postcode-map"
+            )
+            st.plotly_chart(
+                fig,
+                use_container_width=True,
+                config={"displayModeBar": True, "scrollZoom": True}
+            )
     else:
         st.caption("Postcode geojson or joined metrics unavailable for mapping.")
 
