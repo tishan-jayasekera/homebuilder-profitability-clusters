@@ -71,6 +71,20 @@ def _find_col(columns, candidates):
     return None
 
 
+def _normalize_bool(series: pd.Series) -> pd.Series:
+    if series is None:
+        return pd.Series(False, index=[])
+    if series.dtype == bool:
+        return series.fillna(False)
+    if pd.api.types.is_numeric_dtype(series):
+        return series.fillna(0).astype(float) > 0
+    numeric = pd.to_numeric(series, errors="coerce")
+    if numeric.notna().any():
+        return numeric.fillna(0).astype(float) > 0
+    s = series.fillna("").astype(str).str.strip().str.lower()
+    return s.isin(["true", "1", "yes", "y", "t"])
+
+
 @st.cache_data(show_spinner=False)
 def load_postcode_geo():
     geo_path = Path("data/au-postcodes.geojson")
@@ -216,11 +230,15 @@ def main():
     """, unsafe_allow_html=True)
 
     lead_id_col = "LeadId" if "LeadId" in df.columns else None
-    is_referral = df["is_referral"].fillna(False).astype(bool) if "is_referral" in df.columns else pd.Series(False, index=df.index)
-
+    ref_flag_col = "is_referral_bool"
     if "is_referral" in df.columns:
-        lead_df = df[df["is_referral"].fillna(False).astype(bool) == False].copy()
-        refs_df = df[df["is_referral"].fillna(False).astype(bool)].copy()
+        df[ref_flag_col] = _normalize_bool(df["is_referral"])
+    else:
+        df[ref_flag_col] = False
+
+    if ref_flag_col in df.columns:
+        lead_df = df[df[ref_flag_col] == False].copy()
+        refs_df = df[df[ref_flag_col]].copy()
         group = lead_df.groupby([postcode_col, suburb_col], as_index=False).agg(
             Leads=(lead_id_col, "nunique") if lead_id_col else (postcode_col, "size"),
             Media_Spend=(spend_col, "sum") if spend_col else (postcode_col, "size"),
@@ -421,7 +439,7 @@ def main():
                 )
 
             if map_mode == "Marketing Regions" and "Dest_BuilderRegionKey" in df.columns:
-                mask_referral = df["is_referral"].fillna(False).astype(bool) if "is_referral" in df.columns else pd.Series(False, index=df.index)
+                mask_referral = df[ref_flag_col] if ref_flag_col in df.columns else pd.Series(False, index=df.index)
                 referrals_df = df[mask_referral].copy()
                 builder_flows = pd.DataFrame()
                 builder_filter_map = builder_filter if builder_filter else []
@@ -949,8 +967,8 @@ def main():
         else:
             seg_df["lead_date"] = pd.to_datetime(seg_df["lead_date"], errors="coerce")
             seg_df = seg_df.dropna(subset=["lead_date"])
-            if "is_referral" in seg_df.columns:
-                seg_leads = seg_df[seg_df["is_referral"].fillna(False).astype(bool) == False]
+            if ref_flag_col in seg_df.columns:
+                seg_leads = seg_df[seg_df[ref_flag_col] == False]
             else:
                 seg_leads = seg_df
             lead_count = seg_leads[lead_id_col].nunique() if lead_id_col else len(seg_leads)
@@ -975,8 +993,8 @@ def main():
 
             period_col = seg_df["lead_date"].dt.to_period(period_freq).dt.start_time
             periods = pd.DataFrame({"period": period_col}).dropna().drop_duplicates()
-            if "is_referral" in seg_df.columns:
-                lead_ts = seg_df[seg_df["is_referral"].fillna(False).astype(bool) == False].copy()
+            if ref_flag_col in seg_df.columns:
+                lead_ts = seg_df[seg_df[ref_flag_col] == False].copy()
             else:
                 lead_ts = seg_df.copy()
             ts_leads = (
@@ -989,8 +1007,8 @@ def main():
                 .groupby("period", as_index=False)
                 .agg(Spend=(spend_col, "sum") if spend_col else ("lead_date", "size"))
             )
-            if "is_referral" in seg_df.columns:
-                qualified_df = seg_df[seg_df["is_referral"] == True].copy()
+            if ref_flag_col in seg_df.columns:
+                qualified_df = seg_df[seg_df[ref_flag_col] == True].copy()
                 qualified_ts = (
                     qualified_df.assign(period=qualified_df["lead_date"].dt.to_period(period_freq).dt.start_time)
                     .groupby("period", as_index=False)
@@ -1019,9 +1037,9 @@ def main():
             end_date = seg_df["lead_date"].max()
             recent_mask = seg_df["lead_date"] >= (end_date - pd.Timedelta(days=14))
             prev_mask = (seg_df["lead_date"] < (end_date - pd.Timedelta(days=14))) & (seg_df["lead_date"] >= (end_date - pd.Timedelta(days=28)))
-            if "is_referral" in seg_df.columns:
-                recent_leads_df = seg_df[recent_mask & (seg_df["is_referral"].fillna(False).astype(bool) == False)]
-                prev_leads_df = seg_df[prev_mask & (seg_df["is_referral"].fillna(False).astype(bool) == False)]
+            if ref_flag_col in seg_df.columns:
+                recent_leads_df = seg_df[recent_mask & (seg_df[ref_flag_col] == False)]
+                prev_leads_df = seg_df[prev_mask & (seg_df[ref_flag_col] == False)]
             else:
                 recent_leads_df = seg_df[recent_mask]
                 prev_leads_df = seg_df[prev_mask]
@@ -1032,8 +1050,8 @@ def main():
             pace = recent_leads / 14 if recent_leads > 0 else 0
             recent_7 = seg_df["lead_date"] >= (end_date - pd.Timedelta(days=7))
             recent_28 = seg_df["lead_date"] >= (end_date - pd.Timedelta(days=28))
-            if "is_referral" in seg_df.columns:
-                lead_mask = seg_df["is_referral"].fillna(False).astype(bool) == False
+            if ref_flag_col in seg_df.columns:
+                lead_mask = seg_df[ref_flag_col] == False
                 recent_7_df = seg_df[recent_7 & lead_mask]
                 recent_28_df = seg_df[recent_28 & lead_mask]
             else:
@@ -1166,9 +1184,9 @@ def main():
                 st.dataframe(scenario, hide_index=True, use_container_width=True)
 
             if campaign_col:
-                if "is_referral" in seg_df.columns:
-                    lead_campaign_df = seg_df[seg_df["is_referral"].fillna(False).astype(bool) == False].copy()
-                    ref_campaign_df = seg_df[seg_df["is_referral"].fillna(False).astype(bool)].copy()
+                if ref_flag_col in seg_df.columns:
+                    lead_campaign_df = seg_df[seg_df[ref_flag_col] == False].copy()
+                    ref_campaign_df = seg_df[seg_df[ref_flag_col]].copy()
                 else:
                     lead_campaign_df = seg_df.copy()
                     ref_campaign_df = seg_df.iloc[0:0].copy()
