@@ -358,7 +358,7 @@ def main():
         )
         map_style = st.radio(
             "Map style",
-            ["2D regions", "3D columns"],
+            ["2D regions", "3D columns", "3D (no token)"],
             horizontal=True,
             label_visibility="collapsed",
             key="postcode_map_style"
@@ -532,7 +532,7 @@ def main():
                             lambda x: safe_labels[int(x)] if pd.notna(x) and int(x) < len(safe_labels) else "Mid"
                         )
                 hover_cols = {c: True for c in ["Leads", "Referrals", "Campaigns", "CPR", "Total_Events"] if c in map_df.columns}
-                if map_style == "3D columns":
+                if map_style in ("3D columns", "3D (no token)"):
                     centroids = _postcode_centroids(postcode_meta)
                     points = map_df.merge(centroids, on="Postcode", how="left")
                     points = points.dropna(subset=["Lat", "Lng"])
@@ -571,7 +571,8 @@ def main():
                             bearing=0
                         )
                         tooltip = {"text": "Postcode {Postcode}\nValue: {metric_value}\nLeads: {Leads}\nReferrals: {Referrals}"}
-                        st.pydeck_chart(pdk.Deck(layers=[layer], initial_view_state=view_state, tooltip=tooltip))
+                        map_style_base = "mapbox://styles/mapbox/light-v9" if map_style == "3D columns" else None
+                        st.pydeck_chart(pdk.Deck(layers=[layer], initial_view_state=view_state, tooltip=tooltip, map_style=map_style_base))
                         fig = None
                 else:
                     fig = px.choropleth_mapbox(
