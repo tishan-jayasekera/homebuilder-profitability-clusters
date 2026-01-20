@@ -1352,21 +1352,37 @@ def main():
                 def composition_insight(df_in, label):
                     if df_in.empty:
                         return None
-                    top_label = (
-                        df_in.groupby(label)["Events"].sum()
-                        .sort_values(ascending=False)
-                        .index
-                        .tolist()
-                    )
-                    if not top_label:
+                    totals = df_in.groupby(label)["Events"].sum()
+                    total_events = totals.sum()
+                    if total_events <= 0:
                         return None
-                    top_label = top_label[0]
-                    top_state_row = df_in[df_in[label] == top_label].sort_values("Share", ascending=False).head(1)
+                    national_share = totals / total_events
+                    top_label = national_share.idxmax()
+                    top_share = float(national_share.loc[top_label])
+                    top_state_row = (
+                        df_in[df_in[label] == top_label]
+                        .sort_values("Share", ascending=False)
+                        .head(1)
+                    )
                     if top_state_row.empty:
                         return None
                     top_state = top_state_row["State"].iloc[0]
-                    top_share = top_state_row["Share"].iloc[0]
-                    return f"Top segment: {top_label}. Strongest state: {top_state} ({top_share:.0%} share)."
+                    state_share = float(top_state_row["Share"].iloc[0])
+                    delta = state_share - top_share
+
+                    pivot = df_in.pivot_table(index="State", columns=label, values="Share", fill_value=0)
+                    pivot = pivot.reindex(columns=national_share.index, fill_value=0)
+                    skew = (pivot.sub(national_share, axis=1).abs().sum(axis=1)) / 2
+                    skew_state = skew.idxmax()
+                    skew_val = float(skew.max())
+                    balanced_state = skew.idxmin()
+
+                    return (
+                        f"So what: {top_label} is the largest segment ({top_share:.0%} of events). "
+                        f"It over-indexes in {top_state} by {delta:+.0%}. "
+                        f"{skew_state} deviates most from the national mix (index gap {skew_val:.0%}); "
+                        f"{balanced_state} is closest to average."
+                    )
 
                 def state_stack_chart(df_in, label, color_seq):
                     if df_in.empty:
@@ -1420,7 +1436,7 @@ def main():
                         finance_share = state_share_table(comp_df[finance_col], "Finance Status")
                         insight = composition_insight(finance_share, "Finance Status")
                         if insight:
-                            st.caption(insight)
+                            st.markdown(f"<div class='insight'><div class='insight-text'>{insight}</div></div>", unsafe_allow_html=True)
                         fig = state_stack_chart(finance_share, "Finance Status", palette)
                         if fig:
                             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
@@ -1431,7 +1447,7 @@ def main():
                         timeframe_share = state_share_table(comp_df[timeframe_col], "Timeframe")
                         insight = composition_insight(timeframe_share, "Timeframe")
                         if insight:
-                            st.caption(insight)
+                            st.markdown(f"<div class='insight'><div class='insight-text'>{insight}</div></div>", unsafe_allow_html=True)
                         fig = state_stack_chart(timeframe_share, "Timeframe", palette)
                         if fig:
                             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
@@ -1442,7 +1458,7 @@ def main():
                         land_share = state_share_table(comp_df[land_col], "Do you have land")
                         insight = composition_insight(land_share, "Do you have land")
                         if insight:
-                            st.caption(insight)
+                            st.markdown(f"<div class='insight'><div class='insight-text'>{insight}</div></div>", unsafe_allow_html=True)
                         fig = state_stack_chart(land_share, "Do you have land", palette)
                         if fig:
                             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
@@ -1453,7 +1469,7 @@ def main():
                         house_share = state_share_table(comp_df[house_col], "House type")
                         insight = composition_insight(house_share, "House type")
                         if insight:
-                            st.caption(insight)
+                            st.markdown(f"<div class='insight'><div class='insight-text'>{insight}</div></div>", unsafe_allow_html=True)
                         fig = state_stack_chart(house_share, "House type", palette)
                         if fig:
                             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
@@ -1464,7 +1480,7 @@ def main():
                         beds_share = state_share_table(comp_df[beds_col], "Bedrooms")
                         insight = composition_insight(beds_share, "Bedrooms")
                         if insight:
-                            st.caption(insight)
+                            st.markdown(f"<div class='insight'><div class='insight-text'>{insight}</div></div>", unsafe_allow_html=True)
                         fig = state_stack_chart(beds_share, "Bedrooms", palette)
                         if fig:
                             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
@@ -1489,7 +1505,7 @@ def main():
                                 budget_share = state_share_table(budget_valid["Budget range"], "Budget range")
                                 insight = composition_insight(budget_share, "Budget range")
                                 if insight:
-                                    st.caption(insight)
+                                    st.markdown(f"<div class='insight'><div class='insight-text'>{insight}</div></div>", unsafe_allow_html=True)
                                 left, right = st.columns([2, 1])
                                 with left:
                                     fig = state_stack_chart(
