@@ -128,6 +128,7 @@ def main():
             state_filter = st.multiselect("State/Region", state_options, default=state_options)
         else:
             state_filter = []
+        builder_scope = "Map only"
         builder_filter = []
         if "Dest_BuilderRegionKey" in events.columns:
             tmp = events.copy()
@@ -144,6 +145,11 @@ def main():
                 builder_options,
                 key="builder_filter"
             )
+            builder_scope = st.radio(
+                "Apply builder filter to",
+                ["Map only", "Whole page"],
+                horizontal=True
+            )
 
     df = events.copy()
     df = df[(df['lead_date'] >= pd.Timestamp(start_d)) & (df['lead_date'] <= pd.Timestamp(end_d))]
@@ -153,6 +159,8 @@ def main():
     df[suburb_col] = df[suburb_col].astype(str).str.strip().replace({"nan": np.nan, "": np.nan})
     df[suburb_col] = df[suburb_col].str.upper()
     df = df.dropna(subset=[postcode_col, suburb_col])
+    if builder_filter and builder_scope == "Whole page" and "Dest_BuilderRegionKey" in df.columns:
+        df = df[df["Dest_BuilderRegionKey"].isin(builder_filter)]
 
     if df.empty:
         st.warning("No events found for the selected filters.")
@@ -356,15 +364,17 @@ def main():
                     (df["MediaPayer_BuilderRegionKey"] != df["Dest_BuilderRegionKey"])
                 )
                 referrals_df = df[mask_referral | mask_cross_payer].copy()
-                if builder_filter:
-                    referrals_df = referrals_df[referrals_df["Dest_BuilderRegionKey"].isin(builder_filter)]
+                builder_flows = pd.DataFrame()
+                builder_filter_map = builder_filter if builder_filter else []
+                if builder_filter_map:
+                    referrals_df = referrals_df[referrals_df["Dest_BuilderRegionKey"].isin(builder_filter_map)]
                 if not referrals_df.empty:
                     referrals_df["Postcode"] = referrals_df[postcode_col].astype(str).str.zfill(4)
                     builder_flows = (
                         referrals_df.groupby(["Postcode", "Dest_BuilderRegionKey"], as_index=False)
                         .agg(Referrals=("LeadId", "nunique") if "LeadId" in referrals_df.columns else ("lead_date", "size"))
                     )
-                    if builder_filter:
+                    if builder_filter_map:
                         builder_flows["Builder"] = builder_flows["Dest_BuilderRegionKey"]
                     else:
                         totals = builder_flows.groupby("Dest_BuilderRegionKey", as_index=False)["Referrals"].sum()
@@ -393,8 +403,26 @@ def main():
                         suffixes=("_metric", "_primary")
                     )
                     map_df = map_df.merge(overlap, on="Postcode", how="left")
-                    if builder_filter:
+                    if builder_filter_map:
                         map_df = map_df[map_df["Builder_Count"].fillna(0) > 0]
+
+                    builder_summary = (
+                        builder_flows.groupby("Dest_BuilderRegionKey", as_index=False)
+                        .agg(
+                            Referrals=("Referrals", "sum"),
+                            Postcodes=("Postcode", "nunique")
+                        )
+                        .sort_values("Referrals", ascending=False)
+                    )
+                    if builder_filter_map:
+                        builder_summary = builder_summary[builder_summary["Dest_BuilderRegionKey"].isin(builder_filter_map)]
+                    if not builder_summary.empty:
+                        st.markdown("**Builder coverage summary**")
+                        st.dataframe(
+                            builder_summary.rename(columns={"Dest_BuilderRegionKey": "Builder"}),
+                            hide_index=True,
+                            use_container_width=True
+                        )
                 else:
                     map_df = postcode_rollup.copy()
                     map_df["Primary Builder"] = "Unknown"
@@ -468,38 +496,39 @@ def main():
                 map_df["Primary Builder"] = map_df["Primary Builder"].fillna("Unknown").astype(str)
                 if region_view == "Complete (overlap)":
                     map_df["Builder_Count"] = map_df.get("Builder_Count", 0).fillna(0).astype(int)
-                    def overlap_bucket(val):
-                        if val <= 1:
-                            return "1 builder"
-                        if val <= 3:
-                            return "2-3 builders"
-                        if val <= 5:
-                            return "4-5 builders"
-                        return "6+ builders"
-                    map_df["Overlap Bin"] = map_df["Builder_Count"].map(overlap_bucket)
-                    hover_cols = {c: True for c in ["Leads", "Referrals", "Campaigns", "Builder_Count"] if c in map_df.columns}
+                    builder_pool = []
+                    if "Builder" in builder_flows.columns:
+                        builder_pool = sorted(builder_flows["Builder"].dropna().unique().tolist())
+                    if builder_filter_map:
+                        builder_pool = builder_filter_map
+                    if builder_pool:
+                        display_builder = st.selectbox("Display builder region", builder_pool)
+                        builder_region = builder_flows[builder_flows["Builder"] == display_builder].copy()
+                        builder_region = builder_region.rename(columns={"Referrals": "Builder Referrals"})
+                        map_df = map_df.merge(
+                            builder_region[["Postcode", "Builder Referrals"]],
+                            on="Postcode",
+                            how="left"
+                        )
+                        map_df = map_df[map_df["Builder Referrals"].fillna(0) > 0]
+                        map_df["Primary Builder"] = display_builder
+                    hover_cols = {c: True for c in ["Leads", "Referrals", "Campaigns", "Builder Referrals", "Builder_Count"] if c in map_df.columns}
                     fig = px.choropleth_mapbox(
                         map_df,
                         geojson=geojson_filtered,
                         locations="Postcode",
                         featureidkey="properties.POA_CODE",
-                        color="Overlap Bin",
-                        color_discrete_map={
-                            "1 builder": "#dbeafe",
-                            "2-3 builders": "#93c5fd",
-                            "4-5 builders": "#60a5fa",
-                            "6+ builders": "#2563eb"
-                        },
+                        color="Primary Builder",
                         hover_data=hover_cols,
                         mapbox_style="carto-positron",
                         zoom=zoom,
                         center=center,
                         opacity=0.6,
-                        title="Marketing regions (overlap of builders servicing referrals)"
+                        title="Marketing regions (complete coverage for selected builder)"
                     )
-                    overlap_hotspots = map_df[map_df["Builder_Count"] >= 3].copy()
+                    overlap_hotspots = map_df[map_df["Builder_Count"] >= 2].copy()
                     if not overlap_hotspots.empty:
-                        st.markdown("**Overlap hotspots (multiple builders competing)**")
+                        st.markdown("**Overlap hotspots (multiple builders in same postcode)**")
                         st.dataframe(
                             overlap_hotspots[["Postcode", "Builder_Count", "Leads", "Referrals"]].head(25),
                             hide_index=True,
