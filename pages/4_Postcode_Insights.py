@@ -224,10 +224,12 @@ def main():
             geojson_filtered = geojson_data
         if "Lat" in group.columns and "Lng" in group.columns and group["Lat"].notna().any():
             center = {"lat": float(group["Lat"].mean()), "lon": float(group["Lng"].mean())}
-            zoom = 6 if state_filter else 4
         else:
             center = {"lat": -25.5, "lon": 134.0}
-            zoom = 4
+        if state_filter:
+            zoom = 6.5 if len(state_filter) == 1 else 5
+        else:
+            zoom = 4.2
         postcode_rollup = (
             group.groupby("Postcode", as_index=False)
             .agg(
@@ -274,8 +276,7 @@ def main():
         fig.update_layout(
             height=560,
             margin=dict(l=0, r=0, t=40, b=0),
-            uirevision="postcode-map",
-            mapbox=dict(fitbounds="locations")
+            uirevision="postcode-map"
         )
         st.plotly_chart(
             fig,
