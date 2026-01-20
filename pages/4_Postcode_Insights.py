@@ -231,7 +231,7 @@ def main():
         </div>
     </div>
     """, unsafe_allow_html=True)
-    with st.expander("Metric glossary (plain English)", expanded=False):
+    with st.expander("Metric glossary", expanded=False):
         st.markdown("""
         - **Conversion Rate**: Referrals ÷ Leads. Higher means more leads turn into referrals.
         - **Opportunity Score**: Higher when leads are high and conversion is low (plus campaign density). Targets fast improvement areas.
@@ -338,6 +338,16 @@ def main():
                 np.nan
             )
 
+            region_view = "Dominant"
+            if map_mode == "Marketing Regions":
+                region_view = st.radio(
+                    "Region coverage view",
+                    ["Dominant", "Complete (overlap)"],
+                    horizontal=True,
+                    label_visibility="collapsed",
+                    key="postcode_region_view"
+                )
+
             if map_mode == "Marketing Regions" and "Dest_BuilderRegionKey" in df.columns:
                 mask_referral = df["is_referral"].fillna(False).astype(bool) if "is_referral" in df.columns else pd.Series(False, index=df.index)
                 mask_cross_payer = (
@@ -361,6 +371,11 @@ def main():
                         builder_flows["Dest_BuilderRegionKey"],
                         "Other"
                     )
+                    overlap = (
+                        builder_flows.groupby("Postcode", as_index=False)["Builder"]
+                        .nunique()
+                        .rename(columns={"Builder": "Builder_Count"})
+                    )
                     primary = (
                         builder_flows.groupby(["Postcode", "Builder"], as_index=False)["Referrals"]
                         .sum()
@@ -374,6 +389,7 @@ def main():
                         how="left",
                         suffixes=("_metric", "_primary")
                     )
+                    map_df = map_df.merge(overlap, on="Postcode", how="left")
                 else:
                     map_df = postcode_rollup.copy()
                     map_df["Primary Builder"] = "Unknown"
@@ -445,20 +461,60 @@ def main():
                 if "Primary Builder" not in map_df.columns or map_df["Primary Builder"].isna().all():
                     map_df["Primary Builder"] = "Unknown"
                 map_df["Primary Builder"] = map_df["Primary Builder"].fillna("Unknown").astype(str)
-                hover_cols = {c: True for c in ["Leads", "Referrals", "Campaigns"] if c in map_df.columns}
-                fig = px.choropleth_mapbox(
-                    map_df,
-                    geojson=geojson_filtered,
-                    locations="Postcode",
-                    featureidkey="properties.POA_CODE",
-                    color="Primary Builder",
-                    hover_data=hover_cols,
-                    mapbox_style="carto-positron",
-                    zoom=zoom,
-                    center=center,
-                    opacity=0.6,
-                    title="Marketing regions (dominant referral-serving builder)"
-                )
+                if region_view == "Complete (overlap)":
+                    map_df["Builder_Count"] = map_df.get("Builder_Count", 0).fillna(0).astype(int)
+                    def overlap_bucket(val):
+                        if val <= 1:
+                            return "1 builder"
+                        if val <= 3:
+                            return "2-3 builders"
+                        if val <= 5:
+                            return "4-5 builders"
+                        return "6+ builders"
+                    map_df["Overlap Bin"] = map_df["Builder_Count"].map(overlap_bucket)
+                    hover_cols = {c: True for c in ["Leads", "Referrals", "Campaigns", "Builder_Count"] if c in map_df.columns}
+                    fig = px.choropleth_mapbox(
+                        map_df,
+                        geojson=geojson_filtered,
+                        locations="Postcode",
+                        featureidkey="properties.POA_CODE",
+                        color="Overlap Bin",
+                        color_discrete_map={
+                            "1 builder": "#dbeafe",
+                            "2-3 builders": "#93c5fd",
+                            "4-5 builders": "#60a5fa",
+                            "6+ builders": "#2563eb"
+                        },
+                        hover_data=hover_cols,
+                        mapbox_style="carto-positron",
+                        zoom=zoom,
+                        center=center,
+                        opacity=0.6,
+                        title="Marketing regions (overlap of builders servicing referrals)"
+                    )
+                    overlap_hotspots = map_df[map_df["Builder_Count"] >= 3].copy()
+                    if not overlap_hotspots.empty:
+                        st.markdown("**Overlap hotspots (multiple builders competing)**")
+                        st.dataframe(
+                            overlap_hotspots[["Postcode", "Builder_Count", "Leads", "Referrals"]].head(25),
+                            hide_index=True,
+                            use_container_width=True
+                        )
+                else:
+                    hover_cols = {c: True for c in ["Leads", "Referrals", "Campaigns"] if c in map_df.columns}
+                    fig = px.choropleth_mapbox(
+                        map_df,
+                        geojson=geojson_filtered,
+                        locations="Postcode",
+                        featureidkey="properties.POA_CODE",
+                        color="Primary Builder",
+                        hover_data=hover_cols,
+                        mapbox_style="carto-positron",
+                        zoom=zoom,
+                        center=center,
+                        opacity=0.6,
+                        title="Marketing regions (dominant referral-serving builder)"
+                    )
             if not map_df.empty:
                 fig.update_layout(
                     height=560,
@@ -634,113 +690,113 @@ def main():
                         pd.to_numeric(seg_df[budget_col], errors="coerce").between(b_range[0], b_range[1])
                     ]
 
-            if seg_df.empty:
-                st.caption("No leads match the selected filters.")
-            else:
-                seg_df["lead_date"] = pd.to_datetime(seg_df["lead_date"], errors="coerce")
-                seg_df = seg_df.dropna(subset=["lead_date"])
-                lead_count = seg_df[lead_id_col].nunique() if lead_id_col else len(seg_df)
-                spend_total = seg_df[spend_col].sum() if spend_col else 0
-                cpl = spend_total / lead_count if lead_count > 0 else 0
+        if seg_df.empty:
+            st.caption("No leads match the selected filters.")
+        else:
+            seg_df["lead_date"] = pd.to_datetime(seg_df["lead_date"], errors="coerce")
+            seg_df = seg_df.dropna(subset=["lead_date"])
+            lead_count = seg_df[lead_id_col].nunique() if lead_id_col else len(seg_df)
+            spend_total = seg_df[spend_col].sum() if spend_col else 0
+            cpl = spend_total / lead_count if lead_count > 0 else 0
 
-                horizon_days = st.slider("Forecast horizon (days)", 7, 90, 30, step=1)
-                planned_spend = st.number_input("Planned spend ($)", min_value=0.0, value=5000.0, step=500.0)
-                ts_freq = st.radio("Trend period", ["Weekly", "Monthly"], horizontal=True)
-                period_freq = "W" if ts_freq == "Weekly" else "M"
+            horizon_days = st.slider("Forecast horizon (days)", 7, 90, 30, step=1)
+            planned_spend = st.number_input("Planned spend ($)", min_value=0.0, value=5000.0, step=500.0)
+            ts_freq = st.radio("Trend period", ["Weekly", "Monthly"], horizontal=True)
+            period_freq = "W" if ts_freq == "Weekly" else "M"
 
-                ts = (
-                    seg_df.assign(period=seg_df["lead_date"].dt.to_period(period_freq).dt.start_time)
-                    .groupby("period", as_index=False)
+            ts = (
+                seg_df.assign(period=seg_df["lead_date"].dt.to_period(period_freq).dt.start_time)
+                .groupby("period", as_index=False)
+                .agg(
+                    Leads=(lead_id_col, "nunique") if lead_id_col else ("lead_date", "size"),
+                    Spend=(spend_col, "sum") if spend_col else ("lead_date", "size")
+                )
+                .sort_values("period")
+            )
+            ts["CPL"] = np.where(ts["Leads"] > 0, ts["Spend"] / ts["Leads"], np.nan)
+            lookback = min(6, len(ts))
+            cpl_forecast = ts["CPL"].tail(lookback).mean() if lookback > 0 else cpl
+            cpl_forecast = cpl_forecast if cpl_forecast and cpl_forecast > 0 else cpl
+
+            end_date = seg_df["lead_date"].max()
+            recent_mask = seg_df["lead_date"] >= (end_date - pd.Timedelta(days=14))
+            prev_mask = (seg_df["lead_date"] < (end_date - pd.Timedelta(days=14))) & (seg_df["lead_date"] >= (end_date - pd.Timedelta(days=28)))
+            recent_leads = seg_df[recent_mask][lead_id_col].nunique() if lead_id_col else recent_mask.sum()
+            prev_leads = seg_df[prev_mask][lead_id_col].nunique() if lead_id_col else prev_mask.sum()
+            growth = (recent_leads - prev_leads) / prev_leads if prev_leads > 0 else 0
+            growth = float(np.clip(growth, -0.5, 0.5))
+            pace = recent_leads / 14 if recent_leads > 0 else 0
+            capacity_pace = pace * (1 + growth) * horizon_days
+            capacity_spend = planned_spend / cpl_forecast if cpl_forecast > 0 else 0
+            capacity = min(capacity_spend, capacity_pace) if capacity_pace > 0 else capacity_spend
+
+            st.markdown(f"""
+            <div class="kpi-row">
+                <div class="kpi"><div class="kpi-label">Region Leads</div><div class="kpi-value">{lead_count:,.0f}</div></div>
+                <div class="kpi"><div class="kpi-label">Current CPL</div><div class="kpi-value">${cpl:,.0f}</div></div>
+                <div class="kpi"><div class="kpi-label">Forecast CPL</div><div class="kpi-value">${cpl_forecast:,.0f}</div></div>
+                <div class="kpi"><div class="kpi-label">Capacity (Spend)</div><div class="kpi-value">{capacity_spend:,.0f} leads</div></div>
+                <div class="kpi"><div class="kpi-label">Capacity (Pace)</div><div class="kpi-value">{capacity_pace:,.0f} leads</div></div>
+                <div class="kpi"><div class="kpi-label">Recommended Cap</div><div class="kpi-value">{capacity:,.0f} leads</div></div>
+            </div>
+            """, unsafe_allow_html=True)
+
+            if not ts.empty:
+                fig_ts = px.line(
+                    ts,
+                    x="period",
+                    y="CPL",
+                    markers=True,
+                    title="CPL trend for selected region"
+                )
+                fig_ts.update_layout(height=280, margin=dict(l=0, r=0, t=40, b=0), yaxis_title="CPL")
+                st.plotly_chart(fig_ts, use_container_width=True, config={"displayModeBar": False})
+
+            if campaign_col:
+                mask_referral = seg_df["is_referral"].fillna(False).astype(bool) if "is_referral" in seg_df.columns else pd.Series(False, index=seg_df.index)
+                campaign_df = seg_df[mask_referral].copy() if mask_referral.any() else seg_df.copy()
+                camp = (
+                    campaign_df.groupby(campaign_col, as_index=False)
                     .agg(
                         Leads=(lead_id_col, "nunique") if lead_id_col else ("lead_date", "size"),
+                        Referrals=("is_referral", "sum") if "is_referral" in campaign_df.columns else ("lead_date", "size"),
                         Spend=(spend_col, "sum") if spend_col else ("lead_date", "size")
                     )
-                    .sort_values("period")
                 )
-                ts["CPL"] = np.where(ts["Leads"] > 0, ts["Spend"] / ts["Leads"], np.nan)
-                lookback = min(6, len(ts))
-                cpl_forecast = ts["CPL"].tail(lookback).mean() if lookback > 0 else cpl
-                cpl_forecast = cpl_forecast if cpl_forecast and cpl_forecast > 0 else cpl
+                camp["CPL"] = np.where(camp["Leads"] > 0, camp["Spend"] / camp["Leads"], np.nan)
+                camp["CPR"] = np.where(camp["Referrals"] > 0, camp["Spend"] / camp["Referrals"], np.nan)
+                camp = camp.sort_values(["Referrals", "Leads"], ascending=False).head(10)
 
-                end_date = seg_df["lead_date"].max()
-                recent_mask = seg_df["lead_date"] >= (end_date - pd.Timedelta(days=14))
-                prev_mask = (seg_df["lead_date"] < (end_date - pd.Timedelta(days=14))) & (seg_df["lead_date"] >= (end_date - pd.Timedelta(days=28)))
-                recent_leads = seg_df[recent_mask][lead_id_col].nunique() if lead_id_col else recent_mask.sum()
-                prev_leads = seg_df[prev_mask][lead_id_col].nunique() if lead_id_col else prev_mask.sum()
-                growth = (recent_leads - prev_leads) / prev_leads if prev_leads > 0 else 0
-                growth = float(np.clip(growth, -0.5, 0.5))
-                pace = recent_leads / 14 if recent_leads > 0 else 0
-                capacity_pace = pace * (1 + growth) * horizon_days
-                capacity_spend = planned_spend / cpl_forecast if cpl_forecast > 0 else 0
-                capacity = min(capacity_spend, capacity_pace) if capacity_pace > 0 else capacity_spend
+                st.markdown("**Recommended campaigns for this region**")
+                st.dataframe(
+                    camp.rename(columns={campaign_col: "Campaign"}),
+                    hide_index=True,
+                    use_container_width=True
+                )
 
-                st.markdown(f"""
-                <div class="kpi-row">
-                    <div class="kpi"><div class="kpi-label">Region Leads</div><div class="kpi-value">{lead_count:,.0f}</div></div>
-                    <div class="kpi"><div class="kpi-label">Current CPL</div><div class="kpi-value">${cpl:,.0f}</div></div>
-                    <div class="kpi"><div class="kpi-label">Forecast CPL</div><div class="kpi-value">${cpl_forecast:,.0f}</div></div>
-                    <div class="kpi"><div class="kpi-label">Capacity (Spend)</div><div class="kpi-value">{capacity_spend:,.0f} leads</div></div>
-                    <div class="kpi"><div class="kpi-label">Capacity (Pace)</div><div class="kpi-value">{capacity_pace:,.0f} leads</div></div>
-                    <div class="kpi"><div class="kpi-label">Recommended Cap</div><div class="kpi-value">{capacity:,.0f} leads</div></div>
-                </div>
-                """, unsafe_allow_html=True)
-
-                if not ts.empty:
-                    fig_ts = px.line(
-                        ts,
-                        x="period",
-                        y="CPL",
-                        markers=True,
-                        title="CPL trend for selected region"
-                    )
-                    fig_ts.update_layout(height=280, margin=dict(l=0, r=0, t=40, b=0), yaxis_title="CPL")
-                    st.plotly_chart(fig_ts, use_container_width=True, config={"displayModeBar": False})
-
-                if campaign_col:
-                    mask_referral = seg_df["is_referral"].fillna(False).astype(bool) if "is_referral" in seg_df.columns else pd.Series(False, index=seg_df.index)
-                    campaign_df = seg_df[mask_referral].copy() if mask_referral.any() else seg_df.copy()
-                    camp = (
-                        campaign_df.groupby(campaign_col, as_index=False)
-                        .agg(
-                            Leads=(lead_id_col, "nunique") if lead_id_col else ("lead_date", "size"),
-                            Referrals=("is_referral", "sum") if "is_referral" in campaign_df.columns else ("lead_date", "size"),
-                            Spend=(spend_col, "sum") if spend_col else ("lead_date", "size")
-                        )
-                    )
-                    camp["CPL"] = np.where(camp["Leads"] > 0, camp["Spend"] / camp["Leads"], np.nan)
-                    camp["CPR"] = np.where(camp["Referrals"] > 0, camp["Spend"] / camp["Referrals"], np.nan)
-                    camp = camp.sort_values(["Referrals", "Leads"], ascending=False).head(10)
-
-                    st.markdown("**Recommended campaigns for this region**")
-                    st.dataframe(
-                        camp.rename(columns={campaign_col: "Campaign"}),
-                        hide_index=True,
-                        use_container_width=True
-                    )
-
-                    comp_fields = [
-                        (budget_col, "Budget"),
-                        (finance_col, "Finance Status"),
-                        (timeframe_col, "Timeframe"),
-                        (land_col, "Do you have land"),
-                        (house_col, "House type"),
-                        (beds_col, "Bedrooms")
-                    ]
-                    if not camp.empty:
-                        comp_rows = []
-                        top_campaigns = camp[campaign_col].head(5).tolist()
-                        for c in top_campaigns:
-                            c_df = campaign_df[campaign_df[campaign_col] == c]
-                            row = {"Campaign": c}
-                            for col, label in comp_fields:
-                                if col and col in c_df.columns:
-                                    top_val = c_df[col].dropna().astype(str).value_counts().head(1)
-                                    if not top_val.empty:
-                                        row[label] = f"{top_val.index[0]} ({top_val.iloc[0]})"
-                            comp_rows.append(row)
-                        if comp_rows:
-                            st.markdown("**Campaign composition snapshot**")
-                            st.dataframe(pd.DataFrame(comp_rows), hide_index=True, use_container_width=True)
+                comp_fields = [
+                    (budget_col, "Budget"),
+                    (finance_col, "Finance Status"),
+                    (timeframe_col, "Timeframe"),
+                    (land_col, "Do you have land"),
+                    (house_col, "House type"),
+                    (beds_col, "Bedrooms")
+                ]
+                if not camp.empty:
+                    comp_rows = []
+                    top_campaigns = camp[campaign_col].head(5).tolist()
+                    for c in top_campaigns:
+                        c_df = campaign_df[campaign_df[campaign_col] == c]
+                        row = {"Campaign": c}
+                        for col, label in comp_fields:
+                            if col and col in c_df.columns:
+                                top_val = c_df[col].dropna().astype(str).value_counts().head(1)
+                                if not top_val.empty:
+                                    row[label] = f"{top_val.index[0]} ({top_val.iloc[0]})"
+                        comp_rows.append(row)
+                    if comp_rows:
+                        st.markdown("**Campaign composition snapshot**")
+                        st.dataframe(pd.DataFrame(comp_rows), hide_index=True, use_container_width=True)
 
     with tabs[3]:
         st.markdown("""
