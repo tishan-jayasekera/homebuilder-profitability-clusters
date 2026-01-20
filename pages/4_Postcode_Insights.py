@@ -377,11 +377,211 @@ def main():
         )
         st.dataframe(suburb_list, hide_index=True, use_container_width=True)
 
-    # Section 3: Regional benchmarks and outliers
+    # Section 3: Region forecast & recommendations
     st.markdown("""
     <div class="section">
         <div class="section-header">
             <span class="section-num">3</span>
+            <span class="section-title">Region Forecast & Recommendations</span>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    if group.empty:
+        st.caption("Not enough data to build a regional forecast.")
+    else:
+        region_level = st.radio(
+            "Region level",
+            ["Postcode", "Suburb"],
+            horizontal=True
+        )
+        if region_level == "Postcode":
+            region_options = sorted(group["Postcode"].dropna().astype(str).unique().tolist())
+            region_value = st.selectbox("Select postcode", region_options)
+            region_df = df[df[postcode_col].astype(str).str.zfill(4) == str(region_value).zfill(4)].copy()
+        else:
+            region_map = (
+                group[["Postcode", "Suburb"]]
+                .dropna()
+                .drop_duplicates()
+            )
+            region_map["Label"] = region_map["Suburb"] + " (" + region_map["Postcode"] + ")"
+            region_options = region_map["Label"].sort_values().tolist()
+            region_value = st.selectbox("Select suburb", region_options)
+            selected = region_map[region_map["Label"] == region_value]
+            if not selected.empty:
+                sel_postcode = selected["Postcode"].iloc[0]
+                sel_suburb = selected["Suburb"].iloc[0]
+                region_df = df[
+                    (df[postcode_col].astype(str).str.zfill(4) == str(sel_postcode).zfill(4)) &
+                    (df[suburb_col].str.upper() == str(sel_suburb).upper())
+                ].copy()
+            else:
+                region_df = df.iloc[0:0].copy()
+
+        budget_col = _find_col(df.columns, ["Budget"])
+        finance_col = _find_col(df.columns, ["Finance Status"])
+        timeframe_col = _find_col(df.columns, ["Timeframe"])
+        land_col = _find_col(df.columns, ["Do you have land"])
+        house_col = _find_col(df.columns, ["House type"])
+        beds_col = _find_col(df.columns, ["IBN_Bedrooms"])
+
+        st.markdown("**Targeting filters**")
+        f_cols = st.columns(3)
+        seg_df = region_df.copy()
+
+        def apply_filter(col_name, label, col_idx):
+            nonlocal seg_df
+            if not col_name or col_name not in seg_df.columns:
+                return
+            options = seg_df[col_name].dropna().astype(str).unique().tolist()
+            if not options:
+                return
+            with f_cols[col_idx]:
+                selected = st.multiselect(label, sorted(options))
+            if selected:
+                seg_df = seg_df[seg_df[col_name].astype(str).isin(selected)]
+
+        apply_filter(finance_col, "Finance Status", 0)
+        apply_filter(timeframe_col, "Timeframe", 1)
+        apply_filter(land_col, "Do you have land", 2)
+
+        f_cols2 = st.columns(3)
+        with f_cols2[0]:
+            if house_col and house_col in seg_df.columns:
+                options = seg_df[house_col].dropna().astype(str).unique().tolist()
+                house_sel = st.multiselect("House type", sorted(options)) if options else []
+                if house_sel:
+                    seg_df = seg_df[seg_df[house_col].astype(str).isin(house_sel)]
+        with f_cols2[1]:
+            if beds_col and beds_col in seg_df.columns:
+                options = seg_df[beds_col].dropna().astype(str).unique().tolist()
+                bed_sel = st.multiselect("Bedrooms", sorted(options)) if options else []
+                if bed_sel:
+                    seg_df = seg_df[seg_df[beds_col].astype(str).isin(bed_sel)]
+        with f_cols2[2]:
+            if budget_col and budget_col in seg_df.columns:
+                budget_vals = pd.to_numeric(seg_df[budget_col], errors="coerce").dropna()
+                if not budget_vals.empty:
+                    min_b, max_b = float(budget_vals.min()), float(budget_vals.max())
+                    b_range = st.slider("Budget range", min_b, max_b, (min_b, max_b))
+                    seg_df = seg_df[
+                        pd.to_numeric(seg_df[budget_col], errors="coerce").between(b_range[0], b_range[1])
+                    ]
+
+        if seg_df.empty:
+            st.caption("No leads match the selected filters.")
+        else:
+            seg_df["lead_date"] = pd.to_datetime(seg_df["lead_date"], errors="coerce")
+            seg_df = seg_df.dropna(subset=["lead_date"])
+            lead_count = seg_df[lead_id_col].nunique() if lead_id_col else len(seg_df)
+            spend_total = seg_df[spend_col].sum() if spend_col else 0
+            cpl = spend_total / lead_count if lead_count > 0 else 0
+
+            horizon_days = st.slider("Forecast horizon (days)", 7, 90, 30, step=1)
+            planned_spend = st.number_input("Planned spend ($)", min_value=0.0, value=5000.0, step=500.0)
+            ts_freq = st.radio("Trend period", ["Weekly", "Monthly"], horizontal=True)
+            period_freq = "W" if ts_freq == "Weekly" else "M"
+
+            ts = (
+                seg_df.assign(period=seg_df["lead_date"].dt.to_period(period_freq).dt.start_time)
+                .groupby("period", as_index=False)
+                .agg(
+                    Leads=(lead_id_col, "nunique") if lead_id_col else ("lead_date", "size"),
+                    Spend=(spend_col, "sum") if spend_col else ("lead_date", "size")
+                )
+                .sort_values("period")
+            )
+            ts["CPL"] = np.where(ts["Leads"] > 0, ts["Spend"] / ts["Leads"], np.nan)
+            lookback = min(6, len(ts))
+            cpl_forecast = ts["CPL"].tail(lookback).mean() if lookback > 0 else cpl
+            cpl_forecast = cpl_forecast if cpl_forecast and cpl_forecast > 0 else cpl
+
+            end_date = seg_df["lead_date"].max()
+            recent_mask = seg_df["lead_date"] >= (end_date - pd.Timedelta(days=14))
+            prev_mask = (seg_df["lead_date"] < (end_date - pd.Timedelta(days=14))) & (seg_df["lead_date"] >= (end_date - pd.Timedelta(days=28)))
+            recent_leads = seg_df[recent_mask][lead_id_col].nunique() if lead_id_col else recent_mask.sum()
+            prev_leads = seg_df[prev_mask][lead_id_col].nunique() if lead_id_col else prev_mask.sum()
+            growth = (recent_leads - prev_leads) / prev_leads if prev_leads > 0 else 0
+            growth = float(np.clip(growth, -0.5, 0.5))
+            pace = recent_leads / 14 if recent_leads > 0 else 0
+            capacity_pace = pace * (1 + growth) * horizon_days
+            capacity_spend = planned_spend / cpl_forecast if cpl_forecast > 0 else 0
+            capacity = min(capacity_spend, capacity_pace) if capacity_pace > 0 else capacity_spend
+
+            st.markdown(f"""
+            <div class="kpi-row">
+                <div class="kpi"><div class="kpi-label">Region Leads</div><div class="kpi-value">{lead_count:,.0f}</div></div>
+                <div class="kpi"><div class="kpi-label">Current CPL</div><div class="kpi-value">${cpl:,.0f}</div></div>
+                <div class="kpi"><div class="kpi-label">Forecast CPL</div><div class="kpi-value">${cpl_forecast:,.0f}</div></div>
+                <div class="kpi"><div class="kpi-label">Capacity (Spend)</div><div class="kpi-value">{capacity_spend:,.0f} leads</div></div>
+                <div class="kpi"><div class="kpi-label">Capacity (Pace)</div><div class="kpi-value">{capacity_pace:,.0f} leads</div></div>
+                <div class="kpi"><div class="kpi-label">Recommended Cap</div><div class="kpi-value">{capacity:,.0f} leads</div></div>
+            </div>
+            """, unsafe_allow_html=True)
+
+            if not ts.empty:
+                fig_ts = px.line(
+                    ts,
+                    x="period",
+                    y="CPL",
+                    markers=True,
+                    title="CPL trend for selected region"
+                )
+                fig_ts.update_layout(height=280, margin=dict(l=0, r=0, t=40, b=0), yaxis_title="CPL")
+                st.plotly_chart(fig_ts, use_container_width=True, config={"displayModeBar": False})
+
+            if campaign_col:
+                mask_referral = seg_df["is_referral"].fillna(False).astype(bool) if "is_referral" in seg_df.columns else pd.Series(False, index=seg_df.index)
+                campaign_df = seg_df[mask_referral].copy() if mask_referral.any() else seg_df.copy()
+                camp = (
+                    campaign_df.groupby(campaign_col, as_index=False)
+                    .agg(
+                        Leads=(lead_id_col, "nunique") if lead_id_col else ("lead_date", "size"),
+                        Referrals=("is_referral", "sum") if "is_referral" in campaign_df.columns else ("lead_date", "size"),
+                        Spend=(spend_col, "sum") if spend_col else ("lead_date", "size")
+                    )
+                )
+                camp["CPL"] = np.where(camp["Leads"] > 0, camp["Spend"] / camp["Leads"], np.nan)
+                camp["CPR"] = np.where(camp["Referrals"] > 0, camp["Spend"] / camp["Referrals"], np.nan)
+                camp = camp.sort_values(["Referrals", "Leads"], ascending=False).head(10)
+
+                st.markdown("**Recommended campaigns for this region**")
+                st.dataframe(
+                    camp.rename(columns={campaign_col: "Campaign"}),
+                    hide_index=True,
+                    use_container_width=True
+                )
+
+                comp_fields = [
+                    (budget_col, "Budget"),
+                    (finance_col, "Finance Status"),
+                    (timeframe_col, "Timeframe"),
+                    (land_col, "Do you have land"),
+                    (house_col, "House type"),
+                    (beds_col, "Bedrooms")
+                ]
+                if not camp.empty:
+                    comp_rows = []
+                    top_campaigns = camp[campaign_col].head(5).tolist()
+                    for c in top_campaigns:
+                        c_df = campaign_df[campaign_df[campaign_col] == c]
+                        row = {"Campaign": c}
+                        for col, label in comp_fields:
+                            if col and col in c_df.columns:
+                                top_val = c_df[col].dropna().astype(str).value_counts().head(1)
+                                if not top_val.empty:
+                                    row[label] = f"{top_val.index[0]} ({top_val.iloc[0]})"
+                        comp_rows.append(row)
+                    if comp_rows:
+                        st.markdown("**Campaign composition snapshot**")
+                        st.dataframe(pd.DataFrame(comp_rows), hide_index=True, use_container_width=True)
+
+    # Section 4: Regional benchmarks and outliers
+    st.markdown("""
+    <div class="section">
+        <div class="section-header">
+            <span class="section-num">4</span>
             <span class="section-title">Regional Benchmarks</span>
         </div>
     </div>
@@ -427,11 +627,11 @@ def main():
             use_container_width=True
         )
 
-    # Section 4: Media spend optimization by region
+    # Section 5: Media spend optimization by region
     st.markdown("""
     <div class="section">
         <div class="section-header">
-            <span class="section-num">4</span>
+            <span class="section-num">5</span>
             <span class="section-title">Media Spend Optimization Plan</span>
         </div>
     </div>
@@ -515,11 +715,11 @@ def main():
             use_container_width=True
         )
 
-    # Section 5: Campaign overlap diagnostics
+    # Section 6: Campaign overlap diagnostics
     st.markdown("""
     <div class="section">
         <div class="section-header">
-            <span class="section-num">5</span>
+            <span class="section-num">6</span>
             <span class="section-title">Campaign Overlap Diagnostics</span>
         </div>
     </div>
@@ -559,11 +759,11 @@ def main():
         st.markdown("**Top campaigns in high-overlap areas**")
         st.dataframe(campaign_list, hide_index=True, use_container_width=True)
 
-    # Section 6: Creative guidance
+    # Section 7: Creative guidance
     st.markdown("""
     <div class="section">
         <div class="section-header">
-            <span class="section-num">6</span>
+            <span class="section-num">7</span>
             <span class="section-title">Creative Guidance</span>
         </div>
     </div>
