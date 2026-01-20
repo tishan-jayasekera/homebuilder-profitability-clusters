@@ -1097,7 +1097,7 @@ def main():
                     comp_rows = []
                     top_campaigns = camp[campaign_col].head(5).tolist()
                     for c in top_campaigns:
-                        c_df = campaign_df[campaign_df[campaign_col] == c]
+                        c_df = seg_df[seg_df[campaign_col] == c]
                         row = {"Campaign": c}
                         for col, label in comp_fields:
                             if col and col in c_df.columns:
