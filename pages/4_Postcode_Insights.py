@@ -928,6 +928,25 @@ def main():
                 st.caption(f"Binding constraint: {binding}")
                 st.markdown(f"**Spend to hit target:** ${required_spend:,.0f} for {target_leads:,.0f} leads")
 
+                horizon_table = pd.DataFrame([
+                    {"Horizon (days)": 7, "Pace Capacity (leads)": pace * (1 + growth) * 7},
+                    {"Horizon (days)": 30, "Pace Capacity (leads)": pace * (1 + growth) * 30},
+                    {"Horizon (days)": 60, "Pace Capacity (leads)": pace * (1 + growth) * 60},
+                    {"Horizon (days)": horizon_days, "Pace Capacity (leads)": capacity_pace}
+                ])
+                st.markdown("**Horizon impact on capacity**")
+                st.dataframe(horizon_table, hide_index=True, use_container_width=True)
+
+                horizon_fig = go.Figure()
+                horizon_fig.add_trace(go.Scatter(
+                    x=horizon_table["Horizon (days)"],
+                    y=horizon_table["Pace Capacity (leads)"],
+                    mode="lines+markers",
+                    name="Pace capacity"
+                ))
+                horizon_fig.update_layout(height=220, margin=dict(l=0, r=0, t=40, b=0), yaxis_title="Leads", title="Capacity grows with the forecast horizon")
+                st.plotly_chart(horizon_fig, use_container_width=True, config={"displayModeBar": False})
+
                 if not ts.empty:
                     low = max(cpl_forecast - (cpl_std or 0), 0)
                     high = cpl_forecast + (cpl_std or 0)
