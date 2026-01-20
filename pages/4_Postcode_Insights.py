@@ -6,6 +6,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.express as px
+import plotly.graph_objects as go
 import json
 import sys
 from pathlib import Path
@@ -802,10 +803,19 @@ def main():
             spend_total = seg_df[spend_col].sum() if spend_col else 0
             cpl = spend_total / lead_count if lead_count > 0 else 0
 
-            horizon_days = st.slider("Forecast horizon (days)", 7, 90, 30, step=1)
-            planned_spend = st.number_input("Planned spend ($)", min_value=0.0, value=5000.0, step=500.0)
-            ts_freq = st.radio("Trend period", ["Weekly", "Monthly"], horizontal=True)
-            period_freq = "W" if ts_freq == "Weekly" else "M"
+            controls_col, output_col = st.columns([1, 2])
+            with controls_col:
+                horizon_days = st.slider("Forecast horizon (days)", 7, 90, 30, step=1)
+                planned_spend = st.number_input("Planned spend ($)", min_value=0.0, value=5000.0, step=500.0)
+                target_leads = st.number_input("Target leads", min_value=0.0, value=100.0, step=10.0)
+                boost_spend = st.number_input(
+                    "Stretch spend ($)",
+                    min_value=0.0,
+                    value=max(5000.0, planned_spend * 1.5),
+                    step=500.0
+                )
+                ts_freq = st.radio("Trend period", ["Weekly", "Monthly"], horizontal=True)
+                period_freq = "W" if ts_freq == "Weekly" else "M"
 
             ts = (
                 seg_df.assign(period=seg_df["lead_date"].dt.to_period(period_freq).dt.start_time)
@@ -820,6 +830,7 @@ def main():
             lookback = min(6, len(ts))
             cpl_forecast = ts["CPL"].tail(lookback).mean() if lookback > 0 else cpl
             cpl_forecast = cpl_forecast if cpl_forecast and cpl_forecast > 0 else cpl
+            cpl_std = ts["CPL"].tail(lookback).std() if lookback > 1 else 0
 
             end_date = seg_df["lead_date"].max()
             recent_mask = seg_df["lead_date"] >= (end_date - pd.Timedelta(days=14))
@@ -832,28 +843,68 @@ def main():
             capacity_pace = pace * (1 + growth) * horizon_days
             capacity_spend = planned_spend / cpl_forecast if cpl_forecast > 0 else 0
             capacity = min(capacity_spend, capacity_pace) if capacity_pace > 0 else capacity_spend
+            binding = "Pace-limited" if capacity_pace < capacity_spend else "Spend-limited"
+            required_spend = target_leads * cpl_forecast if cpl_forecast > 0 else 0
+            boost_capacity_spend = boost_spend / cpl_forecast if cpl_forecast > 0 else 0
+            boost_capacity = min(boost_capacity_spend, capacity_pace) if capacity_pace > 0 else boost_capacity_spend
 
-            st.markdown(f"""
-            <div class="kpi-row">
-                <div class="kpi"><div class="kpi-label">Region Leads</div><div class="kpi-value">{lead_count:,.0f}</div></div>
-                <div class="kpi"><div class="kpi-label">Current CPL</div><div class="kpi-value">${cpl:,.0f}</div></div>
-                <div class="kpi"><div class="kpi-label">Forecast CPL</div><div class="kpi-value">${cpl_forecast:,.0f}</div></div>
-                <div class="kpi"><div class="kpi-label">Capacity (Spend)</div><div class="kpi-value">{capacity_spend:,.0f} leads</div></div>
-                <div class="kpi"><div class="kpi-label">Capacity (Pace)</div><div class="kpi-value">{capacity_pace:,.0f} leads</div></div>
-                <div class="kpi"><div class="kpi-label">Recommended Cap</div><div class="kpi-value">{capacity:,.0f} leads</div></div>
-            </div>
-            """, unsafe_allow_html=True)
+            with output_col:
+                st.markdown(f"""
+                <div class="kpi-row">
+                    <div class="kpi"><div class="kpi-label">Region Leads</div><div class="kpi-value">{lead_count:,.0f}</div></div>
+                    <div class="kpi"><div class="kpi-label">Current CPL</div><div class="kpi-value">${cpl:,.0f}</div></div>
+                    <div class="kpi"><div class="kpi-label">Forecast CPL</div><div class="kpi-value">${cpl_forecast:,.0f}</div></div>
+                    <div class="kpi"><div class="kpi-label">Capacity (Spend)</div><div class="kpi-value">{capacity_spend:,.0f} leads</div></div>
+                    <div class="kpi"><div class="kpi-label">Capacity (Pace)</div><div class="kpi-value">{capacity_pace:,.0f} leads</div></div>
+                    <div class="kpi"><div class="kpi-label">Recommended Cap</div><div class="kpi-value">{capacity:,.0f} leads</div></div>
+                </div>
+                """, unsafe_allow_html=True)
+                st.caption(f"Binding constraint: {binding}")
+                st.markdown(f"**Spend to hit target:** ${required_spend:,.0f} for {target_leads:,.0f} leads")
 
-            if not ts.empty:
-                fig_ts = px.line(
-                    ts,
-                    x="period",
-                    y="CPL",
-                    markers=True,
-                    title="CPL trend for selected region"
-                )
-                fig_ts.update_layout(height=280, margin=dict(l=0, r=0, t=40, b=0), yaxis_title="CPL")
-                st.plotly_chart(fig_ts, use_container_width=True, config={"displayModeBar": False})
+                if not ts.empty:
+                    low = max(cpl_forecast - (cpl_std or 0), 0)
+                    high = cpl_forecast + (cpl_std or 0)
+                    fig_ts = go.Figure()
+                    fig_ts.add_trace(go.Scatter(
+                        x=ts["period"],
+                        y=ts["CPL"],
+                        mode="lines+markers",
+                        name="Actual CPL"
+                    ))
+                    fig_ts.add_trace(go.Scatter(
+                        x=ts["period"],
+                        y=[cpl_forecast] * len(ts),
+                        mode="lines",
+                        name="Forecast CPL",
+                        line=dict(dash="dash")
+                    ))
+                    fig_ts.add_trace(go.Scatter(
+                        x=ts["period"],
+                        y=[high] * len(ts),
+                        mode="lines",
+                        name="Range",
+                        line=dict(width=0),
+                        showlegend=False
+                    ))
+                    fig_ts.add_trace(go.Scatter(
+                        x=ts["period"],
+                        y=[low] * len(ts),
+                        mode="lines",
+                        fill="tonexty",
+                        name="CPL range",
+                        line=dict(width=0),
+                        opacity=0.2
+                    ))
+                    fig_ts.update_layout(height=280, margin=dict(l=0, r=0, t=40, b=0), yaxis_title="CPL")
+                    st.plotly_chart(fig_ts, use_container_width=True, config={"displayModeBar": False})
+
+                scenario = pd.DataFrame([
+                    {"Scenario": "Planned", "Spend": planned_spend, "Capacity (Spend)": capacity_spend, "Recommended Cap": capacity, "Binding": binding},
+                    {"Scenario": "Stretch", "Spend": boost_spend, "Capacity (Spend)": boost_capacity_spend, "Recommended Cap": boost_capacity, "Binding": binding}
+                ])
+                st.markdown("**Scenario comparison**")
+                st.dataframe(scenario, hide_index=True, use_container_width=True)
 
             if campaign_col:
                 mask_referral = seg_df["is_referral"].fillna(False).astype(bool) if "is_referral" in seg_df.columns else pd.Series(False, index=seg_df.index)
