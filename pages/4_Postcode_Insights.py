@@ -106,6 +106,10 @@ def main():
         dates = pd.to_datetime(events['lead_date'], errors='coerce').dropna()
         min_d, max_d = dates.min().date(), dates.max().date()
         date_range = st.date_input("Date Range", value=(min_d, max_d))
+        if isinstance(date_range, (list, tuple)) and len(date_range) == 2 and all(date_range):
+            start_d, end_d = date_range[0], date_range[1]
+        else:
+            start_d, end_d = min_d, max_d
         min_leads = st.slider("Min leads per postcode", 1, 100, 10, step=1)
         zone_method = st.radio(
             "Zone thresholds",
@@ -113,20 +117,27 @@ def main():
             horizontal=False
         )
         target_conv = st.slider("Target conversion rate", 0.01, 0.5, 0.15, step=0.01)
-        builder_filter = []
-        if "Dest_BuilderRegionKey" in events.columns:
-            builder_options = sorted(events["Dest_BuilderRegionKey"].dropna().unique().tolist())
-            builder_filter = st.multiselect("Builders (marketing regions)", builder_options)
         if postcode_meta is not None and not postcode_meta.empty:
             state_options = sorted(postcode_meta["State"].unique().tolist())
             state_filter = st.multiselect("State/Region", state_options, default=state_options)
         else:
             state_filter = []
-
-    if isinstance(date_range, (list, tuple)) and len(date_range) == 2 and all(date_range):
-        start_d, end_d = date_range[0], date_range[1]
-    else:
-        start_d, end_d = min_d, max_d
+        builder_filter = []
+        if "Dest_BuilderRegionKey" in events.columns:
+            tmp = events.copy()
+            tmp = tmp[(tmp['lead_date'] >= pd.Timestamp(start_d)) & (tmp['lead_date'] <= pd.Timestamp(end_d))]
+            tmp[postcode_col] = tmp[postcode_col].astype(str).str.strip().replace({"nan": np.nan, "": np.nan})
+            tmp[postcode_col] = tmp[postcode_col].str.replace(r"\.0$", "", regex=True).str.zfill(4)
+            if state_filter and postcode_meta is not None and not postcode_meta.empty:
+                state_map = postcode_meta[["Postcode", "State"]].drop_duplicates()
+                tmp = tmp.merge(state_map, left_on=postcode_col, right_on="Postcode", how="left")
+                tmp = tmp[tmp["State"].isin(state_filter)]
+            builder_options = sorted(tmp["Dest_BuilderRegionKey"].dropna().unique().tolist())
+            builder_filter = st.multiselect(
+                "Builders (marketing regions)",
+                builder_options,
+                key="builder_filter"
+            )
 
     df = events.copy()
     df = df[(df['lead_date'] >= pd.Timestamp(start_d)) & (df['lead_date'] <= pd.Timestamp(end_d))]
