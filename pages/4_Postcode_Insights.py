@@ -1321,31 +1321,11 @@ def main():
                 use_container_width=True
             )
 
-            st.markdown("**Regional composition snapshot**")
-            comp_state = st.selectbox(
-                "Select a state to review composition",
-                sorted(df["State"].dropna().unique().tolist())
-            )
-            comp_df = df[df["State"] == comp_state].copy()
+            st.markdown("**Regional composition by state**")
+            comp_df = df[df["State"].notna()].copy()
             if comp_df.empty:
-                st.caption("No events for the selected state.")
+                st.caption("No state data available for composition.")
             else:
-                state_events = len(comp_df)
-                state_leads = (~comp_df["is_referral_bool"]).sum()
-                state_refs = comp_df["is_referral_bool"].sum()
-                state_cpr = comp_df["_event_spend"].sum() / max(1, state_events)
-                state_ref_rate = state_refs / max(1, state_leads)
-
-                st.markdown(f"""
-                <div class="kpi-row">
-                    <div class="kpi"><div class="kpi-label">Events</div><div class="kpi-value">{state_events:,.0f}</div></div>
-                    <div class="kpi"><div class="kpi-label">Leads</div><div class="kpi-value">{state_leads:,.0f}</div></div>
-                    <div class="kpi"><div class="kpi-label">Referrals</div><div class="kpi-value">{state_refs:,.0f}</div></div>
-                    <div class="kpi"><div class="kpi-label">Referral Rate</div><div class="kpi-value">{state_ref_rate:.0%}</div></div>
-                    <div class="kpi"><div class="kpi-label">Avg CPR</div><div class="kpi-value">${state_cpr:,.0f}</div></div>
-                </div>
-                """, unsafe_allow_html=True)
-
                 finance_col = _find_col(comp_df.columns, ["Finance Status"])
                 timeframe_col = _find_col(comp_df.columns, ["Timeframe"])
                 land_col = _find_col(comp_df.columns, ["Do you have land"])
@@ -1353,93 +1333,146 @@ def main():
                 beds_col = _find_col(comp_df.columns, ["IBN_Bedrooms"])
                 budget_col = _find_col(comp_df.columns, ["Budget"])
 
-                def composition_table(series, label):
+                def state_share_table(series, label):
                     if series is None:
-                        return pd.DataFrame(columns=[label, "Events", "Share"])
-                    counts = series.fillna("Unknown").astype(str).value_counts(dropna=False)
-                    out = counts.reset_index()
-                    out.columns = [label, "Events"]
-                    out["Share"] = out["Events"] / max(1, out["Events"].sum())
-                    return out
+                        return pd.DataFrame(columns=["State", label, "Events", "Share"])
+                    tmp = pd.DataFrame({
+                        "State": comp_df["State"],
+                        label: series.fillna("Unknown").astype(str)
+                    })
+                    counts = (
+                        tmp.groupby(["State", label], as_index=False)
+                        .size()
+                        .rename(columns={"size": "Events"})
+                    )
+                    totals = counts.groupby("State")["Events"].transform("sum")
+                    counts["Share"] = counts["Events"] / totals
+                    return counts
 
-                def budget_bins(series):
-                    if series is None:
-                        return pd.DataFrame(columns=["Budget range", "Events", "Share"])
-                    values = pd.to_numeric(series, errors="coerce").dropna()
-                    if values.empty:
-                        return pd.DataFrame(columns=["Budget range", "Events", "Share"])
-                    quantiles = values.quantile([0, 0.25, 0.5, 0.75, 1]).unique()
-                    if len(quantiles) < 2:
-                        return pd.DataFrame(columns=["Budget range", "Events", "Share"])
-                    bins = pd.cut(values, bins=quantiles, include_lowest=True)
-                    return composition_table(bins.astype(str), "Budget range")
-
-                def comp_chart(df_in, label, color):
+                def state_stack_chart(df_in, label, color_seq):
                     if df_in.empty:
                         return None
-                    df_top = df_in.sort_values("Events", ascending=False).head(6).copy()
-                    if len(df_in) > 6:
-                        other = pd.DataFrame({
-                            label: ["Other"],
-                            "Events": [df_in["Events"].sum() - df_top["Events"].sum()],
-                            "Share": [df_in["Share"].sum() - df_top["Share"].sum()]
-                        })
-                        df_top = pd.concat([df_top, other], ignore_index=True)
+                    top = (
+                        df_in.groupby(label)["Events"].sum()
+                        .sort_values(ascending=False)
+                        .head(7)
+                        .index
+                    )
+                    df_plot = df_in.copy()
+                    df_plot[label] = np.where(df_plot[label].isin(top), df_plot[label], "Other")
+                    df_plot = (
+                        df_plot.groupby(["State", label], as_index=False)
+                        .agg(Events=("Events", "sum"))
+                    )
+                    totals = df_plot.groupby("State")["Events"].transform("sum")
+                    df_plot["Share"] = df_plot["Events"] / totals
                     fig = px.bar(
-                        df_top,
-                        x="Share",
-                        y=label,
-                        orientation="h",
-                        text=df_top["Share"].map(lambda v: f"{v:.0%}"),
-                        color_discrete_sequence=[color]
+                        df_plot,
+                        x="State",
+                        y="Share",
+                        color=label,
+                        barmode="stack",
+                        color_discrete_sequence=color_seq,
+                        hover_data={"Events": ":,.0f", "Share": ":.0%"}
                     )
                     fig.update_layout(
-                        height=260,
-                        margin=dict(l=0, r=0, t=30, b=0),
-                        xaxis_title="Share of events",
-                        yaxis_title=None,
-                        showlegend=False
+                        height=380,
+                        margin=dict(l=0, r=0, t=40, b=0),
+                        yaxis_title="Share of events",
+                        xaxis_title=None,
+                        legend_title=label
                     )
-                    fig.update_xaxes(tickformat=".0%")
-                    fig.update_traces(textposition="outside", cliponaxis=False, hovertemplate="%{y}<br>Events: %{customdata[0]:,.0f}<br>Share: %{x:.0%}")
-                    fig.data[0].customdata = np.stack([df_top["Events"]], axis=-1)
+                    fig.update_yaxes(tickformat=".0%")
                     return fig
 
-                palette = ["#2563eb", "#0ea5e9", "#6366f1", "#10b981", "#f97316", "#ef4444"]
-                c1, c2, c3 = st.columns(3)
-                with c1:
+                palette = ["#2563eb", "#0ea5e9", "#6366f1", "#10b981", "#f97316", "#ef4444", "#14b8a6", "#f59e0b"]
+                comp_tabs = st.tabs([
+                    "Finance Status",
+                    "Timeframe",
+                    "Do you have land",
+                    "House type",
+                    "Bedrooms",
+                    "Budget range"
+                ])
+
+                with comp_tabs[0]:
                     if finance_col:
-                        st.markdown("**Finance status**")
-                        fig = comp_chart(composition_table(comp_df[finance_col], "Finance Status"), "Finance Status", palette[0])
+                        fig = state_stack_chart(state_share_table(comp_df[finance_col], "Finance Status"), "Finance Status", palette)
                         if fig:
                             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-                    if land_col:
-                        st.markdown("**Land status**")
-                        fig = comp_chart(composition_table(comp_df[land_col], "Do you have land"), "Do you have land", palette[1])
-                        if fig:
-                            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-                with c2:
+                    else:
+                        st.caption("Finance Status data not available.")
+                with comp_tabs[1]:
                     if timeframe_col:
-                        st.markdown("**Timeframe**")
-                        fig = comp_chart(composition_table(comp_df[timeframe_col], "Timeframe"), "Timeframe", palette[2])
+                        fig = state_stack_chart(state_share_table(comp_df[timeframe_col], "Timeframe"), "Timeframe", palette)
                         if fig:
                             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-                    if beds_col:
-                        st.markdown("**Bedrooms**")
-                        fig = comp_chart(composition_table(comp_df[beds_col], "Bedrooms"), "Bedrooms", palette[3])
+                    else:
+                        st.caption("Timeframe data not available.")
+                with comp_tabs[2]:
+                    if land_col:
+                        fig = state_stack_chart(state_share_table(comp_df[land_col], "Do you have land"), "Do you have land", palette)
                         if fig:
                             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-                with c3:
+                    else:
+                        st.caption("Land status data not available.")
+                with comp_tabs[3]:
                     if house_col:
-                        st.markdown("**House type**")
-                        fig = comp_chart(composition_table(comp_df[house_col], "House type"), "House type", palette[4])
+                        fig = state_stack_chart(state_share_table(comp_df[house_col], "House type"), "House type", palette)
                         if fig:
                             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+                    else:
+                        st.caption("House type data not available.")
+                with comp_tabs[4]:
+                    if beds_col:
+                        fig = state_stack_chart(state_share_table(comp_df[beds_col], "Bedrooms"), "Bedrooms", palette)
+                        if fig:
+                            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+                    else:
+                        st.caption("Bedrooms data not available.")
+                with comp_tabs[5]:
                     if budget_col:
-                        st.markdown("**Budget range**")
-                        fig = comp_chart(budget_bins(comp_df[budget_col]), "Budget range", palette[5])
-                        if fig:
-                            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+                        budget_vals = pd.to_numeric(comp_df[budget_col], errors="coerce")
+                        budget_valid = comp_df[budget_vals.notna()].copy()
+                        if budget_valid.empty:
+                            st.caption("No budget values available.")
+                        else:
+                            bins = budget_vals.quantile([0, 0.2, 0.4, 0.6, 0.8, 1]).unique()
+                            if len(bins) < 2:
+                                st.caption("Not enough budget variation for ranges.")
+                            else:
+                                budget_valid["Budget range"] = pd.cut(
+                                    budget_vals.loc[budget_valid.index],
+                                    bins=bins,
+                                    include_lowest=True
+                                ).astype(str)
+                                left, right = st.columns([2, 1])
+                                with left:
+                                    fig = state_stack_chart(
+                                        state_share_table(budget_valid["Budget range"], "Budget range"),
+                                        "Budget range",
+                                        palette
+                                    )
+                                    if fig:
+                                        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+                                with right:
+                                    fig_box = px.box(
+                                        budget_valid,
+                                        x="State",
+                                        y=budget_col,
+                                        points="outliers",
+                                        color="State",
+                                        color_discrete_sequence=px.colors.qualitative.Set2
+                                    )
+                                    fig_box.update_layout(
+                                        height=380,
+                                        margin=dict(l=0, r=0, t=40, b=0),
+                                        xaxis_title=None,
+                                        yaxis_title="Budget"
+                                    )
+                                    st.plotly_chart(fig_box, use_container_width=True, config={"displayModeBar": False})
+                    else:
+                        st.caption("Budget data not available.")
 
             conv_median = group["Referral_Rate"].median() if group["Referral_Rate"].notna().any() else 0
             lead_median = group["Leads"].median() if group["Leads"].notna().any() else 0
