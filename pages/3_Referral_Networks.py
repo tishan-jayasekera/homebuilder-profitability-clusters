@@ -8,6 +8,7 @@ import numpy as np
 import networkx as nx
 import plotly.graph_objects as go
 import plotly.express as px
+import html
 from dataclasses import dataclass
 from typing import List, Dict, Optional, Tuple
 import sys
@@ -95,6 +96,9 @@ html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
 .metric-bar-fill.green { background: #10b981; }
 .metric-bar-fill.blue { background: #3b82f6; }
 .metric-bar-fill.amber { background: #f59e0b; }
+
+.chip-row { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-top: 0.35rem; }
+.chip { background: #f3f4f6; border: 1px solid #e5e7eb; color: #374151; padding: 0.15rem 0.55rem; border-radius: 999px; font-size: 0.7rem; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -832,6 +836,16 @@ def main():
             default=st.session_state.excluded_builders,
             help="Removes selected builders from the network graph and clustering."
         )
+        if excluded:
+            chips = "".join(f"<span class='chip'>{html.escape(b)}</span>" for b in excluded)
+            st.markdown(f"<div class='chip-row'>{chips}</div>", unsafe_allow_html=True)
+            if st.button("Clear excluded", use_container_width=True):
+                st.session_state.excluded_builders = []
+                if st.session_state.targets:
+                    st.session_state.targets = []
+                st.session_state.focus_builder = None
+                st.session_state.optimization_result = None
+                st.rerun()
         if set(excluded) != set(st.session_state.excluded_builders):
             st.session_state.excluded_builders = excluded
             if st.session_state.targets:
@@ -998,6 +1012,50 @@ def main():
                 <p style="color: #6b7280; font-size: 0.85rem;">Select a builder to analyze optimal media paths.</p>
             </div>
             """, unsafe_allow_html=True)
+
+    # ========================================================================
+    # SECTION 1B: REFERRAL RELATIONSHIPS
+    # ========================================================================
+    st.markdown("""
+    <div class="section">
+        <div class="section-header">
+            <span class="section-num">1B</span>
+            <span class="section-title">Referral Relationships</span>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    if st.session_state.focus_builder and not data['edges'].empty:
+        focus = st.session_state.focus_builder
+        edges = data['edges']
+        inbound = (
+            edges[edges["Dest_builder"] == focus]
+            .groupby("Origin_builder", as_index=False)["Referrals"]
+            .sum()
+            .sort_values("Referrals", ascending=False)
+        )
+        outbound = (
+            edges[edges["Origin_builder"] == focus]
+            .groupby("Dest_builder", as_index=False)["Referrals"]
+            .sum()
+            .sort_values("Referrals", ascending=False)
+        )
+
+        c_in, c_out = st.columns(2)
+        with c_in:
+            st.markdown("**Receives referrals from**")
+            if inbound.empty:
+                st.caption("No inbound referrals in the filtered network.")
+            else:
+                st.dataframe(inbound, hide_index=True, use_container_width=True)
+        with c_out:
+            st.markdown("**Sends referrals to**")
+            if outbound.empty:
+                st.caption("No outbound referrals in the filtered network.")
+            else:
+                st.dataframe(outbound, hide_index=True, use_container_width=True)
+    else:
+        st.caption("Select a builder to see inbound and outbound referral relationships.")
     
     # ========================================================================
     # SECTION 2: CAMPAIGN OPTIMIZATION
