@@ -916,13 +916,15 @@ def main():
                 nonlocal seg_df
                 if not col_name or col_name not in seg_df.columns:
                     return
-                options = base_df[col_name].dropna().astype(str).unique().tolist()
+                base_vals = base_df[col_name].fillna("Unknown").astype(str)
+                options = base_vals.unique().tolist()
                 if not options:
                     return
                 with f_cols[col_idx]:
                     selected = st.multiselect(label, sorted(options), default=sorted(options))
                 if selected:
-                    seg_df = seg_df[seg_df[col_name].astype(str).isin(selected)]
+                    seg_vals = seg_df[col_name].fillna("Unknown").astype(str)
+                    seg_df = seg_df[seg_vals.isin(selected)]
                     if seg_df.empty:
                         st.caption(f"No matches after filtering {label}.")
 
@@ -933,18 +935,18 @@ def main():
             f_cols2 = st.columns(3)
             with f_cols2[0]:
                 if house_col and house_col in seg_df.columns:
-                    options = base_df[house_col].dropna().astype(str).unique().tolist()
+                    options = base_df[house_col].fillna("Unknown").astype(str).unique().tolist()
                     house_sel = st.multiselect("House type", sorted(options), default=sorted(options)) if options else []
                     if house_sel:
-                        seg_df = seg_df[seg_df[house_col].astype(str).isin(house_sel)]
+                        seg_df = seg_df[seg_df[house_col].fillna("Unknown").astype(str).isin(house_sel)]
                         if seg_df.empty:
                             st.caption("No matches after filtering House type.")
             with f_cols2[1]:
                 if beds_col and beds_col in seg_df.columns:
-                    options = base_df[beds_col].dropna().astype(str).unique().tolist()
+                    options = base_df[beds_col].fillna("Unknown").astype(str).unique().tolist()
                     bed_sel = st.multiselect("Bedrooms", sorted(options), default=sorted(options)) if options else []
                     if bed_sel:
-                        seg_df = seg_df[seg_df[beds_col].astype(str).isin(bed_sel)]
+                        seg_df = seg_df[seg_df[beds_col].fillna("Unknown").astype(str).isin(bed_sel)]
                         if seg_df.empty:
                             st.caption("No matches after filtering Bedrooms.")
             with f_cols2[2]:
@@ -956,8 +958,9 @@ def main():
                             st.caption("Budget range: single value")
                         else:
                             b_range = st.slider("Budget range", min_b, max_b, (min_b, max_b))
+                            budget_series = pd.to_numeric(seg_df[budget_col], errors="coerce")
                             seg_df = seg_df[
-                                pd.to_numeric(seg_df[budget_col], errors="coerce").between(b_range[0], b_range[1])
+                                budget_series.between(b_range[0], b_range[1]) | budget_series.isna()
                             ]
                             if seg_df.empty:
                                 st.caption("No matches after filtering Budget range.")
@@ -1184,6 +1187,7 @@ def main():
                 st.dataframe(scenario, hide_index=True, use_container_width=True)
 
             if campaign_col:
+                seg_df[campaign_col] = seg_df[campaign_col].fillna("Unknown").astype(str)
                 if ref_flag_col in seg_df.columns:
                     lead_campaign_df = seg_df[seg_df[ref_flag_col] == False].copy()
                     ref_campaign_df = seg_df[seg_df[ref_flag_col]].copy()
