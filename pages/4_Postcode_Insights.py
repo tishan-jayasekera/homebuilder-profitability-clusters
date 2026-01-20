@@ -197,13 +197,7 @@ def main():
         Campaigns=(campaign_col, "nunique") if campaign_col else (postcode_col, "size")
     )
     if "is_referral" in df.columns:
-        mask_referral = df["is_referral"].fillna(False).astype(bool)
-        mask_cross_payer = (
-            df["MediaPayer_BuilderRegionKey"].notna() &
-            df["Dest_BuilderRegionKey"].notna() &
-            (df["MediaPayer_BuilderRegionKey"] != df["Dest_BuilderRegionKey"])
-        )
-        refs_df = df[mask_referral | mask_cross_payer].copy()
+        refs_df = df[df["is_referral"].fillna(False).astype(bool)].copy()
         if lead_id_col:
             qualified = (
                 refs_df.groupby([postcode_col, suburb_col])[lead_id_col]
@@ -1016,13 +1010,7 @@ def main():
 
             if campaign_col:
                 mask_referral = seg_df["is_referral"].fillna(False).astype(bool) if "is_referral" in seg_df.columns else pd.Series(False, index=seg_df.index)
-                mask_cross_payer = (
-                    seg_df["MediaPayer_BuilderRegionKey"].notna() &
-                    seg_df["Dest_BuilderRegionKey"].notna() &
-                    (seg_df["MediaPayer_BuilderRegionKey"] != seg_df["Dest_BuilderRegionKey"])
-                )
-                ref_mask = mask_referral | mask_cross_payer
-                campaign_df = seg_df[ref_mask].copy() if ref_mask.any() else seg_df.copy()
+                campaign_df = seg_df[mask_referral].copy() if mask_referral.any() else seg_df.copy()
                 camp = (
                     campaign_df.groupby(campaign_col, as_index=False)
                     .agg(
