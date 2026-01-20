@@ -38,6 +38,8 @@ def get_available_pages():
                 pages['orphan'] = f"pages/{f.name}"
             elif 'referral' in name_lower or 'network' in name_lower:
                 pages['network'] = f"pages/{f.name}"
+            elif 'postcode' in name_lower or 'suburb' in name_lower:
+                pages['postcode'] = f"pages/{f.name}"
     
     return pages
 
@@ -142,6 +144,21 @@ def main():
                 st.switch_page(pages['network'])
         else:
             st.error("Page not found: pages/3_Referral_Networks.py")
+
+    col4, col5, col6 = st.columns(3)
+    with col4:
+        st.markdown("#### 📍 Postcode Insights")
+        st.markdown("""
+        Understand location performance:
+        - Postcode/suburb conversion rates
+        - Campaign density hotspots
+        - Opportunity targeting guidance
+        """)
+        if 'postcode' in pages:
+            if st.button("📍 Open Postcode Insights", key="btn_postcode", use_container_width=True):
+                st.switch_page(pages['postcode'])
+        else:
+            st.error("Page not found: pages/4_Postcode_Insights.py")
     
     # Debug info
     pages_dir = Path(__file__).parent / "pages"
