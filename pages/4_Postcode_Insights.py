@@ -45,6 +45,8 @@ html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
 .explainer { background: #f8fafc; border: 1px solid #e5e7eb; padding: 0.75rem 0.9rem; border-radius: 10px; margin: 0.6rem 0 1rem 0; }
 .explainer-title { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; color: #6b7280; margin-bottom: 0.35rem; font-weight: 600; }
 .explainer-text { color: #374151; font-size: 0.85rem; line-height: 1.45; }
+.section-card { background: #ffffff; border: 1px solid #e5e7eb; border-radius: 12px; padding: 1rem; margin: 0.5rem 0 1.25rem 0; box-shadow: 0 10px 24px -20px rgba(17, 24, 39, 0.45); }
+.section-card .section-header { margin-bottom: 0.5rem; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -170,9 +172,9 @@ def main():
     <div class="explainer">
         <div class="explainer-title">How to use this page</div>
         <div class="explainer-text">
-            Start with the map to spot where performance is strong or weak. Then use the forecast section to estimate
-            how many leads a region can deliver for a planned spend. Finally, follow the optimization plan to decide
-            where to scale, fix, or reduce spend. The goal is to put budget where it returns the most referrals.
+            Use the map to find strong and weak areas, then open the Forecast tab to estimate how many leads a region
+            can deliver for your planned spend. Use Optimization to decide where to scale, fix, test, or reduce spend.
+            This page is designed for daily budgeting and creative targeting decisions.
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -221,325 +223,343 @@ def main():
     """, unsafe_allow_html=True)
     st.markdown("""
     <div class="explainer">
-        <div class="explainer-title">What these KPIs mean</div>
+        <div class="explainer-title">KPI definitions (plain language)</div>
         <div class="explainer-text">
-            Postcodes and total leads show the size of your footprint. Avg conversion is referrals divided by leads,
-            so it reflects quality and follow-through. Campaigns tracked shows how many campaigns touch these regions,
-            helping you spot crowded vs under-served areas.
+            <b>Avg conversion</b> is referrals ÷ leads, so it shows how many leads turn into referrals.
+            <b>Campaigns tracked</b> is how many campaigns touched these regions, which helps spot crowding.
+            <b>Total leads</b> and <b>postcodes</b> show the scale of your market coverage.
         </div>
     </div>
     """, unsafe_allow_html=True)
+    with st.expander("Metric glossary (plain English)", expanded=False):
+        st.markdown("""
+        - **Conversion Rate**: Referrals ÷ Leads. Higher means more leads turn into referrals.
+        - **Opportunity Score**: Higher when leads are high and conversion is low (plus campaign density). Targets fast improvement areas.
+        - **CPL (Cost per Lead)**: Spend ÷ Leads. Lower means cheaper lead delivery.
+        - **CPR (Cost per Referral)**: Spend ÷ Referrals. Lower means more efficient referral generation.
+        - **Capacity (Spend)**: Planned spend ÷ Forecast CPL. How many leads spend can buy.
+        - **Capacity (Pace)**: Recent delivery speed scaled to the forecast window. Avoids over‑allocating.
+        - **Recommended Cap**: The smaller of spend capacity and pace capacity, to reduce overspend risk.
+        """)
 
-    # Section 1: Relationship view
-    st.markdown("""
-    <div class="section">
-        <div class="section-header">
-            <span class="section-num">1</span>
-            <span class="section-title">Australia Postcode Opportunity Map</span>
+    tabs = st.tabs([
+        "1) Map",
+        "2) Opportunities",
+        "3) Forecast",
+        "4) Benchmarks",
+        "5) Optimization",
+        "6) Overlap",
+        "7) Creative"
+    ])
+
+    with tabs[0]:
+        st.markdown("""
+        <div class="section-card">
+            <div class="section-header">
+                <span class="section-num">1</span>
+                <span class="section-title">Australia Postcode Opportunity Map</span>
+            </div>
         </div>
-    </div>
-    """, unsafe_allow_html=True)
-    st.markdown("""
-    <div class="explainer">
-        <div class="explainer-title">Why this matters</div>
-        <div class="explainer-text">
-            The map shows where conversion is strong or weak. Use Performance to see efficiency, and Marketing Regions
-            to see which builder primarily services referrals in each postcode. This helps you align spend to the right
-            areas and ownership.
+        """, unsafe_allow_html=True)
+        st.markdown("""
+        <div class="explainer">
+            <div class="explainer-title">What you are seeing</div>
+            <div class="explainer-text">
+                Performance view colors postcodes by conversion, leads, or opportunity score. Marketing Regions groups
+                postcodes by the builder that services the most referrals there. Use this to align spend and ownership.
+            </div>
         </div>
-    </div>
-    """, unsafe_allow_html=True)
+        """, unsafe_allow_html=True)
 
-    map_mode = st.radio(
-        "Map view",
-        ["Performance", "Marketing Regions"],
-        horizontal=True,
-        label_visibility="collapsed",
-        key="postcode_map_mode"
-    )
-    map_metric = st.radio(
-        "Color by",
-        ["Conversion Rate", "Opportunity Score", "Leads", "Referrals"],
-        horizontal=True,
-        label_visibility="collapsed",
-        key="postcode_map_metric"
-    )
-    metric_map = {
-        "Conversion Rate": "Conversion_Rate",
-        "Opportunity Score": "Opportunity_Score",
-        "Leads": "Leads",
-        "Referrals": "Referrals"
-    }
-    metric_col = metric_map[map_metric]
+        map_mode = st.radio(
+            "Map view",
+            ["Performance", "Marketing Regions"],
+            horizontal=True,
+            label_visibility="collapsed",
+            key="postcode_map_mode"
+        )
+        map_metric = st.radio(
+            "Color by",
+            ["Conversion Rate", "Opportunity Score", "Leads", "Referrals"],
+            horizontal=True,
+            label_visibility="collapsed",
+            key="postcode_map_metric"
+        )
+        metric_map = {
+            "Conversion Rate": "Conversion_Rate",
+            "Opportunity Score": "Opportunity_Score",
+            "Leads": "Leads",
+            "Referrals": "Referrals"
+        }
+        metric_col = metric_map[map_metric]
 
-    if geojson_data and not group.empty:
-        active_postcodes = set(group["Postcode"].dropna().astype(str).str.zfill(4).tolist())
-        if active_postcodes:
-            geojson_filtered = {
-                "type": "FeatureCollection",
-                "features": [
-                    f for f in geojson_data.get("features", [])
-                    if f.get("properties", {}).get("POA_CODE") in active_postcodes
-                ]
-            }
-        else:
-            geojson_filtered = geojson_data
-        if "Lat" in group.columns and "Lng" in group.columns and group["Lat"].notna().any():
-            center = {"lat": float(group["Lat"].mean()), "lon": float(group["Lng"].mean())}
-        else:
-            center = {"lat": -25.5, "lon": 134.0}
-        if state_filter:
-            zoom = 6.5 if len(state_filter) == 1 else 5
-        else:
-            zoom = 4.2
-        postcode_rollup = (
-            group.groupby("Postcode", as_index=False)
-            .agg(
-                Leads=("Leads", "sum"),
-                Referrals=("Referrals", "sum"),
-                Media_Spend=("Media_Spend", "sum"),
-                Campaigns=("Campaigns", "sum"),
-                Conversion_Rate=("Conversion_Rate", "mean"),
-                Opportunity_Score=("Opportunity_Score", "sum")
+        if geojson_data and not group.empty:
+            active_postcodes = set(group["Postcode"].dropna().astype(str).str.zfill(4).tolist())
+            if active_postcodes:
+                geojson_filtered = {
+                    "type": "FeatureCollection",
+                    "features": [
+                        f for f in geojson_data.get("features", [])
+                        if f.get("properties", {}).get("POA_CODE") in active_postcodes
+                    ]
+                }
+            else:
+                geojson_filtered = geojson_data
+            if "Lat" in group.columns and "Lng" in group.columns and group["Lat"].notna().any():
+                center = {"lat": float(group["Lat"].mean()), "lon": float(group["Lng"].mean())}
+            else:
+                center = {"lat": -25.5, "lon": 134.0}
+            if state_filter:
+                zoom = 6.5 if len(state_filter) == 1 else 5
+            else:
+                zoom = 4.2
+            postcode_rollup = (
+                group.groupby("Postcode", as_index=False)
+                .agg(
+                    Leads=("Leads", "sum"),
+                    Referrals=("Referrals", "sum"),
+                    Media_Spend=("Media_Spend", "sum"),
+                    Campaigns=("Campaigns", "sum"),
+                    Conversion_Rate=("Conversion_Rate", "mean"),
+                    Opportunity_Score=("Opportunity_Score", "sum")
+                )
             )
-        )
-        postcode_rollup["Postcode"] = (
-            postcode_rollup["Postcode"]
-            .astype(str)
-            .str.strip()
-            .replace({"nan": np.nan})
-            .str.zfill(4)
-        )
-        postcode_rollup = postcode_rollup.dropna(subset=["Postcode"])
-        postcode_rollup["CPR"] = np.where(
-            postcode_rollup["Referrals"] > 0,
-            postcode_rollup["Media_Spend"] / postcode_rollup["Referrals"],
-            np.nan
-        )
-
-        if map_mode == "Marketing Regions" and "Dest_BuilderRegionKey" in df.columns:
-            mask_referral = df["is_referral"].fillna(False).astype(bool) if "is_referral" in df.columns else pd.Series(False, index=df.index)
-            mask_cross_payer = (
-                df["MediaPayer_BuilderRegionKey"].notna() &
-                df["Dest_BuilderRegionKey"].notna() &
-                (df["MediaPayer_BuilderRegionKey"] != df["Dest_BuilderRegionKey"])
+            postcode_rollup["Postcode"] = (
+                postcode_rollup["Postcode"]
+                .astype(str)
+                .str.strip()
+                .replace({"nan": np.nan})
+                .str.zfill(4)
             )
-            referrals_df = df[mask_referral | mask_cross_payer].copy()
-            if builder_filter:
-                referrals_df = referrals_df[referrals_df["Dest_BuilderRegionKey"].isin(builder_filter)]
-            if not referrals_df.empty:
-                referrals_df["Postcode"] = referrals_df[postcode_col].astype(str).str.zfill(4)
-                builder_flows = (
-                    referrals_df.groupby(["Postcode", "Dest_BuilderRegionKey"], as_index=False)
-                    .agg(Referrals=("LeadId", "nunique") if "LeadId" in referrals_df.columns else ("lead_date", "size"))
+            postcode_rollup = postcode_rollup.dropna(subset=["Postcode"])
+            postcode_rollup["CPR"] = np.where(
+                postcode_rollup["Referrals"] > 0,
+                postcode_rollup["Media_Spend"] / postcode_rollup["Referrals"],
+                np.nan
+            )
+
+            if map_mode == "Marketing Regions" and "Dest_BuilderRegionKey" in df.columns:
+                mask_referral = df["is_referral"].fillna(False).astype(bool) if "is_referral" in df.columns else pd.Series(False, index=df.index)
+                mask_cross_payer = (
+                    df["MediaPayer_BuilderRegionKey"].notna() &
+                    df["Dest_BuilderRegionKey"].notna() &
+                    (df["MediaPayer_BuilderRegionKey"] != df["Dest_BuilderRegionKey"])
                 )
-                totals = builder_flows.groupby("Dest_BuilderRegionKey", as_index=False)["Referrals"].sum()
-                top_builders = totals.sort_values("Referrals", ascending=False).head(12)["Dest_BuilderRegionKey"].tolist()
-                builder_flows["Builder"] = np.where(
-                    builder_flows["Dest_BuilderRegionKey"].isin(top_builders),
-                    builder_flows["Dest_BuilderRegionKey"],
-                    "Other"
-                )
-                primary = (
-                    builder_flows.groupby(["Postcode", "Builder"], as_index=False)["Referrals"]
-                    .sum()
-                    .sort_values(["Postcode", "Referrals"], ascending=[True, False])
-                )
-                primary = primary.drop_duplicates("Postcode")
-                primary = primary.rename(columns={"Builder": "Primary Builder"})
-                map_df = postcode_rollup.merge(
-                    primary[["Postcode", "Primary Builder", "Referrals"]],
-                    on="Postcode",
-                    how="left",
-                    suffixes=("_metric", "_primary")
-                )
+                referrals_df = df[mask_referral | mask_cross_payer].copy()
+                if builder_filter:
+                    referrals_df = referrals_df[referrals_df["Dest_BuilderRegionKey"].isin(builder_filter)]
+                if not referrals_df.empty:
+                    referrals_df["Postcode"] = referrals_df[postcode_col].astype(str).str.zfill(4)
+                    builder_flows = (
+                        referrals_df.groupby(["Postcode", "Dest_BuilderRegionKey"], as_index=False)
+                        .agg(Referrals=("LeadId", "nunique") if "LeadId" in referrals_df.columns else ("lead_date", "size"))
+                    )
+                    totals = builder_flows.groupby("Dest_BuilderRegionKey", as_index=False)["Referrals"].sum()
+                    top_builders = totals.sort_values("Referrals", ascending=False).head(12)["Dest_BuilderRegionKey"].tolist()
+                    builder_flows["Builder"] = np.where(
+                        builder_flows["Dest_BuilderRegionKey"].isin(top_builders),
+                        builder_flows["Dest_BuilderRegionKey"],
+                        "Other"
+                    )
+                    primary = (
+                        builder_flows.groupby(["Postcode", "Builder"], as_index=False)["Referrals"]
+                        .sum()
+                        .sort_values(["Postcode", "Referrals"], ascending=[True, False])
+                    )
+                    primary = primary.drop_duplicates("Postcode")
+                    primary = primary.rename(columns={"Builder": "Primary Builder"})
+                    map_df = postcode_rollup.merge(
+                        primary[["Postcode", "Primary Builder", "Referrals"]],
+                        on="Postcode",
+                        how="left",
+                        suffixes=("_metric", "_primary")
+                    )
+                else:
+                    map_df = postcode_rollup.copy()
+                    map_df["Primary Builder"] = "Unknown"
             else:
                 map_df = postcode_rollup.copy()
-                map_df["Primary Builder"] = "Unknown"
-        else:
-            map_df = postcode_rollup.copy()
-            map_df["Primary Builder"] = None
+                map_df["Primary Builder"] = None
 
-        if "Referrals" not in map_df.columns and "Referrals_metric" in map_df.columns:
-            map_df = map_df.rename(columns={"Referrals_metric": "Referrals"})
-        if "Campaigns" not in map_df.columns and "Campaigns" in postcode_rollup.columns:
-            map_df["Campaigns"] = postcode_rollup["Campaigns"]
-        if "Leads" not in map_df.columns and "Leads" in postcode_rollup.columns:
-            map_df["Leads"] = postcode_rollup["Leads"]
+            if "Referrals" not in map_df.columns and "Referrals_metric" in map_df.columns:
+                map_df = map_df.rename(columns={"Referrals_metric": "Referrals"})
+            if "Campaigns" not in map_df.columns and "Campaigns" in postcode_rollup.columns:
+                map_df["Campaigns"] = postcode_rollup["Campaigns"]
+            if "Leads" not in map_df.columns and "Leads" in postcode_rollup.columns:
+                map_df["Leads"] = postcode_rollup["Leads"]
 
-        if map_df.empty:
-            st.caption("No postcode data available for the selected filters.")
-        elif map_mode == "Performance":
-            metric_series = map_df[metric_col].fillna(0)
-            if metric_series.nunique() <= 1:
-                map_df["Metric Bin"] = "Mid"
-            else:
-                try:
-                    metric_bins = pd.qcut(
-                        metric_series,
-                        q=5,
-                        labels=False,
-                        duplicates="drop"
-                    )
-                    labels = ["Very Low", "Low", "Mid", "High", "Very High"]
-                except ValueError:
-                    metric_bins = pd.qcut(
-                        metric_series,
-                        q=3,
-                        labels=False,
-                        duplicates="drop"
-                    )
-                    labels = ["Low", "Mid", "High"]
-                if metric_bins.isna().all():
+            if map_df.empty:
+                st.caption("No postcode data available for the selected filters.")
+            elif map_mode == "Performance":
+                metric_series = map_df[metric_col].fillna(0)
+                if metric_series.nunique() <= 1:
                     map_df["Metric Bin"] = "Mid"
                 else:
-                    metric_bins = metric_bins.astype("Int64")
-                    max_bin = int(metric_bins.max()) if metric_bins.max() is not pd.NA else 0
-                    safe_labels = labels[: max_bin + 1]
-                    map_df["Metric Bin"] = metric_bins.map(
-                        lambda x: safe_labels[int(x)] if pd.notna(x) and int(x) < len(safe_labels) else "Mid"
-                    )
-            hover_cols = {c: True for c in ["Leads", "Referrals", "Campaigns", "CPR"] if c in map_df.columns}
-            fig = px.choropleth_mapbox(
-                map_df,
-                geojson=geojson_filtered,
-                locations="Postcode",
-                featureidkey="properties.POA_CODE",
-                color="Metric Bin",
-                color_discrete_map={
-                    "Very Low": "#e0f2fe",
-                    "Low": "#bae6fd",
-                    "Mid": "#7dd3fc",
-                    "High": "#38bdf8",
-                    "Very High": "#0284c7"
-                },
-                hover_data=hover_cols,
-                mapbox_style="carto-positron",
-                zoom=zoom,
-                center=center,
-                opacity=0.6,
-                title="Postcode performance (select a state to focus)"
-            )
+                    try:
+                        metric_bins = pd.qcut(
+                            metric_series,
+                            q=5,
+                            labels=False,
+                            duplicates="drop"
+                        )
+                        labels = ["Very Low", "Low", "Mid", "High", "Very High"]
+                    except ValueError:
+                        metric_bins = pd.qcut(
+                            metric_series,
+                            q=3,
+                            labels=False,
+                            duplicates="drop"
+                        )
+                        labels = ["Low", "Mid", "High"]
+                    if metric_bins.isna().all():
+                        map_df["Metric Bin"] = "Mid"
+                    else:
+                        metric_bins = metric_bins.astype("Int64")
+                        max_bin = int(metric_bins.max()) if metric_bins.max() is not pd.NA else 0
+                        safe_labels = labels[: max_bin + 1]
+                        map_df["Metric Bin"] = metric_bins.map(
+                            lambda x: safe_labels[int(x)] if pd.notna(x) and int(x) < len(safe_labels) else "Mid"
+                        )
+                hover_cols = {c: True for c in ["Leads", "Referrals", "Campaigns", "CPR"] if c in map_df.columns}
+                fig = px.choropleth_mapbox(
+                    map_df,
+                    geojson=geojson_filtered,
+                    locations="Postcode",
+                    featureidkey="properties.POA_CODE",
+                    color="Metric Bin",
+                    color_discrete_map={
+                        "Very Low": "#e0f2fe",
+                        "Low": "#bae6fd",
+                        "Mid": "#7dd3fc",
+                        "High": "#38bdf8",
+                        "Very High": "#0284c7"
+                    },
+                    hover_data=hover_cols,
+                    mapbox_style="carto-positron",
+                    zoom=zoom,
+                    center=center,
+                    opacity=0.6,
+                    title="Postcode performance (select a state to focus)"
+                )
+            else:
+                if "Primary Builder" not in map_df.columns or map_df["Primary Builder"].isna().all():
+                    map_df["Primary Builder"] = "Unknown"
+                map_df["Primary Builder"] = map_df["Primary Builder"].fillna("Unknown").astype(str)
+                hover_cols = {c: True for c in ["Leads", "Referrals", "Campaigns"] if c in map_df.columns}
+                fig = px.choropleth_mapbox(
+                    map_df,
+                    geojson=geojson_filtered,
+                    locations="Postcode",
+                    featureidkey="properties.POA_CODE",
+                    color="Primary Builder",
+                    hover_data=hover_cols,
+                    mapbox_style="carto-positron",
+                    zoom=zoom,
+                    center=center,
+                    opacity=0.6,
+                    title="Marketing regions (dominant referral-serving builder)"
+                )
+            if not map_df.empty:
+                fig.update_layout(
+                    height=560,
+                    margin=dict(l=0, r=0, t=40, b=0),
+                    uirevision="postcode-map"
+                )
+                st.plotly_chart(
+                    fig,
+                    use_container_width=True,
+                    config={"displayModeBar": True, "scrollZoom": True}
+                )
         else:
-            if "Primary Builder" not in map_df.columns or map_df["Primary Builder"].isna().all():
-                map_df["Primary Builder"] = "Unknown"
-            map_df["Primary Builder"] = map_df["Primary Builder"].fillna("Unknown").astype(str)
-            hover_cols = {c: True for c in ["Leads", "Referrals", "Campaigns"] if c in map_df.columns}
-            fig = px.choropleth_mapbox(
-                map_df,
-                geojson=geojson_filtered,
-                locations="Postcode",
-                featureidkey="properties.POA_CODE",
-                color="Primary Builder",
-                hover_data=hover_cols,
-                mapbox_style="carto-positron",
-                zoom=zoom,
-                center=center,
-                opacity=0.6,
-                title="Marketing regions (dominant referral-serving builder)"
+            st.caption("Postcode geojson or joined metrics unavailable for mapping.")
+
+    with tabs[1]:
+        st.markdown("""
+        <div class="section-card">
+            <div class="section-header">
+                <span class="section-num">2</span>
+                <span class="section-title">Opportunity Areas</span>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+        st.markdown("""
+        <div class="explainer">
+            <div class="explainer-title">Opportunity score explained</div>
+            <div class="explainer-text">
+                Opportunity Score increases when a postcode has many leads but low conversion, and when many campaigns
+                are already active. This flags areas where creative or targeting improvements can unlock fast gains.
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        top_opps = group.sort_values("Opportunity_Score", ascending=False).head(15)
+        opp_chart = top_opps.rename(columns={
+            postcode_col: "Postcode",
+            suburb_col: "Suburb"
+        })
+        opp_chart["Label"] = opp_chart["Postcode"] + " • " + opp_chart["Suburb"]
+        fig2 = px.bar(
+            opp_chart,
+            x="Opportunity_Score",
+            y="Label",
+            orientation="h",
+            color="Campaigns",
+            title="Top opportunity postcodes (low conversion + high campaign density)"
+        )
+        fig2.update_layout(height=360, margin=dict(l=0, r=0, t=40, b=0))
+        st.plotly_chart(fig2, use_container_width=True, config={"displayModeBar": False})
+
+        display = group.rename(columns={
+            postcode_col: "Postcode",
+            suburb_col: "Suburb",
+            "Conversion_Rate": "Conversion Rate",
+            "Opportunity_Score": "Opportunity Score",
+            "Media_Spend": "Ad Spend"
+        }).sort_values("Opportunity Score", ascending=False)
+        st.dataframe(
+            display[["Postcode", "Suburb", "Leads", "Referrals", "Conversion Rate", "Campaigns", "Ad Spend", "CPR", "Opportunity Score"]]
+            .head(50),
+            hide_index=True,
+            use_container_width=True
+        )
+
+        if not group.empty:
+            st.markdown("**Suburbs in selected regions**")
+            suburb_list = (
+                group[["Postcode", "Suburb", "Leads", "Referrals", "Conversion_Rate", "Campaigns"]]
+                .sort_values(["Postcode", "Suburb"])
+                .head(200)
             )
-        if map_df.empty:
-            pass
+            st.dataframe(suburb_list, hide_index=True, use_container_width=True)
+
+    with tabs[2]:
+        st.markdown("""
+        <div class="section-card">
+            <div class="section-header">
+                <span class="section-num">3</span>
+                <span class="section-title">Region Forecast & Recommendations</span>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+        st.markdown("""
+        <div class="explainer">
+            <div class="explainer-title">Key metrics explained</div>
+            <div class="explainer-text">
+                <b>CPL</b> is spend ÷ leads. <b>Forecast CPL</b> is the recent average CPL. <b>Capacity (Spend)</b> is
+                planned spend ÷ forecast CPL. <b>Capacity (Pace)</b> is recent lead pace scaled to your forecast window.
+                We use the smaller of these as the recommended capacity to avoid over-spending.
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        if group.empty:
+            st.caption("Not enough data to build a regional forecast.")
         else:
-            fig.update_layout(
-                height=560,
-                margin=dict(l=0, r=0, t=40, b=0),
-                uirevision="postcode-map"
+            region_level = st.radio(
+                "Region level",
+                ["Postcode", "Suburb"],
+                horizontal=True
             )
-            st.plotly_chart(
-                fig,
-                use_container_width=True,
-                config={"displayModeBar": True, "scrollZoom": True}
-            )
-    else:
-        st.caption("Postcode geojson or joined metrics unavailable for mapping.")
-
-    # Section 2: Opportunity ranking
-    st.markdown("""
-    <div class="section">
-        <div class="section-header">
-            <span class="section-num">2</span>
-            <span class="section-title">Opportunity Areas</span>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-    st.markdown("""
-    <div class="explainer">
-        <div class="explainer-title">What is an opportunity area</div>
-        <div class="explainer-text">
-            These are postcodes with high lead volume and low conversion, especially where many campaigns already run.
-            Improving creative or targeting here typically produces the fastest uplift in referrals.
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-
-    top_opps = group.sort_values("Opportunity_Score", ascending=False).head(15)
-    opp_chart = top_opps.rename(columns={
-        postcode_col: "Postcode",
-        suburb_col: "Suburb"
-    })
-    opp_chart["Label"] = opp_chart["Postcode"] + " • " + opp_chart["Suburb"]
-    fig2 = px.bar(
-        opp_chart,
-        x="Opportunity_Score",
-        y="Label",
-        orientation="h",
-        color="Campaigns",
-        title="Top opportunity postcodes (low conversion + high campaign density)"
-    )
-    fig2.update_layout(height=360, margin=dict(l=0, r=0, t=40, b=0))
-    st.plotly_chart(fig2, use_container_width=True, config={"displayModeBar": False})
-
-    display = group.rename(columns={
-        postcode_col: "Postcode",
-        suburb_col: "Suburb",
-        "Conversion_Rate": "Conversion Rate",
-        "Opportunity_Score": "Opportunity Score",
-        "Media_Spend": "Ad Spend"
-    }).sort_values("Opportunity Score", ascending=False)
-    st.dataframe(
-        display[["Postcode", "Suburb", "Leads", "Referrals", "Conversion Rate", "Campaigns", "Ad Spend", "CPR", "Opportunity Score"]]
-        .head(50),
-        hide_index=True,
-        use_container_width=True
-    )
-
-    if not group.empty:
-        st.markdown("**Suburbs in selected regions**")
-        suburb_list = (
-            group[["Postcode", "Suburb", "Leads", "Referrals", "Conversion_Rate", "Campaigns"]]
-            .sort_values(["Postcode", "Suburb"])
-            .head(200)
-        )
-        st.dataframe(suburb_list, hide_index=True, use_container_width=True)
-
-    # Section 3: Region forecast & recommendations
-    st.markdown("""
-    <div class="section">
-        <div class="section-header">
-            <span class="section-num">3</span>
-            <span class="section-title">Region Forecast & Recommendations</span>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-    st.markdown("""
-    <div class="explainer">
-        <div class="explainer-title">How the forecast works</div>
-        <div class="explainer-text">
-            We estimate cost per lead from recent history and compare it to your planned spend. We also cap the forecast
-            by recent delivery pace, so you do not over-allocate budget to a region that cannot supply more leads.
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-
-    if group.empty:
-        st.caption("Not enough data to build a regional forecast.")
-    else:
-        region_level = st.radio(
-            "Region level",
-            ["Postcode", "Suburb"],
-            horizontal=True
-        )
         if region_level == "Postcode":
             region_options = sorted(group["Postcode"].dropna().astype(str).unique().tolist())
             region_value = st.selectbox("Select postcode", region_options)
@@ -614,149 +634,247 @@ def main():
                         pd.to_numeric(seg_df[budget_col], errors="coerce").between(b_range[0], b_range[1])
                     ]
 
-        if seg_df.empty:
-            st.caption("No leads match the selected filters.")
-        else:
-            seg_df["lead_date"] = pd.to_datetime(seg_df["lead_date"], errors="coerce")
-            seg_df = seg_df.dropna(subset=["lead_date"])
-            lead_count = seg_df[lead_id_col].nunique() if lead_id_col else len(seg_df)
-            spend_total = seg_df[spend_col].sum() if spend_col else 0
-            cpl = spend_total / lead_count if lead_count > 0 else 0
+            if seg_df.empty:
+                st.caption("No leads match the selected filters.")
+            else:
+                seg_df["lead_date"] = pd.to_datetime(seg_df["lead_date"], errors="coerce")
+                seg_df = seg_df.dropna(subset=["lead_date"])
+                lead_count = seg_df[lead_id_col].nunique() if lead_id_col else len(seg_df)
+                spend_total = seg_df[spend_col].sum() if spend_col else 0
+                cpl = spend_total / lead_count if lead_count > 0 else 0
 
-            horizon_days = st.slider("Forecast horizon (days)", 7, 90, 30, step=1)
-            planned_spend = st.number_input("Planned spend ($)", min_value=0.0, value=5000.0, step=500.0)
-            ts_freq = st.radio("Trend period", ["Weekly", "Monthly"], horizontal=True)
-            period_freq = "W" if ts_freq == "Weekly" else "M"
+                horizon_days = st.slider("Forecast horizon (days)", 7, 90, 30, step=1)
+                planned_spend = st.number_input("Planned spend ($)", min_value=0.0, value=5000.0, step=500.0)
+                ts_freq = st.radio("Trend period", ["Weekly", "Monthly"], horizontal=True)
+                period_freq = "W" if ts_freq == "Weekly" else "M"
 
-            ts = (
-                seg_df.assign(period=seg_df["lead_date"].dt.to_period(period_freq).dt.start_time)
-                .groupby("period", as_index=False)
-                .agg(
-                    Leads=(lead_id_col, "nunique") if lead_id_col else ("lead_date", "size"),
-                    Spend=(spend_col, "sum") if spend_col else ("lead_date", "size")
-                )
-                .sort_values("period")
-            )
-            ts["CPL"] = np.where(ts["Leads"] > 0, ts["Spend"] / ts["Leads"], np.nan)
-            lookback = min(6, len(ts))
-            cpl_forecast = ts["CPL"].tail(lookback).mean() if lookback > 0 else cpl
-            cpl_forecast = cpl_forecast if cpl_forecast and cpl_forecast > 0 else cpl
-
-            end_date = seg_df["lead_date"].max()
-            recent_mask = seg_df["lead_date"] >= (end_date - pd.Timedelta(days=14))
-            prev_mask = (seg_df["lead_date"] < (end_date - pd.Timedelta(days=14))) & (seg_df["lead_date"] >= (end_date - pd.Timedelta(days=28)))
-            recent_leads = seg_df[recent_mask][lead_id_col].nunique() if lead_id_col else recent_mask.sum()
-            prev_leads = seg_df[prev_mask][lead_id_col].nunique() if lead_id_col else prev_mask.sum()
-            growth = (recent_leads - prev_leads) / prev_leads if prev_leads > 0 else 0
-            growth = float(np.clip(growth, -0.5, 0.5))
-            pace = recent_leads / 14 if recent_leads > 0 else 0
-            capacity_pace = pace * (1 + growth) * horizon_days
-            capacity_spend = planned_spend / cpl_forecast if cpl_forecast > 0 else 0
-            capacity = min(capacity_spend, capacity_pace) if capacity_pace > 0 else capacity_spend
-
-            st.markdown(f"""
-            <div class="kpi-row">
-                <div class="kpi"><div class="kpi-label">Region Leads</div><div class="kpi-value">{lead_count:,.0f}</div></div>
-                <div class="kpi"><div class="kpi-label">Current CPL</div><div class="kpi-value">${cpl:,.0f}</div></div>
-                <div class="kpi"><div class="kpi-label">Forecast CPL</div><div class="kpi-value">${cpl_forecast:,.0f}</div></div>
-                <div class="kpi"><div class="kpi-label">Capacity (Spend)</div><div class="kpi-value">{capacity_spend:,.0f} leads</div></div>
-                <div class="kpi"><div class="kpi-label">Capacity (Pace)</div><div class="kpi-value">{capacity_pace:,.0f} leads</div></div>
-                <div class="kpi"><div class="kpi-label">Recommended Cap</div><div class="kpi-value">{capacity:,.0f} leads</div></div>
-            </div>
-            """, unsafe_allow_html=True)
-
-            if not ts.empty:
-                fig_ts = px.line(
-                    ts,
-                    x="period",
-                    y="CPL",
-                    markers=True,
-                    title="CPL trend for selected region"
-                )
-                fig_ts.update_layout(height=280, margin=dict(l=0, r=0, t=40, b=0), yaxis_title="CPL")
-                st.plotly_chart(fig_ts, use_container_width=True, config={"displayModeBar": False})
-
-            if campaign_col:
-                mask_referral = seg_df["is_referral"].fillna(False).astype(bool) if "is_referral" in seg_df.columns else pd.Series(False, index=seg_df.index)
-                campaign_df = seg_df[mask_referral].copy() if mask_referral.any() else seg_df.copy()
-                camp = (
-                    campaign_df.groupby(campaign_col, as_index=False)
+                ts = (
+                    seg_df.assign(period=seg_df["lead_date"].dt.to_period(period_freq).dt.start_time)
+                    .groupby("period", as_index=False)
                     .agg(
                         Leads=(lead_id_col, "nunique") if lead_id_col else ("lead_date", "size"),
-                        Referrals=("is_referral", "sum") if "is_referral" in campaign_df.columns else ("lead_date", "size"),
                         Spend=(spend_col, "sum") if spend_col else ("lead_date", "size")
                     )
+                    .sort_values("period")
                 )
-                camp["CPL"] = np.where(camp["Leads"] > 0, camp["Spend"] / camp["Leads"], np.nan)
-                camp["CPR"] = np.where(camp["Referrals"] > 0, camp["Spend"] / camp["Referrals"], np.nan)
-                camp = camp.sort_values(["Referrals", "Leads"], ascending=False).head(10)
+                ts["CPL"] = np.where(ts["Leads"] > 0, ts["Spend"] / ts["Leads"], np.nan)
+                lookback = min(6, len(ts))
+                cpl_forecast = ts["CPL"].tail(lookback).mean() if lookback > 0 else cpl
+                cpl_forecast = cpl_forecast if cpl_forecast and cpl_forecast > 0 else cpl
 
-                st.markdown("**Recommended campaigns for this region**")
+                end_date = seg_df["lead_date"].max()
+                recent_mask = seg_df["lead_date"] >= (end_date - pd.Timedelta(days=14))
+                prev_mask = (seg_df["lead_date"] < (end_date - pd.Timedelta(days=14))) & (seg_df["lead_date"] >= (end_date - pd.Timedelta(days=28)))
+                recent_leads = seg_df[recent_mask][lead_id_col].nunique() if lead_id_col else recent_mask.sum()
+                prev_leads = seg_df[prev_mask][lead_id_col].nunique() if lead_id_col else prev_mask.sum()
+                growth = (recent_leads - prev_leads) / prev_leads if prev_leads > 0 else 0
+                growth = float(np.clip(growth, -0.5, 0.5))
+                pace = recent_leads / 14 if recent_leads > 0 else 0
+                capacity_pace = pace * (1 + growth) * horizon_days
+                capacity_spend = planned_spend / cpl_forecast if cpl_forecast > 0 else 0
+                capacity = min(capacity_spend, capacity_pace) if capacity_pace > 0 else capacity_spend
+
+                st.markdown(f"""
+                <div class="kpi-row">
+                    <div class="kpi"><div class="kpi-label">Region Leads</div><div class="kpi-value">{lead_count:,.0f}</div></div>
+                    <div class="kpi"><div class="kpi-label">Current CPL</div><div class="kpi-value">${cpl:,.0f}</div></div>
+                    <div class="kpi"><div class="kpi-label">Forecast CPL</div><div class="kpi-value">${cpl_forecast:,.0f}</div></div>
+                    <div class="kpi"><div class="kpi-label">Capacity (Spend)</div><div class="kpi-value">{capacity_spend:,.0f} leads</div></div>
+                    <div class="kpi"><div class="kpi-label">Capacity (Pace)</div><div class="kpi-value">{capacity_pace:,.0f} leads</div></div>
+                    <div class="kpi"><div class="kpi-label">Recommended Cap</div><div class="kpi-value">{capacity:,.0f} leads</div></div>
+                </div>
+                """, unsafe_allow_html=True)
+
+                if not ts.empty:
+                    fig_ts = px.line(
+                        ts,
+                        x="period",
+                        y="CPL",
+                        markers=True,
+                        title="CPL trend for selected region"
+                    )
+                    fig_ts.update_layout(height=280, margin=dict(l=0, r=0, t=40, b=0), yaxis_title="CPL")
+                    st.plotly_chart(fig_ts, use_container_width=True, config={"displayModeBar": False})
+
+                if campaign_col:
+                    mask_referral = seg_df["is_referral"].fillna(False).astype(bool) if "is_referral" in seg_df.columns else pd.Series(False, index=seg_df.index)
+                    campaign_df = seg_df[mask_referral].copy() if mask_referral.any() else seg_df.copy()
+                    camp = (
+                        campaign_df.groupby(campaign_col, as_index=False)
+                        .agg(
+                            Leads=(lead_id_col, "nunique") if lead_id_col else ("lead_date", "size"),
+                            Referrals=("is_referral", "sum") if "is_referral" in campaign_df.columns else ("lead_date", "size"),
+                            Spend=(spend_col, "sum") if spend_col else ("lead_date", "size")
+                        )
+                    )
+                    camp["CPL"] = np.where(camp["Leads"] > 0, camp["Spend"] / camp["Leads"], np.nan)
+                    camp["CPR"] = np.where(camp["Referrals"] > 0, camp["Spend"] / camp["Referrals"], np.nan)
+                    camp = camp.sort_values(["Referrals", "Leads"], ascending=False).head(10)
+
+                    st.markdown("**Recommended campaigns for this region**")
+                    st.dataframe(
+                        camp.rename(columns={campaign_col: "Campaign"}),
+                        hide_index=True,
+                        use_container_width=True
+                    )
+
+                    comp_fields = [
+                        (budget_col, "Budget"),
+                        (finance_col, "Finance Status"),
+                        (timeframe_col, "Timeframe"),
+                        (land_col, "Do you have land"),
+                        (house_col, "House type"),
+                        (beds_col, "Bedrooms")
+                    ]
+                    if not camp.empty:
+                        comp_rows = []
+                        top_campaigns = camp[campaign_col].head(5).tolist()
+                        for c in top_campaigns:
+                            c_df = campaign_df[campaign_df[campaign_col] == c]
+                            row = {"Campaign": c}
+                            for col, label in comp_fields:
+                                if col and col in c_df.columns:
+                                    top_val = c_df[col].dropna().astype(str).value_counts().head(1)
+                                    if not top_val.empty:
+                                        row[label] = f"{top_val.index[0]} ({top_val.iloc[0]})"
+                            comp_rows.append(row)
+                        if comp_rows:
+                            st.markdown("**Campaign composition snapshot**")
+                            st.dataframe(pd.DataFrame(comp_rows), hide_index=True, use_container_width=True)
+
+    with tabs[3]:
+        st.markdown("""
+        <div class="section-card">
+            <div class="section-header">
+                <span class="section-num">4</span>
+                <span class="section-title">Regional Benchmarks</span>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+        st.markdown("""
+        <div class="explainer">
+            <div class="explainer-title">How to read benchmarks</div>
+            <div class="explainer-text">
+                Benchmarks compare each state to the overall average. Underperforming areas are high volume but low
+                conversion, making them the best candidates for creative or funnel fixes.
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        if group.empty:
+            st.caption("Not enough data to build benchmarks.")
+        else:
+            if "State" in group.columns and group["State"].notna().any():
+                state_benchmark = (
+                    group.groupby("State", as_index=False)
+                    .agg(
+                        Leads=("Leads", "sum"),
+                        Referrals=("Referrals", "sum"),
+                        Avg_Conversion=("Conversion_Rate", "mean"),
+                        Avg_CPR=("CPR", "mean")
+                    )
+                )
+                st.markdown("**State benchmarks**")
                 st.dataframe(
-                    camp.rename(columns={campaign_col: "Campaign"}),
+                    state_benchmark.rename(columns={
+                        "Avg_Conversion": "Avg Conversion",
+                        "Avg_CPR": "Avg CPR"
+                    }),
                     hide_index=True,
                     use_container_width=True
                 )
 
-                comp_fields = [
-                    (budget_col, "Budget"),
-                    (finance_col, "Finance Status"),
-                    (timeframe_col, "Timeframe"),
-                    (land_col, "Do you have land"),
-                    (house_col, "House type"),
-                    (beds_col, "Bedrooms")
-                ]
-                if not camp.empty:
-                    comp_rows = []
-                    top_campaigns = camp[campaign_col].head(5).tolist()
-                    for c in top_campaigns:
-                        c_df = campaign_df[campaign_df[campaign_col] == c]
-                        row = {"Campaign": c}
-                        for col, label in comp_fields:
-                            if col and col in c_df.columns:
-                                top_val = c_df[col].dropna().astype(str).value_counts().head(1)
-                                if not top_val.empty:
-                                    row[label] = f"{top_val.index[0]} ({top_val.iloc[0]})"
-                        comp_rows.append(row)
-                    if comp_rows:
-                        st.markdown("**Campaign composition snapshot**")
-                        st.dataframe(pd.DataFrame(comp_rows), hide_index=True, use_container_width=True)
+            conv_median = group["Conversion_Rate"].median() if group["Conversion_Rate"].notna().any() else 0
+            lead_median = group["Leads"].median() if group["Leads"].notna().any() else 0
+            benchmark_conv = group["Conversion_Rate"].mean() if group["Conversion_Rate"].notna().any() else 0
+            benchmark_cpr = group["CPR"].mean() if group["CPR"].notna().any() else 0
+            group["Conv_vs_Avg"] = group["Conversion_Rate"] - benchmark_conv
+            group["CPR_vs_Avg"] = group["CPR"] - benchmark_cpr
+            outliers = group[
+                (group["Leads"] >= lead_median) &
+                (group["Conversion_Rate"] < benchmark_conv * 0.8)
+            ].sort_values("Opportunity_Score", ascending=False)
+            st.markdown("**Underperforming high-volume postcodes**")
+            st.dataframe(
+                outliers[["Postcode", "Suburb", "Leads", "Conversion_Rate", "CPR", "Campaigns"]].head(20),
+                hide_index=True,
+                use_container_width=True
+            )
 
-    # Section 4: Regional benchmarks and outliers
-    st.markdown("""
-    <div class="section">
-        <div class="section-header">
-            <span class="section-num">4</span>
-            <span class="section-title">Regional Benchmarks</span>
+    with tabs[4]:
+        st.markdown("""
+        <div class="section-card">
+            <div class="section-header">
+                <span class="section-num">5</span>
+                <span class="section-title">Media Spend Optimization Plan</span>
+            </div>
         </div>
-    </div>
-    """, unsafe_allow_html=True)
-    st.markdown("""
-    <div class="explainer">
-        <div class="explainer-title">How to read benchmarks</div>
-        <div class="explainer-text">
-            Benchmarks compare each state to the overall average. The underperforming list highlights high-volume
-            postcodes that convert well below average, which are your fastest fix opportunities.
+        """, unsafe_allow_html=True)
+        st.markdown("""
+        <div class="explainer">
+            <div class="explainer-title">How to use this plan</div>
+            <div class="explainer-text">
+                Scale regions that are high volume and high conversion. Fix regions that are high volume but low
+                conversion. Test small budgets in high conversion but low volume areas. Reduce spend in low volume,
+                low conversion areas.
+            </div>
         </div>
-    </div>
-    """, unsafe_allow_html=True)
+        """, unsafe_allow_html=True)
 
-    if group.empty:
-        st.caption("Not enough data to build benchmarks.")
-    else:
-        if "State" in group.columns and group["State"].notna().any():
-            state_benchmark = (
-                group.groupby("State", as_index=False)
+        if group.empty:
+            st.caption("Not enough data to build a regional optimization plan.")
+        else:
+            conv_median = group["Conversion_Rate"].median() if group["Conversion_Rate"].notna().any() else 0
+            lead_median = group["Leads"].median() if group["Leads"].notna().any() else 0
+            conv_threshold = target_conv if zone_method == "Target-based" else conv_median
+
+            def zone_for_row(row):
+                high_conv = row["Conversion_Rate"] >= conv_threshold
+                high_vol = row["Leads"] >= lead_median
+                if high_conv and high_vol:
+                    return "Scale"
+                if (not high_conv) and high_vol:
+                    return "Fix"
+                if high_conv and (not high_vol):
+                    return "Test"
+                return "Deprioritize"
+
+            group["Zone"] = group.apply(zone_for_row, axis=1)
+            action_map = {
+                "Scale": "Increase budget 20-40%, prioritize best campaigns",
+                "Fix": "Hold spend, localize creative and landing pages",
+                "Test": "Run small tests, replicate top creatives",
+                "Deprioritize": "Reduce spend, reallocate to Scale/Fix"
+            }
+            group["Recommended Action"] = group["Zone"].map(action_map)
+
+            zone_summary = (
+                group.groupby("Zone", as_index=False)
                 .agg(
+                    Postcodes=("Postcode", "nunique"),
                     Leads=("Leads", "sum"),
                     Referrals=("Referrals", "sum"),
+                    Spend=("Media_Spend", "sum"),
                     Avg_Conversion=("Conversion_Rate", "mean"),
                     Avg_CPR=("CPR", "mean")
                 )
             )
-            st.markdown("**State benchmarks**")
+
+            def budget_shift(row):
+                if row["Zone"] == "Scale":
+                    return "+30%"
+                if row["Zone"] == "Fix":
+                    return "0% (optimize)"
+                if row["Zone"] == "Test":
+                    return "+10% (capped)"
+                return "-25%"
+
+            zone_summary["Suggested Budget Shift"] = zone_summary.apply(budget_shift, axis=1)
+            zone_summary = zone_summary.sort_values("Postcodes", ascending=False)
+
+            st.markdown("**Zone summary**")
             st.dataframe(
-                state_benchmark.rename(columns={
+                zone_summary.rename(columns={
                     "Avg_Conversion": "Avg Conversion",
                     "Avg_CPR": "Avg CPR"
                 }),
@@ -764,191 +882,94 @@ def main():
                 use_container_width=True
             )
 
-        conv_median = group["Conversion_Rate"].median() if group["Conversion_Rate"].notna().any() else 0
-        lead_median = group["Leads"].median() if group["Leads"].notna().any() else 0
-        benchmark_conv = group["Conversion_Rate"].mean() if group["Conversion_Rate"].notna().any() else 0
-        benchmark_cpr = group["CPR"].mean() if group["CPR"].notna().any() else 0
-        group["Conv_vs_Avg"] = group["Conversion_Rate"] - benchmark_conv
-        group["CPR_vs_Avg"] = group["CPR"] - benchmark_cpr
-        outliers = group[
-            (group["Leads"] >= lead_median) &
-            (group["Conversion_Rate"] < benchmark_conv * 0.8)
-        ].sort_values("Opportunity_Score", ascending=False)
-        st.markdown("**Underperforming high-volume postcodes**")
-        st.dataframe(
-            outliers[["Postcode", "Suburb", "Leads", "Conversion_Rate", "CPR", "Campaigns"]].head(20),
-            hide_index=True,
-            use_container_width=True
-        )
-
-    # Section 5: Media spend optimization by region
-    st.markdown("""
-    <div class="section">
-        <div class="section-header">
-            <span class="section-num">5</span>
-            <span class="section-title">Media Spend Optimization Plan</span>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-    st.markdown("""
-    <div class="explainer">
-        <div class="explainer-title">How to use this plan</div>
-        <div class="explainer-text">
-            Scale regions that are high volume and high conversion. Fix regions that are high volume but low conversion.
-            Test small budgets in high conversion but low volume areas. Reduce spend in low volume, low conversion areas.
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-
-    if group.empty:
-        st.caption("Not enough data to build a regional optimization plan.")
-    else:
-        conv_median = group["Conversion_Rate"].median() if group["Conversion_Rate"].notna().any() else 0
-        lead_median = group["Leads"].median() if group["Leads"].notna().any() else 0
-        conv_threshold = target_conv if zone_method == "Target-based" else conv_median
-
-        def zone_for_row(row):
-            high_conv = row["Conversion_Rate"] >= conv_threshold
-            high_vol = row["Leads"] >= lead_median
-            if high_conv and high_vol:
-                return "Scale"
-            if (not high_conv) and high_vol:
-                return "Fix"
-            if high_conv and (not high_vol):
-                return "Test"
-            return "Deprioritize"
-
-        group["Zone"] = group.apply(zone_for_row, axis=1)
-        action_map = {
-            "Scale": "Increase budget 20-40%, prioritize best campaigns",
-            "Fix": "Hold spend, localize creative and landing pages",
-            "Test": "Run small tests, replicate top creatives",
-            "Deprioritize": "Reduce spend, reallocate to Scale/Fix"
-        }
-        group["Recommended Action"] = group["Zone"].map(action_map)
-
-        zone_summary = (
-            group.groupby("Zone", as_index=False)
-            .agg(
-                Postcodes=("Postcode", "nunique"),
-                Leads=("Leads", "sum"),
-                Referrals=("Referrals", "sum"),
-                Spend=("Media_Spend", "sum"),
-                Avg_Conversion=("Conversion_Rate", "mean"),
-                Avg_CPR=("CPR", "mean")
+            st.markdown("**Priority actions by postcode**")
+            action_table = group.rename(columns={
+                "Conversion_Rate": "Conversion Rate",
+                "Media_Spend": "Ad Spend"
+            }).sort_values(
+                ["Zone", "Opportunity_Score"],
+                ascending=[True, False]
             )
-        )
-
-        def budget_shift(row):
-            if row["Zone"] == "Scale":
-                return "+30%"
-            if row["Zone"] == "Fix":
-                return "0% (optimize)"
-            if row["Zone"] == "Test":
-                return "+10% (capped)"
-            return "-25%"
-
-        zone_summary["Suggested Budget Shift"] = zone_summary.apply(budget_shift, axis=1)
-        zone_summary = zone_summary.sort_values("Postcodes", ascending=False)
-
-        st.markdown("**Zone summary**")
-        st.dataframe(
-            zone_summary.rename(columns={
-                "Avg_Conversion": "Avg Conversion",
-                "Avg_CPR": "Avg CPR"
-            }),
-            hide_index=True,
-            use_container_width=True
-        )
-
-        st.markdown("**Priority actions by postcode**")
-        action_table = group.rename(columns={
-            "Conversion_Rate": "Conversion Rate",
-            "Media_Spend": "Ad Spend"
-        }).sort_values(
-            ["Zone", "Opportunity_Score"],
-            ascending=[True, False]
-        )
-        st.dataframe(
-            action_table[[
-                "Postcode", "Suburb", "Leads", "Referrals", "Conversion Rate",
-                "Campaigns", "Ad Spend", "CPR", "Zone", "Recommended Action"
-            ]].head(50),
-            hide_index=True,
-            use_container_width=True
-        )
-
-    # Section 6: Campaign overlap diagnostics
-    st.markdown("""
-    <div class="section">
-        <div class="section-header">
-            <span class="section-num">6</span>
-            <span class="section-title">Campaign Overlap Diagnostics</span>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-    st.markdown("""
-    <div class="explainer">
-        <div class="explainer-title">Why overlap matters</div>
-        <div class="explainer-text">
-            When too many campaigns target the same postcodes, performance can dilute. This section shows crowded
-            areas and the campaigns driving them, so you can consolidate and improve efficiency.
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-
-    if group.empty or not campaign_col:
-        st.caption("Campaign overlap requires campaign fields (utm_campaign/utm_key/ad_key).")
-    else:
-        crowd = group.copy()
-        crowd["Campaigns_per_Lead"] = np.where(crowd["Leads"] > 0, crowd["Campaigns"] / crowd["Leads"], 0)
-        crowded = crowd.sort_values("Campaigns", ascending=False).head(15)
-        st.markdown("**Most crowded postcodes**")
-        st.dataframe(
-            crowded[["Postcode", "Suburb", "Leads", "Campaigns", "Campaigns_per_Lead", "Conversion_Rate"]],
-            hide_index=True,
-            use_container_width=True
-        )
-
-        if "LeadId" in df.columns:
-            campaign_list = (
-                df.groupby([postcode_col, suburb_col, campaign_col], as_index=False)["LeadId"]
-                .nunique()
-                .rename(columns={"LeadId": "Leads"})
+            st.dataframe(
+                action_table[[
+                    "Postcode", "Suburb", "Leads", "Referrals", "Conversion Rate",
+                    "Campaigns", "Ad Spend", "CPR", "Zone", "Recommended Action"
+                ]].head(50),
+                hide_index=True,
+                use_container_width=True
             )
+
+    with tabs[5]:
+        st.markdown("""
+        <div class="section-card">
+            <div class="section-header">
+                <span class="section-num">6</span>
+                <span class="section-title">Campaign Overlap Diagnostics</span>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+        st.markdown("""
+        <div class="explainer">
+            <div class="explainer-title">Why overlap matters</div>
+            <div class="explainer-text">
+                When too many campaigns target the same postcodes, results can dilute. Use this to consolidate budget
+                into the few campaigns that are already converting well in those areas.
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        if group.empty or not campaign_col:
+            st.caption("Campaign overlap requires campaign fields (utm_campaign/utm_key/ad_key).")
         else:
-            campaign_list = (
-                df.groupby([postcode_col, suburb_col, campaign_col], as_index=False)
-                .size()
-                .rename(columns={"size": "Leads"})
+            crowd = group.copy()
+            crowd["Campaigns_per_Lead"] = np.where(crowd["Leads"] > 0, crowd["Campaigns"] / crowd["Leads"], 0)
+            crowded = crowd.sort_values("Campaigns", ascending=False).head(15)
+            st.markdown("**Most crowded postcodes**")
+            st.dataframe(
+                crowded[["Postcode", "Suburb", "Leads", "Campaigns", "Campaigns_per_Lead", "Conversion_Rate"]],
+                hide_index=True,
+                use_container_width=True
             )
-        campaign_list = campaign_list.sort_values("Leads", ascending=False).head(50)
-        campaign_list = campaign_list.rename(columns={
-            postcode_col: "Postcode",
-            suburb_col: "Suburb",
-            campaign_col: "Campaign"
-        })
-        st.markdown("**Top campaigns in high-overlap areas**")
-        st.dataframe(campaign_list, hide_index=True, use_container_width=True)
 
-    # Section 7: Creative guidance
-    st.markdown("""
-    <div class="section">
-        <div class="section-header">
-            <span class="section-num">7</span>
-            <span class="section-title">Creative Guidance</span>
+            if "LeadId" in df.columns:
+                campaign_list = (
+                    df.groupby([postcode_col, suburb_col, campaign_col], as_index=False)["LeadId"]
+                    .nunique()
+                    .rename(columns={"LeadId": "Leads"})
+                )
+            else:
+                campaign_list = (
+                    df.groupby([postcode_col, suburb_col, campaign_col], as_index=False)
+                    .size()
+                    .rename(columns={"size": "Leads"})
+                )
+            campaign_list = campaign_list.sort_values("Leads", ascending=False).head(50)
+            campaign_list = campaign_list.rename(columns={
+                postcode_col: "Postcode",
+                suburb_col: "Suburb",
+                campaign_col: "Campaign"
+            })
+            st.markdown("**Top campaigns in high-overlap areas**")
+            st.dataframe(campaign_list, hide_index=True, use_container_width=True)
+
+    with tabs[6]:
+        st.markdown("""
+        <div class="section-card">
+            <div class="section-header">
+                <span class="section-num">7</span>
+                <span class="section-title">Creative Guidance</span>
+            </div>
         </div>
-    </div>
-    """, unsafe_allow_html=True)
-    st.markdown("""
-    <div class="explainer">
-        <div class="explainer-title">Commercial value</div>
-        <div class="explainer-text">
-            Mentioning suburbs or postcodes in your creative typically lifts relevance and conversion. Use the
-            opportunity list to decide which areas to feature in ads and landing pages.
+        """, unsafe_allow_html=True)
+        st.markdown("""
+        <div class="explainer">
+            <div class="explainer-title">Commercial value</div>
+            <div class="explainer-text">
+                Mentioning suburbs or postcodes in your creative typically lifts relevance and conversion. Use the
+                opportunity list to decide which areas to feature in ads and landing pages.
+            </div>
         </div>
-    </div>
-    """, unsafe_allow_html=True)
+        """, unsafe_allow_html=True)
 
     st.markdown("""
     <div class="insight">
