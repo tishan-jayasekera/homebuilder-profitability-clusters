@@ -206,7 +206,16 @@ def main():
     df[postcode_col] = df[postcode_col].str.replace(r"\.0$", "", regex=True).str.zfill(4)
     df[suburb_col] = df[suburb_col].astype(str).str.strip().replace({"nan": np.nan, "": np.nan})
     df[suburb_col] = df[suburb_col].str.upper()
-    df = df.dropna(subset=[postcode_col, suburb_col])
+    meta_df = load_postcode_meta()
+    if meta_df is not None and not meta_df.empty:
+        unique_suburbs = (
+            meta_df.groupby("Postcode")["Suburb"]
+            .unique()
+            .apply(lambda x: x[0] if len(x) == 1 else np.nan)
+        )
+        df[suburb_col] = df[suburb_col].fillna(df[postcode_col].map(unique_suburbs))
+    df[suburb_col] = df[suburb_col].fillna("UNKNOWN")
+    df = df.dropna(subset=[postcode_col])
     if builder_filter and builder_scope == "Whole page" and "Dest_BuilderRegionKey" in df.columns:
         df = df[df["Dest_BuilderRegionKey"].isin(builder_filter)]
 
