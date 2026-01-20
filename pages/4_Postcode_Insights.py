@@ -336,11 +336,98 @@ def main():
         )
         st.dataframe(suburb_list, hide_index=True, use_container_width=True)
 
-    # Section 3: Creative guidance
+    # Section 3: Media spend optimization by region
     st.markdown("""
     <div class="section">
         <div class="section-header">
             <span class="section-num">3</span>
+            <span class="section-title">Media Spend Optimization Plan</span>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    if group.empty:
+        st.caption("Not enough data to build a regional optimization plan.")
+    else:
+        conv_median = group["Conversion_Rate"].median() if group["Conversion_Rate"].notna().any() else 0
+        lead_median = group["Leads"].median() if group["Leads"].notna().any() else 0
+
+        def zone_for_row(row):
+            high_conv = row["Conversion_Rate"] >= conv_median
+            high_vol = row["Leads"] >= lead_median
+            if high_conv and high_vol:
+                return "Scale"
+            if (not high_conv) and high_vol:
+                return "Fix"
+            if high_conv and (not high_vol):
+                return "Test"
+            return "Deprioritize"
+
+        group["Zone"] = group.apply(zone_for_row, axis=1)
+        action_map = {
+            "Scale": "Increase budget 20-40%, prioritize best campaigns",
+            "Fix": "Hold spend, localize creative and landing pages",
+            "Test": "Run small tests, replicate top creatives",
+            "Deprioritize": "Reduce spend, reallocate to Scale/Fix"
+        }
+        group["Recommended Action"] = group["Zone"].map(action_map)
+
+        zone_summary = (
+            group.groupby("Zone", as_index=False)
+            .agg(
+                Postcodes=("Postcode", "nunique"),
+                Leads=("Leads", "sum"),
+                Referrals=("Referrals", "sum"),
+                Spend=("Media_Spend", "sum"),
+                Avg_Conversion=("Conversion_Rate", "mean"),
+                Avg_CPR=("CPR", "mean")
+            )
+        )
+
+        def budget_shift(row):
+            if row["Zone"] == "Scale":
+                return "+30%"
+            if row["Zone"] == "Fix":
+                return "0% (optimize)"
+            if row["Zone"] == "Test":
+                return "+10% (capped)"
+            return "-25%"
+
+        zone_summary["Suggested Budget Shift"] = zone_summary.apply(budget_shift, axis=1)
+        zone_summary = zone_summary.sort_values("Postcodes", ascending=False)
+
+        st.markdown("**Zone summary**")
+        st.dataframe(
+            zone_summary.rename(columns={
+                "Avg_Conversion": "Avg Conversion",
+                "Avg_CPR": "Avg CPR"
+            }),
+            hide_index=True,
+            use_container_width=True
+        )
+
+        st.markdown("**Priority actions by postcode**")
+        action_table = group.rename(columns={
+            "Conversion_Rate": "Conversion Rate",
+            "Media_Spend": "Ad Spend"
+        }).sort_values(
+            ["Zone", "Opportunity_Score"],
+            ascending=[True, False]
+        )
+        st.dataframe(
+            action_table[[
+                "Postcode", "Suburb", "Leads", "Referrals", "Conversion Rate",
+                "Campaigns", "Ad Spend", "CPR", "Zone", "Recommended Action"
+            ]].head(50),
+            hide_index=True,
+            use_container_width=True
+        )
+
+    # Section 3: Creative guidance
+    st.markdown("""
+    <div class="section">
+        <div class="section-header">
+            <span class="section-num">4</span>
             <span class="section-title">Creative Guidance</span>
         </div>
     </div>
