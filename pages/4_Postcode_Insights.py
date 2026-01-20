@@ -216,6 +216,9 @@ def main():
         df[suburb_col] = df[suburb_col].fillna(df[postcode_col].map(unique_suburbs))
     df[suburb_col] = df[suburb_col].fillna("UNKNOWN")
     df = df.dropna(subset=[postcode_col])
+    if meta_df is not None and not meta_df.empty:
+        state_map = meta_df.drop_duplicates("Postcode").set_index("Postcode")["State"]
+        df["State"] = df.get("State", pd.Series(index=df.index, dtype="object")).fillna(df[postcode_col].map(state_map))
     if builder_filter and builder_scope == "Whole page" and "Dest_BuilderRegionKey" in df.columns:
         df = df[df["Dest_BuilderRegionKey"].isin(builder_filter)]
 
@@ -1308,19 +1311,25 @@ def main():
             st.caption("Not enough data to build benchmarks.")
         else:
             if "State" in group.columns and group["State"].notna().any():
+                if spend_col:
+                    spend_series = df[spend_col].fillna(0)
+                    df = df.copy()
+                    df["_event_spend"] = spend_series
+                else:
+                    df = df.copy()
+                    df["_event_spend"] = 0
                 state_benchmark = (
-                    group.groupby("State", as_index=False)
+                    df.groupby("State", as_index=False)
                     .agg(
-                        Leads=("Leads", "sum"),
-                        Referrals=("Referrals", "sum"),
-                        Avg_Conversion=("Qualified_Lead_Rate", "mean"),
-                        Avg_CPR=("CPR", "mean")
+                        Leads=("is_referral_bool", lambda x: (~x).sum()),
+                        Referrals=("is_referral_bool", "sum"),
+                        Events=("is_referral_bool", "size"),
+                        Avg_CPR=("_event_spend", lambda s: s.sum() / max(1, len(s)))
                     )
                 )
                 st.markdown("**State benchmarks**")
                 st.dataframe(
                     state_benchmark.rename(columns={
-                        "Avg_Conversion": "Avg Qualified/Lead Rate",
                         "Avg_CPR": "Avg CPR"
                     }),
                     hide_index=True,
