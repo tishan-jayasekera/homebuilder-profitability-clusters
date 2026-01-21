@@ -2025,9 +2025,6 @@ def main():
                 </div>
         """, unsafe_allow_html=True)
 
-    with tabs[7]:
-        render_build_region_extractor()
-
                 c_ts = (
                     c_df.assign(period=c_df["event_date"].dt.to_period(trend_period).dt.start_time)
                     .groupby("period", as_index=False)
@@ -2101,6 +2098,9 @@ def main():
                 hide_index=True,
                 width="stretch"
             )
+
+    with tabs[7]:
+        render_build_region_extractor()
 
     st.markdown("""
     <div class="insight">
