@@ -1040,8 +1040,8 @@ def main():
             lookback = min(lookback_periods, len(ts))
             cpl_forecast = ts["CPL"].tail(lookback).mean() if lookback > 0 else cpl
             cpl_forecast = cpl_forecast if cpl_forecast and cpl_forecast > 0 else cpl
-            cpl_std = ts["CPL"].tail(lookback).std() if lookback > 1 else 0
             cpr_forecast = ts["CPR"].tail(lookback).mean() if lookback > 0 else np.nan
+            cpr_std = ts["CPR"].tail(lookback).std() if lookback > 1 else 0
             current_cpr = ts["CPR"].tail(1).iloc[0] if not ts["CPR"].dropna().empty else np.nan
 
             end_date = seg_df["event_date"].max()
@@ -1104,6 +1104,12 @@ def main():
                     </div>
                 </div>
                 """, unsafe_allow_html=True)
+                st.caption(f"Binding constraint: {binding}")
+                st.markdown(f"**Spend to hit target:** ${required_spend:,.0f} for {target_events:,.0f} events")
+
+            st.markdown("**1) Pace drivers**")
+            pace_cols = st.columns(2)
+            with pace_cols[0]:
                 pace_flow = pd.DataFrame([
                     {"Step": "Events (last 14d)", "Value": recent_events},
                     {"Step": "Events per day", "Value": pace},
@@ -1120,16 +1126,14 @@ def main():
                     textposition="outside"
                 ))
                 pace_fig.update_layout(
-                    height=220,
+                    height=240,
                     margin=dict(l=0, r=0, t=30, b=0),
                     yaxis_title=None,
                     xaxis_title=None,
                     title="Pace build-up"
                 )
                 st.plotly_chart(pace_fig, use_container_width=True, config={"displayModeBar": False})
-                st.caption(f"Binding constraint: {binding}")
-                st.markdown(f"**Spend to hit target:** ${required_spend:,.0f} for {target_events:,.0f} events")
-
+            with pace_cols[1]:
                 st.markdown("**Horizon impact on capacity**")
                 if pace_14 <= 0:
                     st.caption("Not enough recent lead activity to estimate pace-based capacity.")
@@ -1140,8 +1144,6 @@ def main():
                         {"Horizon (days)": 60, "Pace Capacity (events)": pace * (1 + growth) * 60},
                         {"Horizon (days)": horizon_days, "Pace Capacity (events)": capacity_pace}
                     ])
-                    st.dataframe(horizon_table, hide_index=True, use_container_width=True)
-
                     horizon_fig = go.Figure()
                     horizon_fig.add_trace(go.Scatter(
                         x=horizon_table["Horizon (days)"],
@@ -1149,36 +1151,39 @@ def main():
                         mode="lines+markers",
                         name="Pace capacity"
                     ))
-                    horizon_fig.update_layout(height=220, margin=dict(l=0, r=0, t=40, b=0), yaxis_title="Events", title="Capacity grows with the forecast horizon")
+                    horizon_fig.update_layout(height=240, margin=dict(l=0, r=0, t=40, b=0), yaxis_title="Events", title="Capacity grows with the forecast horizon")
                     st.plotly_chart(horizon_fig, use_container_width=True, config={"displayModeBar": False})
+                    st.dataframe(horizon_table, hide_index=True, use_container_width=True)
 
-                if not ts.empty and (ts["CPL"].notna().any() or ts["CPR"].notna().any()):
-                    low = max(cpl_forecast - (cpl_std or 0), 0)
-                    high = cpl_forecast + (cpl_std or 0)
-                    fig_ts = go.Figure()
-                    if ts["CPL"].notna().any():
-                        fig_ts.add_trace(go.Scatter(
-                            x=ts["period"],
-                            y=ts["CPL"],
-                            mode="lines+markers",
-                            name="Actual CPL"
-                        ))
-                    if ts["CPR"].notna().any():
-                        fig_ts.add_trace(go.Scatter(
-                            x=ts["period"],
-                            y=ts["CPR"],
-                            mode="lines+markers",
-                            name="Actual CPR",
-                            line=dict(dash="dot")
-                        ))
-                    if cpr_forecast and cpr_forecast > 0:
-                        fig_ts.add_trace(go.Scatter(
-                            x=ts["period"],
-                            y=[cpr_forecast] * len(ts),
-                            mode="lines",
-                            name="Forecast CPR",
-                            line=dict(dash="dash")
-                        ))
+            st.markdown("**2) Cost trend (CPR)**")
+            if not ts.empty and (ts["CPL"].notna().any() or ts["CPR"].notna().any()):
+                fig_ts = go.Figure()
+                if ts["CPL"].notna().any():
+                    fig_ts.add_trace(go.Scatter(
+                        x=ts["period"],
+                        y=ts["CPL"],
+                        mode="lines+markers",
+                        name="Actual CPL"
+                    ))
+                if ts["CPR"].notna().any():
+                    fig_ts.add_trace(go.Scatter(
+                        x=ts["period"],
+                        y=ts["CPR"],
+                        mode="lines+markers",
+                        name="Actual CPR",
+                        line=dict(dash="dot")
+                    ))
+                if cpr_forecast and cpr_forecast > 0:
+                    fig_ts.add_trace(go.Scatter(
+                        x=ts["period"],
+                        y=[cpr_forecast] * len(ts),
+                        mode="lines",
+                        name="Forecast CPR",
+                        line=dict(dash="dash")
+                    ))
+                if cpr_forecast and cpr_forecast > 0 and cpr_std is not None:
+                    low = max(cpr_forecast - (cpr_std or 0), 0)
+                    high = cpr_forecast + (cpr_std or 0)
                     fig_ts.add_trace(go.Scatter(
                         x=ts["period"],
                         y=[high] * len(ts),
@@ -1192,70 +1197,35 @@ def main():
                         y=[low] * len(ts),
                         mode="lines",
                         fill="tonexty",
-                        name="CPL range",
+                        name="CPR range",
                         line=dict(width=0),
                         opacity=0.2
                     ))
-                    fig_ts.update_layout(height=280, margin=dict(l=0, r=0, t=40, b=0), yaxis_title="CPL/CPR")
-                    st.plotly_chart(fig_ts, use_container_width=True, config={"displayModeBar": False})
-                else:
-                    st.caption("Not enough spend/lead data to plot CPL/CPR trends for this selection.")
+                fig_ts.update_layout(height=280, margin=dict(l=0, r=0, t=40, b=0), yaxis_title="CPL/CPR")
+                st.plotly_chart(fig_ts, use_container_width=True, config={"displayModeBar": False})
+            else:
+                st.caption("Not enough spend/lead data to plot CPL/CPR trends for this selection.")
 
-                if pace_7 > 0 or pace_14 > 0 or pace_28 > 0:
-                    pace_fig = go.Figure()
-                    pace_fig.add_trace(go.Bar(
-                        x=["Last 7d", "Last 14d", "Last 28d"],
-                        y=[pace_7, pace_14, pace_28],
-                        marker_color=["#60a5fa", "#3b82f6", "#1d4ed8"],
-                        name="Events per day"
-                    ))
-                    pace_fig.update_layout(height=220, margin=dict(l=0, r=0, t=40, b=0), yaxis_title="Events / day", title="Recent delivery pace")
-                    st.plotly_chart(pace_fig, use_container_width=True, config={"displayModeBar": False})
-                else:
-                    st.caption("No recent activity to show pace.")
+            st.markdown("**3) Recent delivery pace**")
+            if pace_7 > 0 or pace_14 > 0 or pace_28 > 0:
+                pace_fig = go.Figure()
+                pace_fig.add_trace(go.Bar(
+                    x=["Last 7d", "Last 14d", "Last 28d"],
+                    y=[pace_7, pace_14, pace_28],
+                    marker_color=["#60a5fa", "#3b82f6", "#1d4ed8"],
+                    name="Events per day"
+                ))
+                pace_fig.update_layout(height=220, margin=dict(l=0, r=0, t=40, b=0), yaxis_title="Events / day", title="Recent delivery pace")
+                st.plotly_chart(pace_fig, use_container_width=True, config={"displayModeBar": False})
+            else:
+                st.caption("No recent activity to show pace.")
 
-                scenario = pd.DataFrame([
-                    {"Scenario": "Planned", "Spend": planned_spend, "Capacity (Spend)": capacity_spend, "Recommended Cap": capacity, "Binding": binding},
-                    {"Scenario": "Stretch", "Spend": boost_spend, "Capacity (Spend)": boost_capacity_spend, "Recommended Cap": boost_capacity, "Binding": binding}
-                ])
-                st.markdown("**Scenario comparison**")
-                st.dataframe(scenario, hide_index=True, use_container_width=True)
-
-                st.markdown("**Sensitivity & assumptions**")
-                sensitivities = pd.DataFrame([
-                    {
-                        "Assumption / Lever": "Referral rate +10%",
-                        "What changes": "More referrals per lead",
-                        "Estimated impact": f"+{capacity * 0.10:,.0f} events capacity"
-                    },
-                    {
-                        "Assumption / Lever": "Referral rate -10%",
-                        "What changes": "Fewer referrals per lead",
-                        "Estimated impact": f"{capacity * -0.10:,.0f} events capacity"
-                    },
-                    {
-                        "Assumption / Lever": "Spend +20%",
-                        "What changes": "More budget available",
-                        "Estimated impact": f"+{capacity_spend * 0.20:,.0f} events spend-capacity"
-                    },
-                    {
-                        "Assumption / Lever": "Spend -20%",
-                        "What changes": "Less budget available",
-                        "Estimated impact": f"{capacity_spend * -0.20:,.0f} events spend-capacity"
-                    },
-                    {
-                        "Assumption / Lever": "Pace +15%",
-                        "What changes": "Higher recent delivery speed",
-                        "Estimated impact": f"+{capacity_pace * 0.15:,.0f} events pace-capacity"
-                    },
-                    {
-                        "Assumption / Lever": "Pace -15%",
-                        "What changes": "Lower recent delivery speed",
-                        "Estimated impact": f"{capacity_pace * -0.15:,.0f} events pace-capacity"
-                    }
-                ])
-                st.dataframe(sensitivities, hide_index=True, use_container_width=True)
-                st.caption("Key levers: referral rate, recent pace, and planned spend. Assumptions: recent 14-day pace reflects near-term delivery, growth capped at ±50%, and CPR holds over the forecast horizon.")
+            st.markdown("**4) Scenario comparison**")
+            scenario = pd.DataFrame([
+                {"Scenario": "Planned", "Spend": planned_spend, "Capacity (Spend)": capacity_spend, "Recommended Cap": capacity, "Binding": binding},
+                {"Scenario": "Stretch", "Spend": boost_spend, "Capacity (Spend)": boost_capacity_spend, "Recommended Cap": boost_capacity, "Binding": binding}
+            ])
+            st.dataframe(scenario, hide_index=True, use_container_width=True)
 
             if campaign_col:
                 seg_df[campaign_col] = seg_df[campaign_col].fillna("Unknown").astype(str)
