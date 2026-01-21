@@ -1928,14 +1928,14 @@ def main():
                 horizontal=True
             )
             expected_days = st.slider("Expected days to first lead", 1, 30, 10, step=1)
-            spend_mask = df["_event_spend"] > 0
-            lead_mask = df["is_referral_bool"] == False
+            df["_has_spend"] = df["_event_spend"] > 0
+            df["_is_lead_event"] = df["is_referral_bool"] == False
             campaign_first = (
                 df.groupby(campaign_col, as_index=False)
                 .agg(
                     First_Event=("event_date", "min"),
-                    First_Spend=("event_date", lambda x: x[df.loc[x.index, spend_mask] == True].min()),
-                    First_Lead=("event_date", lambda x: x[df.loc[x.index, lead_mask] == True].min())
+                    First_Spend=("event_date", lambda x: x[df.loc[x.index, "_has_spend"]].min()),
+                    First_Lead=("event_date", lambda x: x[df.loc[x.index, "_is_lead_event"]].min())
                 )
             )
             if lag_basis == "First spend event":
