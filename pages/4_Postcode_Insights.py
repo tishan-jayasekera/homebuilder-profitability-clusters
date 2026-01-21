@@ -1000,6 +1000,14 @@ def main():
                 ts_freq = st.radio("Trend period", ["Weekly", "Monthly"], horizontal=True)
                 period_freq = "W" if ts_freq == "Weekly" else "M"
                 lookback_periods = st.slider("CPR lookback periods", 2, 12, 6, step=1)
+                pace_override = st.slider(
+                    "Pace adjustment (%)",
+                    -50,
+                    50,
+                    0,
+                    step=5,
+                    help="Apply a manual adjustment to recent pace (events/day)."
+                )
 
             period_col = seg_df["event_date"].dt.to_period(period_freq).dt.start_time
             periods = pd.DataFrame({"period": period_col}).dropna().drop_duplicates()
@@ -1054,6 +1062,7 @@ def main():
             growth = (recent_events - prev_events) / prev_events if prev_events > 0 else 0
             growth = float(np.clip(growth, -0.5, 0.5))
             pace = recent_events / 14 if recent_events > 0 else 0
+            pace = pace * (1 + (pace_override / 100))
             recent_7 = seg_df["event_date"] >= (end_date - pd.Timedelta(days=7))
             recent_28 = seg_df["event_date"] >= (end_date - pd.Timedelta(days=28))
             recent_7_df = seg_df[recent_7]
@@ -1099,7 +1108,7 @@ def main():
                     <div class="explainer-text">
                         We estimate recent delivery speed from events/day over the last 14 days, then apply a growth
                         adjustment based on the prior 14-day trend. The formula is:
-                        <br/><b>Capacity (Pace) = (Events last 14 days ÷ 14) × (1 + Growth) × Forecast horizon (days)</b>.
+                        <br/><b>Capacity (Pace) = (Events last 14 days ÷ 14) × (1 + Pace adjustment) × (1 + Growth) × Forecast horizon (days)</b>.
                         Growth is capped at ±50% to avoid extreme swings.
                     </div>
                 </div>
@@ -1112,7 +1121,8 @@ def main():
             with pace_cols[0]:
                 pace_flow = pd.DataFrame([
                     {"Step": "Events (last 14d)", "Value": recent_events},
-                    {"Step": "Events per day", "Value": pace},
+                    {"Step": "Events per day", "Value": recent_events / 14 if recent_events > 0 else 0},
+                    {"Step": "Pace adj", "Value": 1 + (pace_override / 100)},
                     {"Step": "Growth adj", "Value": 1 + growth},
                     {"Step": "Horizon (days)", "Value": horizon_days},
                     {"Step": "Capacity (Pace)", "Value": capacity_pace}
@@ -1259,7 +1269,7 @@ def main():
                     "Estimated impact": f"{capacity_pace * -0.15:,.0f} events pace-capacity"
                 }
             ])
-            sensitivity_note = "Key levers: referral rate, recent pace, and planned spend. Assumptions: recent 14-day pace reflects near-term delivery, growth capped at ±50%, and CPR holds over the forecast horizon."
+            sensitivity_note = "Key levers: referral rate, recent pace, pace adjustment, and planned spend. Assumptions: recent 14-day pace reflects near-term delivery, growth capped at ±50%, and CPR holds over the forecast horizon."
 
             if campaign_col:
                 seg_df[campaign_col] = seg_df[campaign_col].fillna("Unknown").astype(str)
