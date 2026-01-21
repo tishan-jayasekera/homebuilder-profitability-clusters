@@ -1136,7 +1136,7 @@ def main():
             with pace_cols[1]:
                 st.markdown("**Horizon impact on capacity**")
                 if pace_14 <= 0:
-                    st.caption("Not enough recent lead activity to estimate pace-based capacity.")
+                    st.caption("Not enough recent activity to estimate pace-based capacity.")
                 else:
                     horizon_table = pd.DataFrame([
                         {"Horizon (days)": 7, "Pace Capacity (events)": pace * (1 + growth) * 7},
@@ -1201,10 +1201,10 @@ def main():
                         line=dict(width=0),
                         opacity=0.2
                     ))
-                fig_ts.update_layout(height=280, margin=dict(l=0, r=0, t=40, b=0), yaxis_title="CPL/CPR")
+                fig_ts.update_layout(height=280, margin=dict(l=0, r=0, t=40, b=0), yaxis_title="Cost")
                 st.plotly_chart(fig_ts, use_container_width=True, config={"displayModeBar": False})
             else:
-                st.caption("Not enough spend/lead data to plot CPL/CPR trends for this selection.")
+                st.caption("Not enough spend/event data to plot CPR trends for this selection.")
 
             st.markdown("**3) Recent delivery pace**")
             if pace_7 > 0 or pace_14 > 0 or pace_28 > 0:
@@ -1226,6 +1226,40 @@ def main():
                 {"Scenario": "Stretch", "Spend": boost_spend, "Capacity (Spend)": boost_capacity_spend, "Recommended Cap": boost_capacity, "Binding": binding}
             ])
             st.dataframe(scenario, hide_index=True, use_container_width=True)
+
+            sensitivity_df = pd.DataFrame([
+                {
+                    "Assumption / Lever": "Referral rate +10%",
+                    "What changes": "More referrals per lead",
+                    "Estimated impact": f"+{capacity * 0.10:,.0f} events capacity"
+                },
+                {
+                    "Assumption / Lever": "Referral rate -10%",
+                    "What changes": "Fewer referrals per lead",
+                    "Estimated impact": f"{capacity * -0.10:,.0f} events capacity"
+                },
+                {
+                    "Assumption / Lever": "Spend +20%",
+                    "What changes": "More budget available",
+                    "Estimated impact": f"+{capacity_spend * 0.20:,.0f} events spend-capacity"
+                },
+                {
+                    "Assumption / Lever": "Spend -20%",
+                    "What changes": "Less budget available",
+                    "Estimated impact": f"{capacity_spend * -0.20:,.0f} events spend-capacity"
+                },
+                {
+                    "Assumption / Lever": "Pace +15%",
+                    "What changes": "Higher recent delivery speed",
+                    "Estimated impact": f"+{capacity_pace * 0.15:,.0f} events pace-capacity"
+                },
+                {
+                    "Assumption / Lever": "Pace -15%",
+                    "What changes": "Lower recent delivery speed",
+                    "Estimated impact": f"{capacity_pace * -0.15:,.0f} events pace-capacity"
+                }
+            ])
+            sensitivity_note = "Key levers: referral rate, recent pace, and planned spend. Assumptions: recent 14-day pace reflects near-term delivery, growth capped at ±50%, and CPR holds over the forecast horizon."
 
             if campaign_col:
                 seg_df[campaign_col] = seg_df[campaign_col].fillna("Unknown").astype(str)
@@ -1312,6 +1346,10 @@ def main():
                     if comp_rows:
                         st.markdown("**Campaign composition snapshot**")
                         st.dataframe(pd.DataFrame(comp_rows), hide_index=True, use_container_width=True)
+
+            st.markdown("**Sensitivity & assumptions**")
+            st.dataframe(sensitivity_df, hide_index=True, use_container_width=True)
+            st.caption(sensitivity_note)
 
     with tabs[3]:
         st.markdown("""
