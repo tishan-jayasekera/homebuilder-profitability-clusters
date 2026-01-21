@@ -1876,15 +1876,29 @@ def main():
             st.plotly_chart(funnel_fig, use_container_width=True, config={"displayModeBar": False})
 
             st.markdown("**Time to first lead by campaign**")
+            lag_basis = st.radio(
+                "Lag baseline",
+                ["First event", "First spend event", "First lead event"],
+                horizontal=True
+            )
             expected_days = st.slider("Expected days to first lead", 1, 30, 10, step=1)
+            spend_mask = df["_event_spend"] > 0
+            lead_mask = df["is_referral_bool"] == False
             campaign_first = (
                 df.groupby(campaign_col, as_index=False)
                 .agg(
                     First_Event=("event_date", "min"),
-                    First_Lead=("event_date", lambda x: x[df.loc[x.index, "is_referral_bool"] == False].min())
+                    First_Spend=("event_date", lambda x: x[df.loc[x.index, spend_mask] == True].min()),
+                    First_Lead=("event_date", lambda x: x[df.loc[x.index, lead_mask] == True].min())
                 )
             )
-            campaign_first["Days_to_First_Lead"] = (campaign_first["First_Lead"] - campaign_first["First_Event"]).dt.days
+            if lag_basis == "First spend event":
+                base_col = "First_Spend"
+            elif lag_basis == "First lead event":
+                base_col = "First_Lead"
+            else:
+                base_col = "First_Event"
+            campaign_first["Days_to_First_Lead"] = (campaign_first["First_Lead"] - campaign_first[base_col]).dt.days
             campaign_first["Days_to_First_Lead"] = campaign_first["Days_to_First_Lead"].fillna(np.inf)
             campaign_first["Status"] = np.where(
                 campaign_first["Days_to_First_Lead"] <= expected_days,
