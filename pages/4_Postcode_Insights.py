@@ -1805,19 +1805,111 @@ def main():
         <div class="section-card">
             <div class="section-header">
                 <span class="section-num">7</span>
-                <span class="section-title">Creative Guidance</span>
+                <span class="section-title">Campaign Performance Tracker</span>
             </div>
         </div>
         """, unsafe_allow_html=True)
         st.markdown("""
         <div class="explainer">
-            <div class="explainer-title">Commercial value</div>
+            <div class="explainer-title">What this tells you</div>
             <div class="explainer-text">
-                Mentioning suburbs or postcodes in your creative typically lifts relevance and referral rate. Use the
-                opportunity list to decide which areas to feature in ads and landing pages.
+                Track spend → leads → referrals → CPR over time, and monitor revenue per lead using <b>RPL_from_job</b>.
+                The tracker also estimates how long campaigns take to generate a first lead so you can spot underperformers early.
             </div>
         </div>
         """, unsafe_allow_html=True)
+        if not campaign_col:
+            st.caption("Campaign tracker requires campaign fields (utm_campaign/utm_key/ad_key).")
+        else:
+            rpl_col = _find_col(df.columns, ["RPL_from_job"])
+            if rpl_col:
+                df[rpl_col] = pd.to_numeric(df[rpl_col], errors="coerce").fillna(0)
+            df["_event_spend"] = df[spend_col].fillna(0) if spend_col else 0
+
+            st.markdown("**Performance trends**")
+            trend_freq = st.radio("Trend period", ["Weekly", "Monthly"], horizontal=True, key="campaign_trend_freq")
+            trend_period = "W" if trend_freq == "Weekly" else "M"
+            ts_campaign = (
+                df.assign(period=df["event_date"].dt.to_period(trend_period).dt.start_time)
+                .groupby("period", as_index=False)
+                .agg(
+                    Spend=("_event_spend", "sum"),
+                    Leads=("is_referral_bool", lambda x: (~x).sum()),
+                    Referrals=("is_referral_bool", "sum"),
+                    Revenue=(rpl_col, "sum") if rpl_col else ("_event_spend", "sum")
+                )
+            )
+            ts_campaign["CPR"] = np.where(
+                (ts_campaign["Leads"] + ts_campaign["Referrals"]) > 0,
+                ts_campaign["Spend"] / (ts_campaign["Leads"] + ts_campaign["Referrals"]),
+                np.nan
+            )
+            ts_campaign["RPL"] = np.where(ts_campaign["Leads"] > 0, ts_campaign["Revenue"] / ts_campaign["Leads"], np.nan)
+
+            trend_fig = go.Figure()
+            trend_fig.add_trace(go.Scatter(x=ts_campaign["period"], y=ts_campaign["Spend"], name="Spend", mode="lines+markers"))
+            trend_fig.add_trace(go.Scatter(x=ts_campaign["period"], y=ts_campaign["Leads"], name="Leads", mode="lines+markers"))
+            trend_fig.add_trace(go.Scatter(x=ts_campaign["period"], y=ts_campaign["Referrals"], name="Referrals", mode="lines+markers"))
+            trend_fig.add_trace(go.Scatter(x=ts_campaign["period"], y=ts_campaign["CPR"], name="CPR", mode="lines", line=dict(dash="dash")))
+            if rpl_col:
+                trend_fig.add_trace(go.Scatter(x=ts_campaign["period"], y=ts_campaign["RPL"], name="RPL", mode="lines", line=dict(dash="dot")))
+            trend_fig.update_layout(height=320, margin=dict(l=0, r=0, t=40, b=0), yaxis_title="Value", title="Spend → Leads → Referrals → CPR (+ RPL)")
+            st.plotly_chart(trend_fig, use_container_width=True, config={"displayModeBar": False})
+
+            st.markdown("**Funnel summary (current window)**")
+            total_spend = ts_campaign["Spend"].sum()
+            total_leads = ts_campaign["Leads"].sum()
+            total_refs = ts_campaign["Referrals"].sum()
+            total_revenue = ts_campaign["Revenue"].sum()
+            funnel_df = pd.DataFrame({
+                "Stage": ["Spend", "Leads", "Referrals", "Revenue"],
+                "Value": [total_spend, total_leads, total_refs, total_revenue]
+            })
+            funnel_fig = px.bar(
+                funnel_df,
+                x="Stage",
+                y="Value",
+                color="Stage",
+                color_discrete_sequence=["#6366f1", "#22c55e", "#14b8a6", "#f59e0b"]
+            )
+            funnel_fig.update_layout(height=260, margin=dict(l=0, r=0, t=30, b=0), yaxis_title=None)
+            st.plotly_chart(funnel_fig, use_container_width=True, config={"displayModeBar": False})
+
+            st.markdown("**Time to first lead by campaign**")
+            expected_days = st.slider("Expected days to first lead", 1, 30, 10, step=1)
+            campaign_first = (
+                df.groupby(campaign_col, as_index=False)
+                .agg(
+                    First_Event=("event_date", "min"),
+                    First_Lead=("event_date", lambda x: x[df.loc[x.index, "is_referral_bool"] == False].min())
+                )
+            )
+            campaign_first["Days_to_First_Lead"] = (campaign_first["First_Lead"] - campaign_first["First_Event"]).dt.days
+            campaign_first["Days_to_First_Lead"] = campaign_first["Days_to_First_Lead"].fillna(np.inf)
+            campaign_first["Status"] = np.where(
+                campaign_first["Days_to_First_Lead"] <= expected_days,
+                "On-time",
+                "At risk"
+            )
+            lag_fig = px.histogram(
+                campaign_first.replace([np.inf], np.nan),
+                x="Days_to_First_Lead",
+                nbins=15,
+                color="Status",
+                color_discrete_map={"On-time": "#22c55e", "At risk": "#ef4444"}
+            )
+            lag_fig.update_layout(height=260, margin=dict(l=0, r=0, t=30, b=0), xaxis_title="Days to first lead", yaxis_title="Campaigns")
+            st.plotly_chart(lag_fig, use_container_width=True, config={"displayModeBar": False})
+
+            st.markdown("**Campaigns at risk (slow to first lead)**")
+            st.dataframe(
+                campaign_first[campaign_first["Status"] == "At risk"]
+                .sort_values("Days_to_First_Lead", ascending=False)
+                .head(20)
+                .rename(columns={campaign_col: "Campaign"}),
+                hide_index=True,
+                use_container_width=True
+            )
 
     st.markdown("""
     <div class="insight">
