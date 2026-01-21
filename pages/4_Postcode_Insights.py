@@ -1813,7 +1813,7 @@ def main():
         <div class="explainer">
             <div class="explainer-title">What this tells you</div>
             <div class="explainer-text">
-                Track spend → leads → referrals → CPR over time, and monitor revenue per lead using <b>RPL_from_job</b>.
+                Track spend → leads → referrals → CPR over time, and monitor revenue per event using <b>RPL_from_job</b>.
                 The tracker also estimates how long campaigns take to generate a first lead so you can spot underperformers early.
             </div>
         </div>
@@ -1844,7 +1844,11 @@ def main():
                 ts_campaign["Spend"] / (ts_campaign["Leads"] + ts_campaign["Referrals"]),
                 np.nan
             )
-            ts_campaign["RPL"] = np.where(ts_campaign["Leads"] > 0, ts_campaign["Revenue"] / ts_campaign["Leads"], np.nan)
+            ts_campaign["Revenue_per_Event"] = np.where(
+                (ts_campaign["Leads"] + ts_campaign["Referrals"]) > 0,
+                ts_campaign["Revenue"] / (ts_campaign["Leads"] + ts_campaign["Referrals"]),
+                np.nan
+            )
 
             spend_fig = go.Figure()
             spend_fig.add_trace(go.Scatter(
@@ -1890,16 +1894,16 @@ def main():
             if rpl_col:
                 efficiency_fig.add_trace(go.Scatter(
                     x=ts_campaign["period"],
-                    y=ts_campaign["RPL"],
-                    name="RPL",
+                    y=ts_campaign["Revenue_per_Event"],
+                    name="Revenue / Event",
                     mode="lines+markers",
                     line=dict(color="#f59e0b", dash="dot"),
                     yaxis="y2"
                 ))
                 efficiency_fig.update_layout(
-                    yaxis2=dict(overlaying="y", side="right", title="RPL")
+                    yaxis2=dict(overlaying="y", side="right", title="Revenue / Event")
                 )
-            efficiency_fig.update_layout(height=240, margin=dict(l=0, r=0, t=40, b=0), yaxis_title="CPR", title="Efficiency (CPR + RPL)")
+            efficiency_fig.update_layout(height=240, margin=dict(l=0, r=0, t=40, b=0), yaxis_title="CPR", title="Efficiency (CPR + Revenue / Event)")
             st.plotly_chart(efficiency_fig, use_container_width=True, config={"displayModeBar": False})
 
             st.markdown("**Funnel summary (current window)**")
@@ -1976,7 +1980,11 @@ def main():
                 camp_perf["Spend"] / (camp_perf["Leads"] + camp_perf["Referrals"]),
                 np.nan
             )
-            camp_perf["RPL"] = np.where(camp_perf["Leads"] > 0, camp_perf["Revenue"] / camp_perf["Leads"], np.nan)
+            camp_perf["Revenue / Event"] = np.where(
+                (camp_perf["Leads"] + camp_perf["Referrals"]) > 0,
+                camp_perf["Revenue"] / (camp_perf["Leads"] + camp_perf["Referrals"]),
+                np.nan
+            )
             camp_perf["ROAS"] = np.where(camp_perf["Spend"] > 0, camp_perf["Revenue"] / camp_perf["Spend"], np.nan)
             camp_perf = camp_perf.merge(campaign_first[[campaign_col, "Days_to_First_Lead", "Status"]], on=campaign_col, how="left")
             st.dataframe(
@@ -2002,7 +2010,7 @@ def main():
                     "Revenue": c_df[rpl_col].sum() if rpl_col else 0
                 }
                 camp_kpis["CPR"] = camp_kpis["Spend"] / max(1, camp_kpis["Leads"] + camp_kpis["Referrals"])
-                camp_kpis["RPL"] = camp_kpis["Revenue"] / max(1, camp_kpis["Leads"])
+                camp_kpis["Revenue / Event"] = camp_kpis["Revenue"] / max(1, camp_kpis["Leads"] + camp_kpis["Referrals"])
                 camp_kpis["ROAS"] = camp_kpis["Revenue"] / max(1, camp_kpis["Spend"])
                 st.markdown(f"""
                 <div class="kpi-row">
@@ -2010,7 +2018,7 @@ def main():
                     <div class="kpi"><div class="kpi-label">Leads</div><div class="kpi-value">{camp_kpis["Leads"]:,.0f}</div></div>
                     <div class="kpi"><div class="kpi-label">Referrals</div><div class="kpi-value">{camp_kpis["Referrals"]:,.0f}</div></div>
                     <div class="kpi"><div class="kpi-label">CPR</div><div class="kpi-value">${camp_kpis["CPR"]:,.0f}</div></div>
-                    <div class="kpi"><div class="kpi-label">RPL</div><div class="kpi-value">${camp_kpis["RPL"]:,.0f}</div></div>
+                    <div class="kpi"><div class="kpi-label">Revenue / Event</div><div class="kpi-value">${camp_kpis["Revenue / Event"]:,.0f}</div></div>
                     <div class="kpi"><div class="kpi-label">ROAS</div><div class="kpi-value">{camp_kpis["ROAS"]:.1f}x</div></div>
                 </div>
                 """, unsafe_allow_html=True)
@@ -2030,7 +2038,11 @@ def main():
                     c_ts["Spend"] / (c_ts["Leads"] + c_ts["Referrals"]),
                     np.nan
                 )
-                c_ts["RPL"] = np.where(c_ts["Leads"] > 0, c_ts["Revenue"] / c_ts["Leads"], np.nan)
+                c_ts["Revenue_per_Event"] = np.where(
+                    (c_ts["Leads"] + c_ts["Referrals"]) > 0,
+                    c_ts["Revenue"] / (c_ts["Leads"] + c_ts["Referrals"]),
+                    np.nan
+                )
                 c_spend = go.Figure()
                 c_spend.add_trace(go.Scatter(x=c_ts["period"], y=c_ts["Spend"], name="Spend", mode="lines+markers", line=dict(color="#6366f1")))
                 c_spend.update_layout(height=200, margin=dict(l=0, r=0, t=30, b=0), yaxis_title="Spend", title="Campaign spend trend")
@@ -2039,8 +2051,15 @@ def main():
                 c_eff = go.Figure()
                 c_eff.add_trace(go.Scatter(x=c_ts["period"], y=c_ts["CPR"], name="CPR", mode="lines+markers", line=dict(color="#ef4444")))
                 if rpl_col:
-                    c_eff.add_trace(go.Scatter(x=c_ts["period"], y=c_ts["RPL"], name="RPL", mode="lines+markers", line=dict(color="#f59e0b", dash="dot"), yaxis="y2"))
-                    c_eff.update_layout(yaxis2=dict(overlaying="y", side="right", title="RPL"))
+                    c_eff.add_trace(go.Scatter(
+                        x=c_ts["period"],
+                        y=c_ts["Revenue_per_Event"],
+                        name="Revenue / Event",
+                        mode="lines+markers",
+                        line=dict(color="#f59e0b", dash="dot"),
+                        yaxis="y2"
+                    ))
+                    c_eff.update_layout(yaxis2=dict(overlaying="y", side="right", title="Revenue / Event"))
                 c_eff.update_layout(height=200, margin=dict(l=0, r=0, t=30, b=0), yaxis_title="CPR", title="Campaign efficiency trend")
                 st.plotly_chart(c_eff, use_container_width=True, config={"displayModeBar": False})
 
