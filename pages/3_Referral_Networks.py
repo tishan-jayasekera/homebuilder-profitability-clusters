@@ -869,7 +869,7 @@ def main():
         if excluded:
             chips = "".join(f"<span class='chip'>{html.escape(b)}</span>" for b in excluded)
             st.markdown(f"<div class='chip-row'>{chips}</div>", unsafe_allow_html=True)
-            if st.button("Clear excluded", use_container_width=True):
+            if st.button("Clear excluded", width="stretch"):
                 st.session_state.excluded_builders = []
                 if st.session_state.targets:
                     st.session_state.targets = []
@@ -887,7 +887,7 @@ def main():
         
         st.markdown("---")
         st.markdown("### Campaign Targets")
-        if st.button("⚠️ Load Critical Targets", use_container_width=True):
+        if st.button("⚠️ Load Critical Targets", width="stretch"):
             st.session_state.load_critical_targets = True
         if st.session_state.targets:
             for t in st.session_state.targets:
@@ -978,7 +978,7 @@ def main():
             st.session_state.focus_builder = selected
         
         fig = render_network_graph(G, bm, st.session_state.focus_builder, st.session_state.targets)
-        st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+        st.plotly_chart(fig, width="stretch", config={'displayModeBar': False})
     
     with col2:
         # Builder analysis
@@ -1131,13 +1131,13 @@ def main():
             if inbound.empty:
                 st.caption("No inbound referrals in the filtered network.")
             else:
-                st.dataframe(inbound, hide_index=True, use_container_width=True)
+                st.dataframe(inbound, hide_index=True, width="stretch")
         with c_out:
             st.markdown("**Sends referrals to**")
             if outbound.empty:
                 st.caption("No outbound referrals in the filtered network.")
             else:
-                st.dataframe(outbound, hide_index=True, use_container_width=True)
+                st.dataframe(outbound, hide_index=True, width="stretch")
     else:
         st.caption("Select a builder to see inbound and outbound referral relationships.")
 
@@ -1197,7 +1197,7 @@ def main():
                         "CPR": "CPR"
                     }),
                     hide_index=True,
-                    use_container_width=True
+                    width="stretch"
                 )
             else:
                 st.caption("No campaign fields found for leaderboard (utm_campaign, utm_key, ad_key).")
@@ -1259,7 +1259,7 @@ def main():
                         xaxis_title=None,
                         yaxis_title="Referrals"
                     )
-                    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+                    st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
             else:
                 ts = (
                     inbound.groupby(["period", "MediaPayer_BuilderRegionKey"], as_index=False)["LeadId"]
@@ -1290,7 +1290,7 @@ def main():
                     xaxis_title=None,
                     yaxis_title="Referrals"
                 )
-                st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+                st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
     else:
         st.caption("Select a builder to see inbound referral flow over time.")
 
@@ -1341,7 +1341,7 @@ def main():
                 .head(15)
             )
             st.markdown("**Top destinations (lifetime, filtered window)**")
-            st.dataframe(leaderboard, hide_index=True, use_container_width=True)
+            st.dataframe(leaderboard, hide_index=True, width="stretch")
 
             ts = (
                 outbound.groupby(["period", "Dest_BuilderRegionKey"], as_index=False)["LeadId"]
@@ -1372,7 +1372,7 @@ def main():
                 xaxis_title=None,
                 yaxis_title="Referrals"
             )
-            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+            st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
     else:
         st.caption("Select a builder to see outbound referral flow over time.")
     
@@ -1436,7 +1436,7 @@ def main():
         budget = st.number_input("Campaign Budget ($)", min_value=1000, value=50000, step=5000)
     with col2:
         st.write("")
-        if st.button("🎯 Optimize Allocation", type="primary", use_container_width=True):
+        if st.button("🎯 Optimize Allocation", type="primary", width="stretch"):
             allocations, summary = optimizer.optimize_basket(targets, budget)
             st.session_state.optimization_result = {'allocations': allocations, 'summary': summary}
     
@@ -1590,7 +1590,7 @@ def main():
             unallocated=summary['unallocated']
         )
         if flow_dot:
-            st.graphviz_chart(flow_dot, use_container_width=True)
+            st.graphviz_chart(flow_dot, width="stretch")
         else:
             st.caption("Not enough data to render the flow diagram.")
 

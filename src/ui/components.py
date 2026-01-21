@@ -168,7 +168,7 @@ def render_build_region_extractor():
 
             st.markdown("**Alignment control points**")
             points_df = st.session_state.get("bre_points", pd.DataFrame(columns=["pixel_x", "pixel_y", "lat", "lon"]))
-            points_df = st.data_editor(points_df, num_rows="dynamic", use_container_width=True, key="bre_points_editor")
+            points_df = st.data_editor(points_df, num_rows="dynamic", width="stretch", key="bre_points_editor")
             st.session_state["bre_points"] = points_df
 
             center = STATE_CENTER.get(state, (-25.0, 133.0))
@@ -247,7 +247,7 @@ def render_build_region_extractor():
     ]
     _kpi_row(kpis)
 
-    edited = st.data_editor(results_df, num_rows="dynamic", use_container_width=True)
+    edited = st.data_editor(results_df, num_rows="dynamic", width="stretch")
     st.session_state["bre_results"] = edited
 
     if not builder_name or not state or edited.empty:
