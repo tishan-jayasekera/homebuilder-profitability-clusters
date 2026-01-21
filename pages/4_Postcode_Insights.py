@@ -1006,8 +1006,11 @@ def main():
                     50,
                     0,
                     step=5,
-                    help="Apply a manual adjustment to recent pace (events/day)."
+                    help="Apply a manual adjustment to recent pace (events/day).",
+                    key="pace_override"
                 )
+                if st.button("Reset to observed pace"):
+                    st.session_state["pace_override"] = 0
 
             period_col = seg_df["event_date"].dt.to_period(period_freq).dt.start_time
             periods = pd.DataFrame({"period": period_col}).dropna().drop_duplicates()
