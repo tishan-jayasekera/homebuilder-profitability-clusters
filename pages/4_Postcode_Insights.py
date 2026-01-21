@@ -1000,17 +1000,22 @@ def main():
                 ts_freq = st.radio("Trend period", ["Weekly", "Monthly"], horizontal=True)
                 period_freq = "W" if ts_freq == "Weekly" else "M"
                 lookback_periods = st.slider("CPR lookback periods", 2, 12, 6, step=1)
+                if "pace_override" not in st.session_state:
+                    st.session_state["pace_override"] = 0
+
+                def _reset_pace_override():
+                    st.session_state["pace_override"] = 0
+
                 pace_override = st.slider(
                     "Pace adjustment (%)",
                     -50,
                     50,
-                    0,
+                    st.session_state["pace_override"],
                     step=5,
                     help="Apply a manual adjustment to recent pace (events/day).",
                     key="pace_override"
                 )
-                if st.button("Reset to observed pace"):
-                    st.session_state["pace_override"] = 0
+                st.button("Reset to observed pace", on_click=_reset_pace_override)
 
             period_col = seg_df["event_date"].dt.to_period(period_freq).dt.start_time
             periods = pd.DataFrame({"period": period_col}).dropna().drop_duplicates()
