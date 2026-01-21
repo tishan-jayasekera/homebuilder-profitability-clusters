@@ -2049,18 +2049,42 @@ def main():
                 st.plotly_chart(c_spend, use_container_width=True, config={"displayModeBar": False})
 
                 c_eff = go.Figure()
-                c_eff.add_trace(go.Scatter(x=c_ts["period"], y=c_ts["CPR"], name="CPR", mode="lines+markers", line=dict(color="#ef4444")))
+                c_eff.add_trace(go.Scatter(
+                    x=c_ts["period"],
+                    y=c_ts["CPR"],
+                    name="CPR",
+                    mode="lines+markers",
+                    line=dict(color="#ef4444")
+                ))
                 if rpl_col:
+                    rev = c_ts["Revenue_per_Event"]
+                    cpr = c_ts["CPR"]
+                    shade_upper = np.where(rev < cpr, cpr, np.nan)
+                    shade_lower = np.where(rev < cpr, rev, np.nan)
                     c_eff.add_trace(go.Scatter(
                         x=c_ts["period"],
-                        y=c_ts["Revenue_per_Event"],
+                        y=shade_upper,
+                        mode="lines",
+                        line=dict(width=0),
+                        showlegend=False
+                    ))
+                    c_eff.add_trace(go.Scatter(
+                        x=c_ts["period"],
+                        y=shade_lower,
+                        mode="lines",
+                        fill="tonexty",
+                        fillcolor="rgba(239, 68, 68, 0.2)",
+                        line=dict(width=0),
+                        name="Rev/Event < CPR"
+                    ))
+                    c_eff.add_trace(go.Scatter(
+                        x=c_ts["period"],
+                        y=rev,
                         name="Revenue / Event",
                         mode="lines+markers",
-                        line=dict(color="#f59e0b", dash="dot"),
-                        yaxis="y2"
+                        line=dict(color="#f59e0b", dash="dot")
                     ))
-                    c_eff.update_layout(yaxis2=dict(overlaying="y", side="right", title="Revenue / Event"))
-                c_eff.update_layout(height=200, margin=dict(l=0, r=0, t=30, b=0), yaxis_title="CPR", title="Campaign efficiency trend")
+                c_eff.update_layout(height=200, margin=dict(l=0, r=0, t=30, b=0), yaxis_title="Value", title="Campaign efficiency trend")
                 st.plotly_chart(c_eff, use_container_width=True, config={"displayModeBar": False})
 
             st.markdown("**Campaigns at risk (slow to first lead)**")
