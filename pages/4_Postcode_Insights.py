@@ -1846,15 +1846,61 @@ def main():
             )
             ts_campaign["RPL"] = np.where(ts_campaign["Leads"] > 0, ts_campaign["Revenue"] / ts_campaign["Leads"], np.nan)
 
-            trend_fig = go.Figure()
-            trend_fig.add_trace(go.Scatter(x=ts_campaign["period"], y=ts_campaign["Spend"], name="Spend", mode="lines+markers"))
-            trend_fig.add_trace(go.Scatter(x=ts_campaign["period"], y=ts_campaign["Leads"], name="Leads", mode="lines+markers"))
-            trend_fig.add_trace(go.Scatter(x=ts_campaign["period"], y=ts_campaign["Referrals"], name="Referrals", mode="lines+markers"))
-            trend_fig.add_trace(go.Scatter(x=ts_campaign["period"], y=ts_campaign["CPR"], name="CPR", mode="lines", line=dict(dash="dash")))
+            spend_fig = go.Figure()
+            spend_fig.add_trace(go.Scatter(
+                x=ts_campaign["period"],
+                y=ts_campaign["Spend"],
+                name="Spend",
+                mode="lines+markers",
+                line=dict(color="#6366f1")
+            ))
+            spend_fig.update_layout(height=220, margin=dict(l=0, r=0, t=40, b=0), yaxis_title="Spend", title="Spend trend")
+            st.plotly_chart(spend_fig, use_container_width=True, config={"displayModeBar": False})
+
+            volume_fig = go.Figure()
+            volume_fig.add_trace(go.Bar(
+                x=ts_campaign["period"],
+                y=ts_campaign["Leads"],
+                name="Leads",
+                marker_color="#22c55e"
+            ))
+            volume_fig.add_trace(go.Bar(
+                x=ts_campaign["period"],
+                y=ts_campaign["Referrals"],
+                name="Referrals",
+                marker_color="#14b8a6"
+            ))
+            volume_fig.update_layout(
+                height=240,
+                margin=dict(l=0, r=0, t=40, b=0),
+                barmode="stack",
+                yaxis_title="Events",
+                title="Lead → Referral volume"
+            )
+            st.plotly_chart(volume_fig, use_container_width=True, config={"displayModeBar": False})
+
+            efficiency_fig = go.Figure()
+            efficiency_fig.add_trace(go.Scatter(
+                x=ts_campaign["period"],
+                y=ts_campaign["CPR"],
+                name="CPR",
+                mode="lines+markers",
+                line=dict(color="#ef4444")
+            ))
             if rpl_col:
-                trend_fig.add_trace(go.Scatter(x=ts_campaign["period"], y=ts_campaign["RPL"], name="RPL", mode="lines", line=dict(dash="dot")))
-            trend_fig.update_layout(height=320, margin=dict(l=0, r=0, t=40, b=0), yaxis_title="Value", title="Spend → Leads → Referrals → CPR (+ RPL)")
-            st.plotly_chart(trend_fig, use_container_width=True, config={"displayModeBar": False})
+                efficiency_fig.add_trace(go.Scatter(
+                    x=ts_campaign["period"],
+                    y=ts_campaign["RPL"],
+                    name="RPL",
+                    mode="lines+markers",
+                    line=dict(color="#f59e0b", dash="dot"),
+                    yaxis="y2"
+                ))
+                efficiency_fig.update_layout(
+                    yaxis2=dict(overlaying="y", side="right", title="RPL")
+                )
+            efficiency_fig.update_layout(height=240, margin=dict(l=0, r=0, t=40, b=0), yaxis_title="CPR", title="Efficiency (CPR + RPL)")
+            st.plotly_chart(efficiency_fig, use_container_width=True, config={"displayModeBar": False})
 
             st.markdown("**Funnel summary (current window)**")
             total_spend = ts_campaign["Spend"].sum()
@@ -1914,6 +1960,89 @@ def main():
             )
             lag_fig.update_layout(height=260, margin=dict(l=0, r=0, t=30, b=0), xaxis_title="Days to first lead", yaxis_title="Campaigns")
             st.plotly_chart(lag_fig, use_container_width=True, config={"displayModeBar": False})
+
+            st.markdown("**Campaign performance (current window)**")
+            camp_perf = (
+                df.groupby(campaign_col, as_index=False)
+                .agg(
+                    Spend=("_event_spend", "sum"),
+                    Leads=("is_referral_bool", lambda x: (~x).sum()),
+                    Referrals=("is_referral_bool", "sum"),
+                    Revenue=(rpl_col, "sum") if rpl_col else ("_event_spend", "sum")
+                )
+            )
+            camp_perf["CPR"] = np.where(
+                (camp_perf["Leads"] + camp_perf["Referrals"]) > 0,
+                camp_perf["Spend"] / (camp_perf["Leads"] + camp_perf["Referrals"]),
+                np.nan
+            )
+            camp_perf["RPL"] = np.where(camp_perf["Leads"] > 0, camp_perf["Revenue"] / camp_perf["Leads"], np.nan)
+            camp_perf["ROAS"] = np.where(camp_perf["Spend"] > 0, camp_perf["Revenue"] / camp_perf["Spend"], np.nan)
+            camp_perf = camp_perf.merge(campaign_first[[campaign_col, "Days_to_First_Lead", "Status"]], on=campaign_col, how="left")
+            st.dataframe(
+                camp_perf.sort_values(["Status", "CPR"], ascending=[True, True]).rename(columns={campaign_col: "Campaign"}),
+                hide_index=True,
+                use_container_width=True
+            )
+
+            st.markdown("**Single campaign view**")
+            campaign_pick = st.selectbox(
+                "Select campaign",
+                sorted(df[campaign_col].dropna().unique().tolist()),
+                key="campaign_tracker_pick"
+            )
+            c_df = df[df[campaign_col] == campaign_pick].copy()
+            if c_df.empty:
+                st.caption("No activity for this campaign.")
+            else:
+                camp_kpis = {
+                    "Spend": c_df["_event_spend"].sum(),
+                    "Leads": (~c_df["is_referral_bool"]).sum(),
+                    "Referrals": c_df["is_referral_bool"].sum(),
+                    "Revenue": c_df[rpl_col].sum() if rpl_col else 0
+                }
+                camp_kpis["CPR"] = camp_kpis["Spend"] / max(1, camp_kpis["Leads"] + camp_kpis["Referrals"])
+                camp_kpis["RPL"] = camp_kpis["Revenue"] / max(1, camp_kpis["Leads"])
+                camp_kpis["ROAS"] = camp_kpis["Revenue"] / max(1, camp_kpis["Spend"])
+                st.markdown(f"""
+                <div class="kpi-row">
+                    <div class="kpi"><div class="kpi-label">Spend</div><div class="kpi-value">${camp_kpis["Spend"]:,.0f}</div></div>
+                    <div class="kpi"><div class="kpi-label">Leads</div><div class="kpi-value">{camp_kpis["Leads"]:,.0f}</div></div>
+                    <div class="kpi"><div class="kpi-label">Referrals</div><div class="kpi-value">{camp_kpis["Referrals"]:,.0f}</div></div>
+                    <div class="kpi"><div class="kpi-label">CPR</div><div class="kpi-value">${camp_kpis["CPR"]:,.0f}</div></div>
+                    <div class="kpi"><div class="kpi-label">RPL</div><div class="kpi-value">${camp_kpis["RPL"]:,.0f}</div></div>
+                    <div class="kpi"><div class="kpi-label">ROAS</div><div class="kpi-value">{camp_kpis["ROAS"]:.1f}x</div></div>
+                </div>
+                """, unsafe_allow_html=True)
+
+                c_ts = (
+                    c_df.assign(period=c_df["event_date"].dt.to_period(trend_period).dt.start_time)
+                    .groupby("period", as_index=False)
+                    .agg(
+                        Spend=("_event_spend", "sum"),
+                        Leads=("is_referral_bool", lambda x: (~x).sum()),
+                        Referrals=("is_referral_bool", "sum"),
+                        Revenue=(rpl_col, "sum") if rpl_col else ("_event_spend", "sum")
+                    )
+                )
+                c_ts["CPR"] = np.where(
+                    (c_ts["Leads"] + c_ts["Referrals"]) > 0,
+                    c_ts["Spend"] / (c_ts["Leads"] + c_ts["Referrals"]),
+                    np.nan
+                )
+                c_ts["RPL"] = np.where(c_ts["Leads"] > 0, c_ts["Revenue"] / c_ts["Leads"], np.nan)
+                c_spend = go.Figure()
+                c_spend.add_trace(go.Scatter(x=c_ts["period"], y=c_ts["Spend"], name="Spend", mode="lines+markers", line=dict(color="#6366f1")))
+                c_spend.update_layout(height=200, margin=dict(l=0, r=0, t=30, b=0), yaxis_title="Spend", title="Campaign spend trend")
+                st.plotly_chart(c_spend, use_container_width=True, config={"displayModeBar": False})
+
+                c_eff = go.Figure()
+                c_eff.add_trace(go.Scatter(x=c_ts["period"], y=c_ts["CPR"], name="CPR", mode="lines+markers", line=dict(color="#ef4444")))
+                if rpl_col:
+                    c_eff.add_trace(go.Scatter(x=c_ts["period"], y=c_ts["RPL"], name="RPL", mode="lines+markers", line=dict(color="#f59e0b", dash="dot"), yaxis="y2"))
+                    c_eff.update_layout(yaxis2=dict(overlaying="y", side="right", title="RPL"))
+                c_eff.update_layout(height=200, margin=dict(l=0, r=0, t=30, b=0), yaxis_title="CPR", title="Campaign efficiency trend")
+                st.plotly_chart(c_eff, use_container_width=True, config={"displayModeBar": False})
 
             st.markdown("**Campaigns at risk (slow to first lead)**")
             st.dataframe(
