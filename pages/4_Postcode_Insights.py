@@ -18,6 +18,7 @@ if str(root) not in sys.path:
 
 from src.data_loader import load_events
 from src.normalization import normalize_events
+from src.ui.components import render_build_region_extractor
 
 st.set_page_config(page_title="Postcode Opportunity Insights", page_icon="📍", layout="wide")
 
@@ -343,7 +344,8 @@ def main():
         "4) Benchmarks",
         "5) Optimization",
         "6) Overlap",
-        "7) Creative"
+        "7) Creative",
+        "8) Build Region Extractor"
     ])
 
     with tabs[0]:
@@ -2021,7 +2023,10 @@ def main():
                     <div class="kpi"><div class="kpi-label">Revenue / Event</div><div class="kpi-value">${camp_kpis["Revenue / Event"]:,.0f}</div></div>
                     <div class="kpi"><div class="kpi-label">ROAS</div><div class="kpi-value">{camp_kpis["ROAS"]:.1f}x</div></div>
                 </div>
-                """, unsafe_allow_html=True)
+        """, unsafe_allow_html=True)
+
+    with tabs[7]:
+        render_build_region_extractor()
 
                 c_ts = (
                     c_df.assign(period=c_df["event_date"].dt.to_period(trend_period).dt.start_time)
