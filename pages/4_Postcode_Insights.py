@@ -1221,6 +1221,42 @@ def main():
                 st.markdown("**Scenario comparison**")
                 st.dataframe(scenario, hide_index=True, use_container_width=True)
 
+                st.markdown("**Sensitivity & assumptions**")
+                sensitivities = pd.DataFrame([
+                    {
+                        "Assumption / Lever": "Referral rate +10%",
+                        "What changes": "More referrals per lead",
+                        "Estimated impact": f"+{capacity * 0.10:,.0f} events capacity"
+                    },
+                    {
+                        "Assumption / Lever": "Referral rate -10%",
+                        "What changes": "Fewer referrals per lead",
+                        "Estimated impact": f"{capacity * -0.10:,.0f} events capacity"
+                    },
+                    {
+                        "Assumption / Lever": "Spend +20%",
+                        "What changes": "More budget available",
+                        "Estimated impact": f"+{capacity_spend * 0.20:,.0f} events spend-capacity"
+                    },
+                    {
+                        "Assumption / Lever": "Spend -20%",
+                        "What changes": "Less budget available",
+                        "Estimated impact": f"{capacity_spend * -0.20:,.0f} events spend-capacity"
+                    },
+                    {
+                        "Assumption / Lever": "Pace +15%",
+                        "What changes": "Higher recent delivery speed",
+                        "Estimated impact": f"+{capacity_pace * 0.15:,.0f} events pace-capacity"
+                    },
+                    {
+                        "Assumption / Lever": "Pace -15%",
+                        "What changes": "Lower recent delivery speed",
+                        "Estimated impact": f"{capacity_pace * -0.15:,.0f} events pace-capacity"
+                    }
+                ])
+                st.dataframe(sensitivities, hide_index=True, use_container_width=True)
+                st.caption("Key levers: referral rate, recent pace, and planned spend. Assumptions: recent 14-day pace reflects near-term delivery, growth capped at ±50%, and CPR holds over the forecast horizon.")
+
             if campaign_col:
                 seg_df[campaign_col] = seg_df[campaign_col].fillna("Unknown").astype(str)
                 if ref_flag_col in seg_df.columns:
