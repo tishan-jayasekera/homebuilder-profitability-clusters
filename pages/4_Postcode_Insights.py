@@ -1093,6 +1093,40 @@ def main():
                     </div>
                 </div>
                 """, unsafe_allow_html=True)
+                st.markdown("""
+                <div class="explainer">
+                    <div class="explainer-title">How Capacity (Pace) is calculated</div>
+                    <div class="explainer-text">
+                        We estimate recent delivery speed from events/day over the last 14 days, then apply a growth
+                        adjustment based on the prior 14-day trend. The formula is:
+                        <br/><b>Capacity (Pace) = (Events last 14 days ÷ 14) × (1 + Growth) × Forecast horizon (days)</b>.
+                        Growth is capped at ±50% to avoid extreme swings.
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+                pace_flow = pd.DataFrame([
+                    {"Step": "Events (last 14d)", "Value": recent_events},
+                    {"Step": "Events per day", "Value": pace},
+                    {"Step": "Growth adj", "Value": 1 + growth},
+                    {"Step": "Horizon (days)", "Value": horizon_days},
+                    {"Step": "Capacity (Pace)", "Value": capacity_pace}
+                ])
+                pace_fig = go.Figure()
+                pace_fig.add_trace(go.Bar(
+                    x=pace_flow["Step"],
+                    y=pace_flow["Value"],
+                    marker_color=["#94a3b8", "#60a5fa", "#f59e0b", "#a78bfa", "#22c55e"],
+                    text=pace_flow["Value"].map(lambda v: f"{v:,.2f}" if v < 10 else f"{v:,.0f}"),
+                    textposition="outside"
+                ))
+                pace_fig.update_layout(
+                    height=220,
+                    margin=dict(l=0, r=0, t=30, b=0),
+                    yaxis_title=None,
+                    xaxis_title=None,
+                    title="Pace build-up"
+                )
+                st.plotly_chart(pace_fig, use_container_width=True, config={"displayModeBar": False})
                 st.caption(f"Binding constraint: {binding}")
                 st.markdown(f"**Spend to hit target:** ${required_spend:,.0f} for {target_events:,.0f} events")
 
